@@ -1,0 +1,19 @@
+name            = "chakudya-api"
+main            = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# ── Fill in your real account ID before deploying ──────────────────────────
+account_id = "YOUR_ACCOUNT_ID_HERE"
+
+# ── Secrets ─────────────────────────────────────────────────────────────────
+# Do NOT put values here. Add them once via Wrangler CLI:
+#
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_KEY
+#
+# They will be available in the Worker as env.SUPABASE_URL / env.SUPABASE_KEY
+
+[vars]
+# Public (non-sensitive) vars can go here if needed later.
+# Example:
+# APP_NAME = "Chakudya API"
