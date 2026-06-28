@@ -239,13 +239,13 @@ async function handleFoods(request, url, db, id) {
 
     const filters = {};
     if (category) filters["category"] = `eq.${category}`;
-    if (search) filters["name"] = `ilike.*${search}*`;
+    if (search) filters["food_name"] = `ilike.*${search}*`;
 
     const { ok, status, body, total } = await db.select("foods", {
       filters,
       limit,
       offset,
-      order: "name.asc",
+      order: "food_name.asc",
     });
     if (!ok) return err(body?.message || "Query failed", status);
     return listSuccess(body, { count: total, limit, offset });
@@ -254,7 +254,7 @@ async function handleFoods(request, url, db, id) {
   // POST /foods
   if (method === "POST") {
     const payload = await parseBody(request);
-    if (!payload || !payload.name) return err("'name' is required");
+    if (!payload || !payload.food_name) return err("'food_name' is required");
     const { ok, status, body } = await db.insert("foods", payload);
     if (!ok) return err(body?.message || "Insert failed", status);
     return success(body, { message: "Food created" });
@@ -300,7 +300,7 @@ async function handleExchange(request, url, db, id) {
     const offset = intParam(url, "offset", 0);
     const type = url.searchParams.get("type") || "";
     const filters = {};
-    if (type) filters["type"] = `eq.${type}`;
+    if (type) filters["exchange_type"] = `eq.${type}`;
 
     const { ok, status, body, total } = await db.select("exchange_lists", {
       filters,
@@ -476,7 +476,7 @@ async function handlePackaged(request, url, db, id, isSubmit) {
     const payload = await parseBody(request);
     if (!payload) return err("Request body required");
     if (!payload.barcode) return err("'barcode' is required");
-    if (!payload.name) return err("'name' is required");
+    if (!payload.product_name) return err("'product_name' is required");
 
     // Tag the submission with pending status if not already set
     const data = { status: "pending", submitted_at: new Date().toISOString(), ...payload };
