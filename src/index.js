@@ -9,8 +9,6 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-// ---------- helpers -----------------------------------------
-
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -18,8 +16,8 @@ function json(data, status = 200) {
   });
 }
 
-function success(data, extras = {}) {
-  return json({ status: "success", ...extras, data });
+function success(data) {
+  return json({ status: "success", data });
 }
 
 function listSuccess(data, count, limit, offset) {
@@ -52,13 +50,11 @@ function supabase(env) {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
     }
+    const reqHeaders = { ...headers };
+    if (opts.count) reqHeaders["Prefer"] = "count=exact,return=representation";
     const res = await fetch(url.toString(), {
       method: opts.method || "GET",
-      headers: {
-        ...headers,
-        ...(opts.count ? { Prefer: "count=exact,return=representation" } : {}),
-        ...(opts.headers || {}),
-      },
+      headers: reqHeaders,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     return res;
@@ -69,23 +65,19 @@ function supabase(env) {
 
 // ---------- generic CRUD helpers ----------------------------
 
-async function listRows(env, table, params, filters = {}) {
-  const limit = parseIntParam(params.limit, 50);
-  const offset = parseIntParam(params.offset, 0);
+function getTotal(res) {
+  const cr = res.headers.get("content-range") || "";
+  const parts = cr.split("/");
+  return parseInt(parts[1] || "0", 10) || 0;
+}
 
-  const qp = { limit, offset };
-  for (const [col, val] of Object.entries(filters)) {
-    if (val) qp[col] = `ilike.*${val}*`;
-  }
-
+async function listRows(env, table, limit, offset, extra = {}) {
+  const qp = { limit, offset, ...extra };
   const sb = supabase(env);
   const res = await sb.query(table, qp, { count: true });
   if (!res.ok) return err(await res.text(), 500);
-
-  const contentRange = res.headers.get("content-range") || "";
-  const total = contentRange ? parseInt(contentRange.split("/")[1], 10) || 0 : 0;
-  const data = await res.json();
-  return listSuccess(data, total, limit, offset);
+  const total = getTotal(res);
+  return listSuccess(await res.json(), total, limit, offset);
 }
 
 async function getRow(env, table, id) {
@@ -104,7 +96,7 @@ async function insertRow(env, table, body) {
   const res = await sb.query(table, {}, { method: "POST", body });
   if (!res.ok) return err(await res.text(), 500);
   const data = await res.json();
-  return success(Array.isArray(data) ? data[0] : data, 201);
+  return json({ status: "success", data: Array.isArray(data) ? data[0] : data }, 201);
 }
 
 async function replaceRow(env, table, id, body) {
@@ -136,7 +128,6 @@ async function deleteRow(env, table, id) {
 
 // ---------- route handlers ----------------------------------
 
-// GET /
 function handleRoot() {
   return json({
     name: "Chakudya API",
@@ -149,28 +140,20 @@ function handleRoot() {
       formulas: "/formulas",
       packaged: "/packaged",
     },
-    docs: "https://github.com/yourusername/chakudya-api",
+    docs: "https://github.com/edisontaimu9-ui/chakudya-api",
   });
 }
 
-// /foods
-async function handleFoods(req, env, method, id, params, body) {
+async function handleFoods(env, method, id, params, body) {
   const table = "foods";
+  const limit = parseIntParam(params.limit, 50);
+  const offset = parseIntParam(params.offset, 0);
   if (!id) {
     if (method === "GET") {
-      const filters = {};
-      if (params.search) filters.food_name = params.search;
-      // category is an exact-ish filter
-      const qp = { limit: parseIntParam(params.limit, 50), offset: parseIntParam(params.offset, 0) };
-      if (params.search) qp.food_name = `ilike.*${params.search}*`;
-      if (params.category) qp.category = `eq.${params.category}`;
-      const sb = supabase(env);
-      const res = await sb.query(table, qp, { count: true });
-      if (!res.ok) return err(await res.text(), 500);
-      const contentRange = res.headers.get("content-range") || "";
-      const total = parseInt(contentRange.split("/")[1], 10) || 0;
-      const data = await res.json();
-      return listSuccess(data, total, qp.limit, qp.offset);
+      const extra = {};
+      if (params.search) extra.food_name = `ilike.*${params.search}*`;
+      if (params.category) extra.category = `eq.${params.category}`;
+      return listRows(env, table, limit, offset, extra);
     }
     if (method === "POST") return insertRow(env, table, body);
   } else {
@@ -182,18 +165,15 @@ async function handleFoods(req, env, method, id, params, body) {
   return err("Method not allowed", 405);
 }
 
-// /exchange
-async function handleExchange(req, env, method, id, params, body) {
+async function handleExchange(env, method, id, params, body) {
   const table = "exchange_lists";
+  const limit = parseIntParam(params.limit, 50);
+  const offset = parseIntParam(params.offset, 0);
   if (!id) {
     if (method === "GET") {
-      const qp = { limit: parseIntParam(params.limit, 50), offset: parseIntParam(params.offset, 0) };
-      if (params.type) qp.type = `eq.${params.type}`;
-      const sb = supabase(env);
-      const res = await sb.query(table, qp, { count: true });
-      if (!res.ok) return err(await res.text(), 500);
-      const total = parseInt((res.headers.get("content-range") || "").split("/")[1], 10) || 0;
-      return listSuccess(await res.json(), total, qp.limit, qp.offset);
+      const extra = {};
+      if (params.type) extra.type = `eq.${params.type}`;
+      return listRows(env, table, limit, offset, extra);
     }
     if (method === "POST") return insertRow(env, table, body);
   } else {
@@ -204,11 +184,12 @@ async function handleExchange(req, env, method, id, params, body) {
   return err("Method not allowed", 405);
 }
 
-// /renal
-async function handleRenal(req, env, method, id, params, body) {
+async function handleRenal(env, method, id, params, body) {
   const table = "renal_foods";
+  const limit = parseIntParam(params.limit, 50);
+  const offset = parseIntParam(params.offset, 0);
   if (!id) {
-    if (method === "GET") return listRows(env, table, params);
+    if (method === "GET") return listRows(env, table, limit, offset);
     if (method === "POST") return insertRow(env, table, body);
   } else {
     if (method === "PUT") return replaceRow(env, table, id, body);
@@ -218,18 +199,15 @@ async function handleRenal(req, env, method, id, params, body) {
   return err("Method not allowed", 405);
 }
 
-// /formulas
-async function handleFormulas(req, env, method, id, params, body) {
+async function handleFormulas(env, method, id, params, body) {
   const table = "enteral_formulas";
+  const limit = parseIntParam(params.limit, 50);
+  const offset = parseIntParam(params.offset, 0);
   if (!id) {
     if (method === "GET") {
-      const qp = { limit: parseIntParam(params.limit, 50), offset: parseIntParam(params.offset, 0) };
-      if (params.route) qp.route = `eq.${params.route}`;
-      const sb = supabase(env);
-      const res = await sb.query(table, qp, { count: true });
-      if (!res.ok) return err(await res.text(), 500);
-      const total = parseInt((res.headers.get("content-range") || "").split("/")[1], 10) || 0;
-      return listSuccess(await res.json(), total, qp.limit, qp.offset);
+      const extra = {};
+      if (params.route) extra.route = `eq.${params.route}`;
+      return listRows(env, table, limit, offset, extra);
     }
     if (method === "POST") return insertRow(env, table, body);
   } else {
@@ -240,22 +218,19 @@ async function handleFormulas(req, env, method, id, params, body) {
   return err("Method not allowed", 405);
 }
 
-// /packaged
-async function handlePackaged(req, env, method, id, params, body, isSubmit) {
+async function handlePackaged(env, method, id, params, body, isSubmit) {
   const table = "packaged_foods";
+  const limit = parseIntParam(params.limit, 50);
+  const offset = parseIntParam(params.offset, 0);
   if (isSubmit) {
     if (method === "POST") return insertRow(env, table, body);
     return err("Method not allowed", 405);
   }
   if (!id) {
     if (method === "GET") {
-      const qp = { limit: parseIntParam(params.limit, 50), offset: parseIntParam(params.offset, 0) };
-      if (params.barcode) qp.barcode = `eq.${params.barcode}`;
-      const sb = supabase(env);
-      const res = await sb.query(table, qp, { count: true });
-      if (!res.ok) return err(await res.text(), 500);
-      const total = parseInt((res.headers.get("content-range") || "").split("/")[1], 10) || 0;
-      return listSuccess(await res.json(), total, qp.limit, qp.offset);
+      const extra = {};
+      if (params.barcode) extra.barcode = `eq.${params.barcode}`;
+      return listRows(env, table, limit, offset, extra);
     }
   } else {
     if (method === "PUT") return replaceRow(env, table, id, body);
@@ -270,7 +245,6 @@ async function handlePackaged(req, env, method, id, params, body, isSubmit) {
 async function router(req, env) {
   const method = req.method.toUpperCase();
 
-  // CORS preflight
   if (method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS });
   }
@@ -279,7 +253,6 @@ async function router(req, env) {
   const path = url.pathname.replace(/\/$/, "") || "/";
   const params = Object.fromEntries(url.searchParams.entries());
 
-  // Parse body for mutating methods
   let body = null;
   if (["POST", "PUT", "PATCH"].includes(method)) {
     try {
@@ -289,49 +262,24 @@ async function router(req, env) {
     }
   }
 
-  // Match routes
-  // GET /
   if (path === "" || path === "/") return handleRoot();
 
-  // /foods
   const foodsMatch = path.match(/^\/foods(?:\/([^/]+))?$/);
-  if (foodsMatch) {
-    const id = foodsMatch[1] || null;
-    return handleFoods(req, env, method, id, params, body);
-  }
+  if (foodsMatch) return handleFoods(env, method, foodsMatch[1] || null, params, body);
 
-  // /exchange
   const exchangeMatch = path.match(/^\/exchange(?:\/([^/]+))?$/);
-  if (exchangeMatch) {
-    const id = exchangeMatch[1] || null;
-    return handleExchange(req, env, method, id, params, body);
-  }
+  if (exchangeMatch) return handleExchange(env, method, exchangeMatch[1] || null, params, body);
 
-  // /renal
   const renalMatch = path.match(/^\/renal(?:\/([^/]+))?$/);
-  if (renalMatch) {
-    const id = renalMatch[1] || null;
-    return handleRenal(req, env, method, id, params, body);
-  }
+  if (renalMatch) return handleRenal(env, method, renalMatch[1] || null, params, body);
 
-  // /formulas
   const formulasMatch = path.match(/^\/formulas(?:\/([^/]+))?$/);
-  if (formulasMatch) {
-    const id = formulasMatch[1] || null;
-    return handleFormulas(req, env, method, id, params, body);
-  }
+  if (formulasMatch) return handleFormulas(env, method, formulasMatch[1] || null, params, body);
 
-  // /packaged/submit  (must check before generic /packaged/:id)
-  if (path === "/packaged/submit") {
-    return handlePackaged(req, env, method, null, params, body, true);
-  }
+  if (path === "/packaged/submit") return handlePackaged(env, method, null, params, body, true);
 
-  // /packaged  and  /packaged/:id
   const packagedMatch = path.match(/^\/packaged(?:\/([^/]+))?$/);
-  if (packagedMatch) {
-    const id = packagedMatch[1] || null;
-    return handlePackaged(req, env, method, id, params, body, false);
-  }
+  if (packagedMatch) return handlePackaged(env, method, packagedMatch[1] || null, params, body, false);
 
   return err("Route not found", 404);
 }
