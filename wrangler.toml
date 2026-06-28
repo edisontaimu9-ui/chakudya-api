@@ -3,7 +3,7 @@ main            = "src/index.js"
 compatibility_date = "2024-01-01"
 
 # ── Fill in your real account ID before deploying ──────────────────────────
-account_id = "YOUR_ACCOUNT_ID_HERE"
+account_id = "2d878c3281833694bc40ceecd6cf889f"
 
 # ── Secrets ─────────────────────────────────────────────────────────────────
 # Do NOT put values here. Add them once via Wrangler CLI:
