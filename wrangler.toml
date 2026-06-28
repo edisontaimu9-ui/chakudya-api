@@ -1,19 +1,34 @@
+# ──────────────────────────────────────────────────────────────
+# Chakudya API — Cloudflare Worker Config
+# Malawi's first open Food & Nutrition Database
+# Taimu Tech Solutions
+# ──────────────────────────────────────────────────────────────
+
 name            = "chakudya-api"
 main            = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# ── Fill in your real account ID before deploying ──────────────────────────
-account_id = "2d878c3281833694bc40ceecd6cf889f"
+# ── Replace with your actual Cloudflare account ID ────────────
+# Find it at: https://dash.cloudflare.com → right sidebar
+account_id = "YOUR_ACCOUNT_ID_HERE"
 
-# ── Secrets ─────────────────────────────────────────────────────────────────
-# Do NOT put values here. Add them once via Wrangler CLI:
+# ── Secrets (DO NOT hardcode values here) ─────────────────────
+# Add via Cloudflare dashboard:
+#   Workers & Pages → chakudya-api → Settings → Variables → Secrets
+# Or via Wrangler CLI:
+#   npx wrangler secret put SUPABASE_URL
+#   npx wrangler secret put SUPABASE_KEY
 #
-#   wrangler secret put SUPABASE_URL
-#   wrangler secret put SUPABASE_KEY
-#
-# They will be available in the Worker as env.SUPABASE_URL / env.SUPABASE_KEY
+# [vars] is for non-sensitive config only.
+# Secrets below are declared so wrangler knows they exist;
+# actual values live in the dashboard.
 
-[vars]
-# Public (non-sensitive) vars can go here if needed later.
-# Example:
-# APP_NAME = "Chakudya API"
+# [vars]
+# ENVIRONMENT = "production"
+
+# ── Workers Observability (optional, free tier) ────────────────
+[observability]
+enabled = true
+
+# ── Build (no build step needed — plain JS) ───────────────────
+# No [build] block required; wrangler uploads src/index.js directly.
