@@ -1,40 +1,57 @@
-// ============================================================
-//  Chakudya API — Malawi's first open Food & Nutrition Database
-//  Cloudflare Worker · Supabase REST via fetch · No npm deps
-// ============================================================
+/**
+ * Chakudya API — Malawi's First Open Food & Nutrition Database
+ * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
+ * ---------------------------------------------------------------
+ * Author : Taimu Tech Solutions
+ * Version: 1.0.0
+ */
 
-const CORS = {
+// ─── CORS ────────────────────────────────────────────────────────────────────
+
+const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
+  "Access-Control-Max-Age": "86400",
 };
+
+// ─── RESPONSE HELPERS ────────────────────────────────────────────────────────
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
   });
 }
 
-function success(data) {
-  return json({ status: "success", data });
+function success(data, extras = {}) {
+  return json({ status: "success", ...extras, data });
 }
 
-function listSuccess(data, count, limit, offset) {
-  return json({ status: "success", count, limit, offset, data });
+function listSuccess(data, { count = null, limit = 50, offset = 0 } = {}) {
+  return json({
+    status: "success",
+    count: count ?? data.length,
+    limit,
+    offset,
+    data,
+  });
 }
 
-function err(msg, status = 400) {
-  return json({ status: "error", message: msg }, status);
+function err(message, status = 400) {
+  return json({ status: "error", message }, status);
 }
 
-function parseIntParam(val, fallback, max = 200) {
-  const n = parseInt(val, 10);
-  if (isNaN(n) || n < 0) return fallback;
-  return Math.min(n, max);
+function notFound(resource = "Route") {
+  return err(`${resource} not found`, 404);
 }
 
-// ---------- Supabase client ---------------------------------
+function serverErr(e) {
+  console.error(e);
+  return err("Internal server error", 500);
+}
+
+// ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
 
 function supabase(env) {
   const base = env.SUPABASE_URL.replace(/\/$/, "") + "/rest/v1";
@@ -45,253 +62,528 @@ function supabase(env) {
     Prefer: "return=representation",
   };
 
-  async function query(table, params = {}, opts = {}) {
+  /**
+   * Build a Supabase REST URL with query params.
+   * filters  → { column: "eq.value" } → ?column=eq.value
+   * select   → columns string e.g. "*"
+   * order    → e.g. "id.asc"
+   * range    → [from, to] for Range header
+   */
+  function buildUrl(table, { filters = {}, select = "*", order, range } = {}) {
     const url = new URL(`${base}/${table}`);
-    for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set("select", select);
+    for (const [k, v] of Object.entries(filters)) {
       if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
     }
-    const reqHeaders = { ...headers };
-    if (opts.count) reqHeaders["Prefer"] = "count=exact,return=representation";
-    const res = await fetch(url.toString(), {
-      method: opts.method || "GET",
-      headers: reqHeaders,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
-    return res;
+    if (order) url.searchParams.set("order", order);
+    if (range) {
+      // range = { from, to } handled via Prefer header elsewhere
+    }
+    return url.toString();
   }
 
-  return { query };
-}
+  async function query(url, options = {}) {
+    const res = await fetch(url, { headers: { ...headers, ...options.headers }, ...options });
+    const body = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, body };
+  }
 
-// ---------- generic CRUD helpers ----------------------------
-
-function getTotal(res) {
-  const cr = res.headers.get("content-range") || "";
-  const parts = cr.split("/");
-  return parseInt(parts[1] || "0", 10) || 0;
-}
-
-async function listRows(env, table, limit, offset, extra = {}) {
-  const qp = { limit, offset, ...extra };
-  const sb = supabase(env);
-  const res = await sb.query(table, qp, { count: true });
-  if (!res.ok) return err(await res.text(), 500);
-  const total = getTotal(res);
-  return listSuccess(await res.json(), total, limit, offset);
-}
-
-async function getRow(env, table, id) {
-  const sb = supabase(env);
-  const res = await sb.query(table, { id: `eq.${id}` });
-  if (!res.ok) return err(await res.text(), 500);
-  const data = await res.json();
-  if (!data.length) return err("Not found", 404);
-  return success(data[0]);
-}
-
-async function insertRow(env, table, body) {
-  if (!body || typeof body !== "object" || Array.isArray(body))
-    return err("Request body must be a JSON object");
-  const sb = supabase(env);
-  const res = await sb.query(table, {}, { method: "POST", body });
-  if (!res.ok) return err(await res.text(), 500);
-  const data = await res.json();
-  return json({ status: "success", data: Array.isArray(data) ? data[0] : data }, 201);
-}
-
-async function replaceRow(env, table, id, body) {
-  if (!body || typeof body !== "object") return err("Request body must be a JSON object");
-  const sb = supabase(env);
-  const res = await sb.query(table, { id: `eq.${id}` }, { method: "PUT", body });
-  if (!res.ok) return err(await res.text(), 500);
-  const data = await res.json();
-  if (!data || (Array.isArray(data) && !data.length)) return err("Not found", 404);
-  return success(Array.isArray(data) ? data[0] : data);
-}
-
-async function patchRow(env, table, id, body) {
-  if (!body || typeof body !== "object") return err("Request body must be a JSON object");
-  const sb = supabase(env);
-  const res = await sb.query(table, { id: `eq.${id}` }, { method: "PATCH", body });
-  if (!res.ok) return err(await res.text(), 500);
-  const data = await res.json();
-  if (!data || (Array.isArray(data) && !data.length)) return err("Not found", 404);
-  return success(Array.isArray(data) ? data[0] : data);
-}
-
-async function deleteRow(env, table, id) {
-  const sb = supabase(env);
-  const res = await sb.query(table, { id: `eq.${id}` }, { method: "DELETE" });
-  if (!res.ok) return err(await res.text(), 500);
-  return json({ status: "success", message: "Deleted" });
-}
-
-// ---------- route handlers ----------------------------------
-
-function handleRoot() {
-  return json({
-    name: "Chakudya API",
-    description: "Malawi's first open Food & Nutrition Database",
-    version: "1.0.0",
-    endpoints: {
-      foods: "/foods",
-      exchange: "/exchange",
-      renal: "/renal",
-      formulas: "/formulas",
-      packaged: "/packaged",
+  return {
+    /** SELECT rows with optional filters, limit, offset */
+    async select(table, { filters = {}, limit = 50, offset = 0, order } = {}) {
+      const url = buildUrl(table, { filters, order });
+      const rangeStart = offset;
+      const rangeEnd = offset + limit - 1;
+      const res = await fetch(url, {
+        headers: {
+          ...headers,
+          Range: `${rangeStart}-${rangeEnd}`,
+          "Range-Unit": "items",
+          Prefer: "count=exact",
+        },
+      });
+      const body = await res.json().catch(() => []);
+      const contentRange = res.headers.get("Content-Range") || "";
+      // Content-Range: 0-49/312
+      const total = contentRange.includes("/")
+        ? parseInt(contentRange.split("/")[1], 10)
+        : null;
+      return { ok: res.ok, status: res.status, body, total };
     },
-    docs: "https://github.com/edisontaimu9-ui/chakudya-api",
+
+    /** SELECT single row by id */
+    async selectOne(table, id) {
+      const url = buildUrl(table, { filters: { id: `eq.${id}` } });
+      const { ok, status, body } = await query(url);
+      if (!ok) return { ok, status, body };
+      const row = Array.isArray(body) ? body[0] : body;
+      return { ok: !!row, status: row ? 200 : 404, body: row || null };
+    },
+
+    /** INSERT a row */
+    async insert(table, payload) {
+      const url = `${base}/${table}`;
+      const { ok, status, body } = await query(url, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const row = Array.isArray(body) ? body[0] : body;
+      return { ok, status, body: row };
+    },
+
+    /** UPDATE (PUT / PATCH) by id */
+    async update(table, id, payload, method = "PATCH") {
+      const url = buildUrl(table, { filters: { id: `eq.${id}` } });
+      const { ok, status, body } = await query(url, {
+        method,
+        body: JSON.stringify(payload),
+      });
+      const row = Array.isArray(body) ? body[0] : body;
+      return { ok, status, body: row };
+    },
+
+    /** DELETE by id */
+    async remove(table, id) {
+      const url = buildUrl(table, { filters: { id: `eq.${id}` } });
+      const res = await fetch(url, { method: "DELETE", headers });
+      return { ok: res.ok, status: res.status };
+    },
+  };
+}
+
+// ─── BODY PARSER ─────────────────────────────────────────────────────────────
+
+async function parseBody(request) {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
+}
+
+function intParam(url, key, fallback) {
+  const raw = url.searchParams.get(key);
+  if (raw === null) return fallback;
+  const n = parseInt(raw, 10);
+  return isNaN(n) ? fallback : Math.max(0, n);
+}
+
+// ─── ROUTE HANDLERS ──────────────────────────────────────────────────────────
+
+// GET /
+function handleRoot() {
+  return success({
+    name: "Chakudya API",
+    tagline: "Malawi's first open Food & Nutrition Database",
+    version: "1.0.0",
+    maintainer: "Taimu Tech Solutions",
+    endpoints: {
+      foods: [
+        "GET  /foods",
+        "GET  /foods/:id",
+        "POST /foods",
+        "PUT  /foods/:id",
+        "PATCH /foods/:id",
+        "DELETE /foods/:id",
+      ],
+      exchange_lists: [
+        "GET  /exchange",
+        "POST /exchange",
+        "PUT  /exchange/:id",
+        "PATCH /exchange/:id",
+        "DELETE /exchange/:id",
+      ],
+      renal: [
+        "GET  /renal",
+        "POST /renal",
+        "PUT  /renal/:id",
+        "PATCH /renal/:id",
+        "DELETE /renal/:id",
+      ],
+      enteral_formulas: [
+        "GET  /formulas",
+        "POST /formulas",
+        "PUT  /formulas/:id",
+        "PATCH /formulas/:id",
+        "DELETE /formulas/:id",
+      ],
+      packaged_foods: [
+        "GET  /packaged",
+        "POST /packaged/submit",
+        "PUT  /packaged/:id",
+        "PATCH /packaged/:id",
+        "DELETE /packaged/:id",
+      ],
+    },
   });
 }
 
-async function handleFoods(env, method, id, params, body) {
-  const table = "foods";
-  const limit = parseIntParam(params.limit, 50);
-  const offset = parseIntParam(params.offset, 0);
-  if (!id) {
-    if (method === "GET") {
-      const extra = {};
-      if (params.search) extra.food_name = `ilike.*${params.search}*`;
-      if (params.category) extra.category = `eq.${params.category}`;
-      return listRows(env, table, limit, offset, extra);
+// ── /foods ────────────────────────────────────────────────────────────────────
+
+async function handleFoods(request, url, db, id) {
+  const method = request.method;
+
+  // GET /foods or GET /foods/:id
+  if (method === "GET") {
+    if (id) {
+      const { ok, status, body } = await db.selectOne("foods", id);
+      if (status === 404) return notFound("Food");
+      if (!ok) return err(body?.message || "Query failed", status);
+      return success(body);
     }
-    if (method === "POST") return insertRow(env, table, body);
-  } else {
-    if (method === "GET") return getRow(env, table, id);
-    if (method === "PUT") return replaceRow(env, table, id, body);
-    if (method === "PATCH") return patchRow(env, table, id, body);
-    if (method === "DELETE") return deleteRow(env, table, id);
+
+    const limit = intParam(url, "limit", 50);
+    const offset = intParam(url, "offset", 0);
+    const search = url.searchParams.get("search") || "";
+    const category = url.searchParams.get("category") || "";
+
+    const filters = {};
+    if (category) filters["category"] = `eq.${category}`;
+    if (search) filters["name"] = `ilike.*${search}*`;
+
+    const { ok, status, body, total } = await db.select("foods", {
+      filters,
+      limit,
+      offset,
+      order: "name.asc",
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
   }
+
+  // POST /foods
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload || !payload.name) return err("'name' is required");
+    const { ok, status, body } = await db.insert("foods", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Food created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  // PUT /foods/:id
+  if (method === "PUT") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("foods", id, payload, "PUT");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Food replaced" });
+  }
+
+  // PATCH /foods/:id
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("foods", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Food updated" });
+  }
+
+  // DELETE /foods/:id
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("foods", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Food ${id} deleted` });
+  }
+
   return err("Method not allowed", 405);
 }
 
-async function handleExchange(env, method, id, params, body) {
-  const table = "exchange_lists";
-  const limit = parseIntParam(params.limit, 50);
-  const offset = parseIntParam(params.offset, 0);
-  if (!id) {
-    if (method === "GET") {
-      const extra = {};
-      if (params.type) extra.type = `eq.${params.type}`;
-      return listRows(env, table, limit, offset, extra);
-    }
-    if (method === "POST") return insertRow(env, table, body);
-  } else {
-    if (method === "PUT") return replaceRow(env, table, id, body);
-    if (method === "PATCH") return patchRow(env, table, id, body);
-    if (method === "DELETE") return deleteRow(env, table, id);
+// ── /exchange ─────────────────────────────────────────────────────────────────
+
+async function handleExchange(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const limit = intParam(url, "limit", 50);
+    const offset = intParam(url, "offset", 0);
+    const type = url.searchParams.get("type") || "";
+    const filters = {};
+    if (type) filters["type"] = `eq.${type}`;
+
+    const { ok, status, body, total } = await db.select("exchange_lists", {
+      filters,
+      limit,
+      offset,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
   }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.insert("exchange_lists", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Exchange list entry created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PUT") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("exchange_lists", id, payload, "PUT");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Exchange entry replaced" });
+  }
+
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("exchange_lists", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Exchange entry updated" });
+  }
+
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("exchange_lists", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Exchange entry ${id} deleted` });
+  }
+
   return err("Method not allowed", 405);
 }
 
-async function handleRenal(env, method, id, params, body) {
-  const table = "renal_foods";
-  const limit = parseIntParam(params.limit, 50);
-  const offset = parseIntParam(params.offset, 0);
-  if (!id) {
-    if (method === "GET") return listRows(env, table, limit, offset);
-    if (method === "POST") return insertRow(env, table, body);
-  } else {
-    if (method === "PUT") return replaceRow(env, table, id, body);
-    if (method === "PATCH") return patchRow(env, table, id, body);
-    if (method === "DELETE") return deleteRow(env, table, id);
+// ── /renal ────────────────────────────────────────────────────────────────────
+
+async function handleRenal(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const limit = intParam(url, "limit", 50);
+    const offset = intParam(url, "offset", 0);
+    const { ok, status, body, total } = await db.select("renal_foods", { limit, offset });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
   }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.insert("renal_foods", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Renal food entry created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PUT") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("renal_foods", id, payload, "PUT");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Renal entry replaced" });
+  }
+
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("renal_foods", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Renal entry updated" });
+  }
+
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("renal_foods", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Renal entry ${id} deleted` });
+  }
+
   return err("Method not allowed", 405);
 }
 
-async function handleFormulas(env, method, id, params, body) {
-  const table = "enteral_formulas";
-  const limit = parseIntParam(params.limit, 50);
-  const offset = parseIntParam(params.offset, 0);
-  if (!id) {
-    if (method === "GET") {
-      const extra = {};
-      if (params.route) extra.route = `eq.${params.route}`;
-      return listRows(env, table, limit, offset, extra);
-    }
-    if (method === "POST") return insertRow(env, table, body);
-  } else {
-    if (method === "PUT") return replaceRow(env, table, id, body);
-    if (method === "PATCH") return patchRow(env, table, id, body);
-    if (method === "DELETE") return deleteRow(env, table, id);
+// ── /formulas ─────────────────────────────────────────────────────────────────
+
+async function handleFormulas(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const limit = intParam(url, "limit", 50);
+    const offset = intParam(url, "offset", 0);
+    const route = url.searchParams.get("route") || "";
+    const filters = {};
+    if (route) filters["route"] = `eq.${route}`;
+
+    const { ok, status, body, total } = await db.select("enteral_formulas", {
+      filters,
+      limit,
+      offset,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
   }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.insert("enteral_formulas", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Formula created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PUT") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("enteral_formulas", id, payload, "PUT");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Formula replaced" });
+  }
+
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("enteral_formulas", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Formula updated" });
+  }
+
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("enteral_formulas", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Formula ${id} deleted` });
+  }
+
   return err("Method not allowed", 405);
 }
 
-async function handlePackaged(env, method, id, params, body, isSubmit) {
-  const table = "packaged_foods";
-  const limit = parseIntParam(params.limit, 50);
-  const offset = parseIntParam(params.offset, 0);
-  if (isSubmit) {
-    if (method === "POST") return insertRow(env, table, body);
-    return err("Method not allowed", 405);
+// ── /packaged ─────────────────────────────────────────────────────────────────
+
+async function handlePackaged(request, url, db, id, isSubmit) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const limit = intParam(url, "limit", 50);
+    const offset = intParam(url, "offset", 0);
+    const barcode = url.searchParams.get("barcode") || "";
+    const filters = {};
+    if (barcode) filters["barcode"] = `eq.${barcode}`;
+
+    const { ok, status, body, total } = await db.select("packaged_foods", {
+      filters,
+      limit,
+      offset,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
   }
-  if (!id) {
-    if (method === "GET") {
-      const extra = {};
-      if (params.barcode) extra.barcode = `eq.${params.barcode}`;
-      return listRows(env, table, limit, offset, extra);
-    }
-  } else {
-    if (method === "PUT") return replaceRow(env, table, id, body);
-    if (method === "PATCH") return patchRow(env, table, id, body);
-    if (method === "DELETE") return deleteRow(env, table, id);
+
+  // POST /packaged/submit
+  if (method === "POST" && isSubmit) {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    if (!payload.barcode) return err("'barcode' is required");
+    if (!payload.name) return err("'name' is required");
+
+    // Tag the submission with pending status if not already set
+    const data = { status: "pending", submitted_at: new Date().toISOString(), ...payload };
+    const { ok, status, body } = await db.insert("packaged_foods", data);
+    if (!ok) return err(body?.message || "Submit failed", status);
+    return success(body, { message: "Packaged food submitted for review" });
   }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PUT") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("packaged_foods", id, payload, "PUT");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Packaged food replaced" });
+  }
+
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("packaged_foods", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Packaged food updated" });
+  }
+
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("packaged_foods", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Packaged food ${id} deleted` });
+  }
+
   return err("Method not allowed", 405);
 }
 
-// ---------- router ------------------------------------------
+// ─── ROUTER ──────────────────────────────────────────────────────────────────
 
-async function router(req, env) {
-  const method = req.method.toUpperCase();
+async function router(request, env) {
+  const url = new URL(request.url);
+  // Normalise: strip trailing slash, split segments
+  const pathname = url.pathname.replace(/\/$/, "") || "/";
+  const segments = pathname.split("/").filter(Boolean); // ["foods", "123"]
 
-  if (method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS });
+  const db = supabase(env);
+
+  // Preflight
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
-  const url = new URL(req.url);
-  const path = url.pathname.replace(/\/$/, "") || "/";
-  const params = Object.fromEntries(url.searchParams.entries());
+  // GET /
+  if (pathname === "/" && request.method === "GET") {
+    return handleRoot();
+  }
 
-  let body = null;
-  if (["POST", "PUT", "PATCH"].includes(method)) {
-    try {
-      body = await req.json();
-    } catch {
-      return err("Invalid or missing JSON body");
+  const [resource, param] = segments; // segments[0] = resource, [1] = id or sub-path
+
+  try {
+    switch (resource) {
+      // ── /foods ──────────────────────────────────────────────────────────────
+      case "foods": {
+        const id = param || null;
+        return await handleFoods(request, url, db, id);
+      }
+
+      // ── /exchange ────────────────────────────────────────────────────────────
+      case "exchange": {
+        const id = param || null;
+        return await handleExchange(request, url, db, id);
+      }
+
+      // ── /renal ───────────────────────────────────────────────────────────────
+      case "renal": {
+        const id = param || null;
+        return await handleRenal(request, url, db, id);
+      }
+
+      // ── /formulas ────────────────────────────────────────────────────────────
+      case "formulas": {
+        const id = param || null;
+        return await handleFormulas(request, url, db, id);
+      }
+
+      // ── /packaged ────────────────────────────────────────────────────────────
+      case "packaged": {
+        // POST /packaged/submit  → param === "submit"
+        const isSubmit = param === "submit";
+        const id = isSubmit ? null : param || null;
+        return await handlePackaged(request, url, db, id, isSubmit);
+      }
+
+      default:
+        return notFound();
     }
+  } catch (e) {
+    return serverErr(e);
   }
-
-  if (path === "" || path === "/") return handleRoot();
-
-  const foodsMatch = path.match(/^\/foods(?:\/([^/]+))?$/);
-  if (foodsMatch) return handleFoods(env, method, foodsMatch[1] || null, params, body);
-
-  const exchangeMatch = path.match(/^\/exchange(?:\/([^/]+))?$/);
-  if (exchangeMatch) return handleExchange(env, method, exchangeMatch[1] || null, params, body);
-
-  const renalMatch = path.match(/^\/renal(?:\/([^/]+))?$/);
-  if (renalMatch) return handleRenal(env, method, renalMatch[1] || null, params, body);
-
-  const formulasMatch = path.match(/^\/formulas(?:\/([^/]+))?$/);
-  if (formulasMatch) return handleFormulas(env, method, formulasMatch[1] || null, params, body);
-
-  if (path === "/packaged/submit") return handlePackaged(env, method, null, params, body, true);
-
-  const packagedMatch = path.match(/^\/packaged(?:\/([^/]+))?$/);
-  if (packagedMatch) return handlePackaged(env, method, packagedMatch[1] || null, params, body, false);
-
-  return err("Route not found", 404);
 }
 
-// ---------- entry point -------------------------------------
+// ─── WORKER ENTRY ────────────────────────────────────────────────────────────
 
 export default {
-  async fetch(req, env, ctx) {
+  async fetch(request, env) {
     try {
-      return await router(req, env);
+      return await router(request, env);
     } catch (e) {
-      return json({ status: "error", message: "Internal server error", detail: e.message }, 500);
+      return serverErr(e);
     }
   },
 };
