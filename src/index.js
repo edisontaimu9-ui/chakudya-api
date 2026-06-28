@@ -159,7 +159,7 @@ async function handleFoods(req, env, method, id, params, body) {
   if (!id) {
     if (method === "GET") {
       const filters = {};
-      if (params.search) filters.name = params.search;
+      if (params.search) filters.food_name = params.search;
       // category is an exact-ish filter
       const qp = { limit: parseIntParam(params.limit, 50), offset: parseIntParam(params.offset, 0) };
       if (params.search) qp.food_name = `ilike.*${params.search}*`;
