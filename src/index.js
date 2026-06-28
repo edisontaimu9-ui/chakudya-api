@@ -162,7 +162,7 @@ async function handleFoods(req, env, method, id, params, body) {
       if (params.search) filters.name = params.search;
       // category is an exact-ish filter
       const qp = { limit: parseIntParam(params.limit, 50), offset: parseIntParam(params.offset, 0) };
-      if (params.search) qp.name = `ilike.*${params.search}*`;
+      if (params.search) qp.food_name = `ilike.*${params.search}*`;
       if (params.category) qp.category = `eq.${params.category}`;
       const sb = supabase(env);
       const res = await sb.query(table, qp, { count: true });
