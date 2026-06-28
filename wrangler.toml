@@ -10,7 +10,7 @@ compatibility_date = "2024-01-01"
 
 # ── Replace with your actual Cloudflare account ID ────────────
 # Find it at: https://dash.cloudflare.com → right sidebar
-account_id = "YOUR_ACCOUNT_ID_HERE"
+account_id = "2d878c3281833694bc40ceecd6cf889f"
 
 # ── Secrets (DO NOT hardcode values here) ─────────────────────
 # Add via Cloudflare dashboard:
