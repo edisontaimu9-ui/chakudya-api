@@ -148,6 +148,18 @@ function supabase(env) {
       const res = await fetch(url, { method: "DELETE", headers });
       return { ok: res.ok, status: res.status };
     },
+
+    /** CALL a Postgres RPC function */
+    async rpc(fnName, params = {}) {
+      const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/rpc/${fnName}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(params),
+      });
+      const body = await res.json().catch(() => null);
+      return { ok: res.ok, status: res.status, body };
+    },
   };
 }
 
@@ -166,6 +178,110 @@ function intParam(url, key, fallback) {
   if (raw === null) return fallback;
   const n = parseInt(raw, 10);
   return isNaN(n) ? fallback : Math.max(0, n);
+}
+
+// ─── COHERE EMBEDDING ─────────────────────────────────────────────────────────
+
+async function embedText(text, env) {
+  const res = await fetch("https://api.cohere.com/v1/embed", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.COHERE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      texts: [text],
+      model: "embed-multilingual-v3.0",
+      input_type: "search_query",
+    }),
+  });
+
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(`Cohere embed failed: ${e.message || res.status}`);
+  }
+
+  const data = await res.json();
+  return data.embeddings[0]; // array of 1024 floats
+}
+
+// ─── RAG HANDLER ─────────────────────────────────────────────────────────────
+
+// POST /rag/retrieve  — semantic search
+// POST /rag/ingest    — add a document chunk to the knowledge base
+async function handleRAG(request, url, db, env, param) {
+  if (request.method !== "POST") return err("Method not allowed", 405);
+
+  const body = await parseBody(request);
+  if (!body) return err("Request body required");
+
+  // ── POST /rag/ingest ───────────────────────────────────────────────────────
+  if (param === "ingest") {
+    const { content, source, context = "both", metadata = {} } = body;
+    if (!content) return err("'content' is required");
+    if (!source)  return err("'source' is required");
+
+    let embedding;
+    try {
+      // Use search_document input type for ingestion
+      const res = await fetch("https://api.cohere.com/v1/embed", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.COHERE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          texts: [content],
+          model: "embed-multilingual-v3.0",
+          input_type: "search_document",
+        }),
+      });
+      const data = await res.json();
+      embedding = data.embeddings[0];
+    } catch (e) {
+      return err(`Embedding failed: ${e.message}`, 502);
+    }
+
+    const { ok, status, body: row } = await db.insert("rag_knowledge_base", {
+      content,
+      embedding: JSON.stringify(embedding),
+      source,
+      context,
+      metadata,
+    });
+
+    if (!ok) return err(row?.message || "Ingest failed", status);
+    return success(row, { message: "Document ingested into RAG knowledge base" });
+  }
+
+  // ── POST /rag/retrieve ─────────────────────────────────────────────────────
+  if (param === "retrieve" || !param) {
+    const { query, context = "both", top_k = 5 } = body;
+    if (!query) return err("'query' is required");
+
+    let queryEmbedding;
+    try {
+      queryEmbedding = await embedText(query, env);
+    } catch (e) {
+      return err(`Embedding failed: ${e.message}`, 502);
+    }
+
+    const { ok, status, body: chunks } = await db.rpc("match_documents", {
+      query_embedding: queryEmbedding,
+      match_count: Math.min(top_k, 20),
+      context_filter: context,
+    });
+
+    if (!ok) return err(chunks?.message || "RAG search failed", status);
+
+    return success(chunks, {
+      query,
+      context,
+      count: Array.isArray(chunks) ? chunks.length : 0,
+    });
+  }
+
+  return notFound("RAG route");
 }
 
 // ─── ROUTE HANDLERS ──────────────────────────────────────────────────────────
@@ -213,6 +329,10 @@ function handleRoot() {
         "PUT  /packaged/:id",
         "PATCH /packaged/:id",
         "DELETE /packaged/:id",
+      ],
+      rag: [
+        "POST /rag/retrieve  → semantic search (query, context, top_k)",
+        "POST /rag/ingest    → add document chunk (content, source, context)",
       ],
     },
   });
@@ -566,6 +686,13 @@ async function router(request, env) {
         const isSubmit = param === "submit";
         const id = isSubmit ? null : param || null;
         return await handlePackaged(request, url, db, id, isSubmit);
+      }
+
+      // ── /rag ─────────────────────────────────────────────────────────────────
+      case "rag": {
+        // POST /rag/retrieve  → semantic search
+        // POST /rag/ingest    → add document chunk
+        return await handleRAG(request, url, db, env, param || null);
       }
 
       default:
