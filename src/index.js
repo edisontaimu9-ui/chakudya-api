@@ -2,7 +2,7 @@
  * Chakudya API — Malawi's First Open Food & Nutrition Database
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
- * Author : Taimu Tech Solutions
+ * Author : Edison Taimu 
  * Version: 1.1.0
  *
  * v1.1.0 changes:
