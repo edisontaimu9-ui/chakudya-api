@@ -147,7 +147,7 @@ function routePolicy(resource, method, param) {
 
   // RAG ingest writes to the knowledge base AND costs a Cohere call — admin only.
   if (isRagIngest) {
-    return { auth: "admin", rate: { limit: 30, windowSeconds: 60, scope: "admin" } };
+    return { auth: "admin", rate: { limit: 300, windowSeconds: 60, scope: "admin" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
@@ -317,6 +317,13 @@ async function handleRAG(request, url, db, env, param) {
     if (!content) return err("'content' is required");
     if (!source) return err("'source' is required");
 
+    const VALID_CONTEXTS = ["clinical", "general", "both"];
+    if (!VALID_CONTEXTS.includes(context)) {
+      return err(
+        `'context' must be one of: ${VALID_CONTEXTS.join(", ")} (got "${context}")`
+      );
+    }
+
     let embedding;
     try {
       embedding = await embedText(content, env, "search_document");
@@ -341,6 +348,13 @@ async function handleRAG(request, url, db, env, param) {
     const { query, context = "both", top_k = 5 } = body;
     if (!query) return err("'query' is required");
 
+    const VALID_CONTEXTS = ["clinical", "general", "both"];
+    if (!VALID_CONTEXTS.includes(context)) {
+      return err(
+        `'context' must be one of: ${VALID_CONTEXTS.join(", ")} (got "${context}")`
+      );
+    }
+
     let queryEmbedding;
     try {
       queryEmbedding = await embedText(query, env, "search_query");
@@ -358,6 +372,7 @@ async function handleRAG(request, url, db, env, param) {
       query_embedding: queryEmbedding,
       match_count: Math.min(top_k, 20),
       context_filter: contextFilter,
+      query_text: query,
     });
 
     if (!ok) return err(chunks?.message || "RAG search failed", status);
@@ -748,13 +763,17 @@ async function router(request, env) {
       ? `admin:${getBearerToken(request) || "unknown"}`
       : `ip:${clientIp(request)}:${resource || "root"}`;
 
-  const allowed = await checkRateLimit(
-    env,
-    rateBucketKey,
-    policy.rate.limit,
-    policy.rate.windowSeconds
-  );
-  if (!allowed) return rateLimited(policy.rate.windowSeconds);
+  // Admin-authenticated requests are exempt from rate limiting — the admin
+  // key itself is the access control; volume caps only apply to public routes.
+  if (policy.auth !== "admin") {
+    const allowed = await checkRateLimit(
+      env,
+      rateBucketKey,
+      policy.rate.limit,
+      policy.rate.windowSeconds
+    );
+    if (!allowed) return rateLimited(policy.rate.windowSeconds);
+  }
 
   try {
     switch (resource) {
