@@ -18,6 +18,18 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # Or via Wrangler CLI:
 #   npx wrangler secret put SUPABASE_URL
 #   npx wrangler secret put SUPABASE_KEY
+#   npx wrangler secret put COHERE_API_KEY
+#   npx wrangler secret put ADMIN_API_KEY
+#   npx wrangler secret put FATSECRET_CONSUMER_KEY
+#   npx wrangler secret put FATSECRET_CONSUMER_SECRET
+#   npx wrangler secret put USDA_FDC_API_KEY
+#
+# FatSecret uses OAuth 1.0 (2-legged, HMAC-SHA1), signed natively in
+# index.js via Web Crypto — no token exchange, no IP whitelist required.
+#
+# USDA_FDC_API_KEY and the FatSecret secrets are optional: they only
+# power the external food lookup cascade (foods/lookup). The rest of
+# the API works without them.
 #
 # [vars] is for non-sensitive config only.
 # Secrets below are declared so wrangler knows they exist;

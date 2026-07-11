@@ -48,7 +48,13 @@ Set these in Cloudflare Worker settings:
 - `ADMIN_API_KEY` (required for admin write routes)
 - `RATE_LIMIT_KV` (KV namespace binding used for rate limiting)
 
+Optional — power the external food lookup cascade (`GET /foods/lookup`) only; the rest of the API works without them:
+
+- `FATSECRET_CONSUMER_KEY` / `FATSECRET_CONSUMER_SECRET` (OAuth 1.0 Consumer credentials, from your FatSecret Platform dashboard)
+- `USDA_FDC_API_KEY` (USDA FoodData Central — free at [api.data.gov/signup](https://api.data.gov/signup))
+
 > If `ADMIN_API_KEY` is missing, admin routes fail closed (writes denied).
+> FatSecret auth is OAuth 1.0 (2-legged, HMAC-SHA1), signed natively inside the Worker via Web Crypto — no token exchange call, no IP whitelist needed.
 
 ---
 
@@ -76,6 +82,14 @@ npx wrangler secret put SUPABASE_URL
 npx wrangler secret put SUPABASE_KEY
 npx wrangler secret put COHERE_API_KEY
 npx wrangler secret put ADMIN_API_KEY
+```
+
+Optional, for external food lookups:
+
+```bash
+npx wrangler secret put FATSECRET_CONSUMER_KEY
+npx wrangler secret put FATSECRET_CONSUMER_SECRET
+npx wrangler secret put USDA_FDC_API_KEY
 ```
 
 ### 4) Bind KV namespace
@@ -146,6 +160,11 @@ Query params for `GET /foods`:
 - `search` → maps to `food_name ilike`
 - `category`
 - `limit` (default `50`, capped at `100`)
+
+**`GET /foods/lookup`** — external cascade for foods not in the local database. Order: local cache → USDA FDC (name search) → Open Food Facts (barcode) → FatSecret (name search, OAuth 1.0). First external hit is cached into `external_foods_cache` so subsequent lookups skip the upstream calls. Public, rate-limited to 20 req/min per IP.
+
+- `search` → name search (tries USDA, then FatSecret)
+- `barcode` → barcode lookup (Open Food Facts)
 - `offset` (default `0`)
 
 ### Exchange

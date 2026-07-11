@@ -19,6 +19,7 @@
  *  - env.RATE_LIMIT_KV         (NEW — a KV namespace binding)
  *  - env.FATSECRET_CONSUMER_KEY    (OAuth 1.0 Consumer Key, from FatSecret dashboard)
  *  - env.FATSECRET_CONSUMER_SECRET (OAuth 1.0 Consumer Secret — do not commit)
+ *  - env.USDA_FDC_API_KEY          (optional — USDA FoodData Central lookup, get free at api.data.gov/signup)
  */
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
