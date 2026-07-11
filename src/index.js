@@ -235,6 +235,22 @@ function supabase(env) {
       return { ok, status, body: row };
     },
 
+    /**
+     * Upsert on a unique constraint — if a row with the same conflict-target
+     * columns already exists, it's updated instead of duplicated. Used for
+     * external_foods_cache, which has a UNIQUE (source, external_id) constraint.
+     */
+    async upsert(table, payload, conflictTarget) {
+      const url = `${base}/${table}?on_conflict=${encodeURIComponent(conflictTarget)}`;
+      const { ok, status, body } = await query(url, {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify(payload),
+      });
+      const row = Array.isArray(body) ? body[0] : body;
+      return { ok, status, body: row };
+    },
+
     async update(table, id, payload, method = "PATCH") {
       const url = buildUrl(table, { filters: { id: `eq.${id}` } });
       const { ok, status, body } = await query(url, {
@@ -316,12 +332,45 @@ async function embedText(text, env, inputType = "search_query") {
 // FatSecret (name search). First external hit gets cached into
 // external_foods_cache so subsequent lookups never re-call the API.
 
+/**
+ * Rule-based category fallback for external sources that don't return one
+ * (USDA in particular almost never does). Matches keywords against the food
+ * name — no API call, no added latency. Only used when the source's own
+ * category is missing; never overrides a real category.
+ */
+const CATEGORY_KEYWORDS = [
+  ["Protein", ["chicken", "beef", "pork", "turkey", "lamb", "goat", "fish", "salmon",
+    "tuna", "tilapia", "sardine", "shrimp", "prawn", "egg", "bacon", "sausage",
+    "wagyu", "steak", "meat", "poultry", "mince", "liver"]],
+  ["Dairy", ["milk", "cheese", "yogurt", "yoghurt", "butter", "cream", "whey"]],
+  ["Grains", ["rice", "maize", "wheat", "bread", "pasta", "oat", "cereal", "flour",
+    "cornmeal", "nsima", "noodle", "barley"]],
+  ["Legumes", ["bean", "soya", "soy", "lentil", "pea", "groundnut", "peanut", "chickpea"]],
+  ["Vegetables", ["tomato", "carrot", "spinach", "cabbage", "onion", "pepper", "broccoli",
+    "lettuce", "potato", "pumpkin", "okra", "cassava", "kale", "cucumber"]],
+  ["Fruits", ["apple", "banana", "orange", "mango", "pineapple", "grape", "papaya",
+    "avocado", "watermelon", "lemon", "guava", "berry"]],
+  ["Fats & Oils", ["oil", "margarine", "lard", "ghee", "truffle oil"]],
+  ["Beverages", ["juice", "soda", "beer", "wine", "gin", "cola", "tea", "coffee"]],
+  ["Sweets & Snacks", ["chocolate", "candy", "cake", "cookie", "biscuit", "sugar",
+    "marmalade", "jam", "sweet"]],
+  ["Nuts & Seeds", ["almond", "cashew", "walnut", "seed", "nut"]],
+];
+
+function classifyCategory(foodName) {
+  const name = (foodName || "").toLowerCase();
+  for (const [category, keywords] of CATEGORY_KEYWORDS) {
+    if (keywords.some((kw) => name.includes(kw))) return category;
+  }
+  return null;
+}
+
 function normalizeFood(source, raw) {
   // Produces the common shape stored in external_foods_cache and returned
   // to the client, regardless of which upstream API it came from.
   return {
     food_name: raw.food_name ?? "",
-    category: raw.category ?? null,
+    category: raw.category ?? classifyCategory(raw.food_name),
     energy_kcal: raw.energy_kcal ?? null,
     protein_g: raw.protein_g ?? null,
     fat_g: raw.fat_g ?? null,
@@ -603,7 +652,10 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
   if (!result) return null;
 
   // 4. Cache it so next time this is a step-2 hit, not a fresh API call.
-  const { ok, body } = await db.insert("external_foods_cache", result);
+  // Upsert on (source, external_id) — if this exact external food was already
+  // cached via a different query text, this updates that row instead of
+  // creating a duplicate.
+  const { ok, body } = await db.upsert("external_foods_cache", result, "source,external_id");
   return { food: ok ? body : result, source: result.source, cached: false, freshly_cached: ok };
 }
 
