@@ -496,7 +496,16 @@ async function fetchFromFatSecret(query, env) {
   const searchRes = await fetch(signedUrl);
   if (!searchRes.ok) return null;
   const data = await searchRes.json().catch(() => null);
-  const food = data?.foods?.food?.[0] ?? data?.foods?.food;
+  const rawFoods = data?.foods?.food;
+  const candidates = Array.isArray(rawFoods) ? rawFoods : rawFoods ? [rawFoods] : [];
+  if (!candidates.length) return null;
+
+  // Same relevance bar as USDA — FatSecret's search is just as loose
+  // (e.g. "Carlsberg Green" matching "Green Tomatoes" on the word "Green").
+  const RELEVANCE_THRESHOLD = 0.6;
+  const food = candidates.find(
+    (c) => wordOverlapScore(query, c.food_name) >= RELEVANCE_THRESHOLD
+  );
   if (!food) return null;
 
   // FatSecret's search endpoint returns a text description like
