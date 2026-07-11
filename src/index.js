@@ -333,16 +333,45 @@ function normalizeFood(source, raw) {
   };
 }
 
+/**
+ * Rejects USDA's tendency to return loosely-related fuzzy matches (e.g. a
+ * search for "Chibuku Shake Shake" returning "BURGER KING, Vanilla Shake"
+ * because both contain the word "Shake"). Requires most of the query's
+ * meaningful words to actually appear in the candidate's name.
+ */
+function wordOverlapScore(query, candidateName) {
+  const normalize = (s) =>
+    (s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
+
+  const queryWords = [...new Set(normalize(query))];
+  if (!queryWords.length) return 0;
+  const candidateWords = new Set(normalize(candidateName));
+  const matched = queryWords.filter((w) => candidateWords.has(w)).length;
+  return matched / queryWords.length;
+}
+
 async function fetchFromUSDA(query, env) {
   if (!env.USDA_FDC_API_KEY) return null;
   const url = `https://api.nal.usda.gov/fdc/v1/foods/search` +
     `?api_key=${env.USDA_FDC_API_KEY}` +
     `&query=${encodeURIComponent(query)}` +
-    `&pageSize=1&dataType=Foundation,SR%20Legacy`;
+    `&pageSize=5&dataType=Foundation,SR%20Legacy`;
   const res = await fetch(url);
   if (!res.ok) return null;
   const data = await res.json().catch(() => null);
-  const food = data?.foods?.[0];
+  const candidates = data?.foods ?? [];
+  if (!candidates.length) return null;
+
+  // USDA sorts by its own relevance score already; take the first candidate
+  // that also clears our own word-overlap bar, rather than blindly trusting #1.
+  const RELEVANCE_THRESHOLD = 0.6;
+  const food = candidates.find(
+    (c) => wordOverlapScore(query, c.description) >= RELEVANCE_THRESHOLD
+  );
   if (!food) return null;
 
   const getNutrient = (name) =>
