@@ -377,6 +377,17 @@ async function fetchFromUSDA(query, env) {
   const getNutrient = (name) =>
     food.foodNutrients?.find((n) => n.nutrientName === name)?.value ?? null;
 
+  // Keep only what's actually useful (micronutrients + provenance) instead of
+  // USDA's full ~100-field-per-nutrient payload — that bloats Supabase rows
+  // and nothing downstream reads the rest.
+  const trimmedNutrients = (food.foodNutrients ?? [])
+    .filter((n) => n.value != null && n.value !== 0)
+    .map((n) => ({
+      name: n.nutrientName,
+      value: n.value,
+      unit: n.unitName,
+    }));
+
   return normalizeFood("usda_fdc", {
     food_name: food.description,
     energy_kcal: getNutrient("Energy"),
@@ -384,7 +395,12 @@ async function fetchFromUSDA(query, env) {
     fat_g: getNutrient("Total lipid (fat)"),
     carbs_g: getNutrient("Carbohydrate, by difference"),
     external_id: String(food.fdcId),
-    raw_data: food,
+    raw_data: {
+      fdcId: food.fdcId,
+      dataType: food.dataType,
+      publishedDate: food.publishedDate,
+      nutrients: trimmedNutrients,
+    },
   });
 }
 
@@ -412,7 +428,21 @@ async function fetchFromOpenFoodFacts(barcode, env) {
     carbs_g: n["carbohydrates_100g"] ?? null,
     barcode,
     external_id: p.code,
-    raw_data: p,
+    raw_data: {
+      code: p.code,
+      brands: p.brands ?? null,
+      quantity: p.quantity ?? null,
+      nutriscore_grade: p.nutriscore_grade ?? null,
+      nova_group: p.nova_group ?? null,
+      ingredients_text: p.ingredients_text ?? null,
+      nutriments: {
+        sugars_100g: n["sugars_100g"] ?? null,
+        fiber_100g: n["fiber_100g"] ?? null,
+        salt_100g: n["salt_100g"] ?? null,
+        sodium_100g: n["sodium_100g"] ?? null,
+        "saturated-fat_100g": n["saturated-fat_100g"] ?? null,
+      },
+    },
   });
 }
 
@@ -524,7 +554,12 @@ async function fetchFromFatSecret(query, env) {
     carbs_g: grab("Carbs"),
     protein_g: grab("Protein"),
     external_id: food.food_id,
-    raw_data: food,
+    raw_data: {
+      food_id: food.food_id,
+      food_type: food.food_type ?? null,
+      food_description: food.food_description ?? null,
+      food_url: food.food_url ?? null,
+    },
   });
 }
 
