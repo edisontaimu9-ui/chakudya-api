@@ -323,6 +323,6 @@ curl -X POST "https://chakudya-api.<your-subdomain>.workers.dev/rag/retrieve" \
 
 ## Maintainer
 
-**Taimu Tech Solutions** · Edison Taimu  
+**Edison Taimu**
 Blantyre, Malawi  
 BSc Nutrition & Dietetics (KUHeS) · Self-taught Web Developer

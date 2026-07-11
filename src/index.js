@@ -19,7 +19,7 @@
  *  - env.RATE_LIMIT_KV         (NEW — a KV namespace binding)
  */
 
-// ─── CORS ────────────────────────────────────────────────────────────────────
+// ─── CORS ─────────────────────────────────────────────────────────────────────
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -76,7 +76,7 @@ function serverErr(e) {
   return err("Internal server error", 500);
 }
 
-// ─── AUTH ────────────────────────────────────────────────────────────────────
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 function getBearerToken(request) {
   const auth = request.headers.get("Authorization") || "";
@@ -276,7 +276,7 @@ function limitParam(url, fallback = 50, max = 100) {
   return Math.min(intParam(url, "limit", fallback), max);
 }
 
-// ─── COHERE EMBEDDING ─────────────────────────────────────────────────────────
+// ─── COHERE EMBEDDING ────────────────────────────────────────────────────────
 
 async function embedText(text, env, inputType = "search_query") {
   const res = await fetch("https://api.cohere.com/v1/embed", {
@@ -395,7 +395,7 @@ function handleRoot() {
     name: "Chakudya API",
     tagline: "Malawi's first open Food & Nutrition Database",
     version: "1.1.0",
-    maintainer: "Taimu Tech Solutions",
+    maintainer: "Edison Taimu",
     auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit and POST /rag/retrieve, which are public but rate-limited.",
     endpoints: {
       foods: [
@@ -442,7 +442,7 @@ function handleRoot() {
   });
 }
 
-// ── /foods ────────────────────────────────────────────────────────────────────
+// ── /foods ───────────────────────────────────────────────────────────────────
 
 async function handleFoods(request, url, db, id) {
   const method = request.method;
@@ -509,7 +509,7 @@ async function handleFoods(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /exchange ─────────────────────────────────────────────────────────────────
+// ── /exchange ────────────────────────────────────────────────────────────────
 
 async function handleExchange(request, url, db, id) {
   const method = request.method;
@@ -565,7 +565,7 @@ async function handleExchange(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /renal ────────────────────────────────────────────────────────────────────
+// ── /renal ───────────────────────────────────────────────────────────────────
 
 async function handleRenal(request, url, db, id) {
   const method = request.method;
@@ -613,7 +613,7 @@ async function handleRenal(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /formulas ─────────────────────────────────────────────────────────────────
+// ── /formulas ────────────────────────────────────────────────────────────────
 
 async function handleFormulas(request, url, db, id) {
   const method = request.method;
@@ -669,7 +669,7 @@ async function handleFormulas(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /packaged ─────────────────────────────────────────────────────────────────
+// ── /packaged ────────────────────────────────────────────────────────────────
 
 async function handlePackaged(request, url, db, id, isSubmit) {
   const method = request.method;
