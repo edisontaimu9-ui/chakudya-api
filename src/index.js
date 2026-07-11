@@ -17,6 +17,8 @@
  *  - env.COHERE_API_KEY        (existing)
  *  - env.ADMIN_API_KEY         (NEW — secret string, e.g. "chakudya_admin_xxx")
  *  - env.RATE_LIMIT_KV         (NEW — a KV namespace binding)
+ *  - env.FATSECRET_CONSUMER_KEY    (OAuth 1.0 Consumer Key, from FatSecret dashboard)
+ *  - env.FATSECRET_CONSUMER_SECRET (OAuth 1.0 Consumer Secret — do not commit)
  */
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
@@ -384,28 +386,84 @@ async function fetchFromOpenFoodFacts(barcode, env) {
   });
 }
 
-async function fetchFromFatSecret(query, env) {
-  // TODO: confirm auth flow against your FatSecret Premier plan before relying
-  // on this in production. This assumes OAuth 2.0 client-credentials grant,
-  // which is FatSecret Platform API's standard method as of this writing.
-  if (!env.FATSECRET_CLIENT_ID || !env.FATSECRET_CLIENT_SECRET) return null;
+// ─── FATSECRET OAUTH 1.0 SIGNING (HMAC-SHA1) ──────────────────────────────────
+// 2-legged OAuth 1.0 against FatSecret's classic REST endpoint. Cloudflare
+// Workers can sign natively via Web Crypto (crypto.subtle) — no proxy needed.
 
-  const tokenRes = await fetch("https://oauth.fatsecret.com/connect/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: "Basic " + btoa(`${env.FATSECRET_CLIENT_ID}:${env.FATSECRET_CLIENT_SECRET}`),
-    },
-    body: "grant_type=client_credentials&scope=basic",
-  });
-  if (!tokenRes.ok) return null;
-  const { access_token } = await tokenRes.json().catch(() => ({}));
-  if (!access_token) return null;
-
-  const searchRes = await fetch(
-    `https://platform.fatsecret.com/rest/foods/search/v1?search_expression=${encodeURIComponent(query)}&format=json`,
-    { headers: { Authorization: `Bearer ${access_token}` } }
+function percentEncode(str) {
+  return encodeURIComponent(str).replace(
+    /[!*'()]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
   );
+}
+
+function generateNonce(length = 32) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const randomValues = crypto.getRandomValues(new Uint8Array(length));
+  let nonce = "";
+  for (let i = 0; i < length; i++) nonce += chars[randomValues[i] % chars.length];
+  return nonce;
+}
+
+async function hmacSha1Base64(baseString, signingKey) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(signingKey),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(baseString));
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+
+/**
+ * Builds a fully OAuth 1.0-signed GET URL for FatSecret's server.api endpoint.
+ * `params` are the API-specific params (method, search_expression, format, etc).
+ */
+async function signFatSecretRequest(params, consumerKey, consumerSecret) {
+  const baseUrl = "https://platform.fatsecret.com/rest/server.api";
+
+  const oauthParams = {
+    oauth_consumer_key: consumerKey,
+    oauth_nonce: generateNonce(),
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: String(Math.floor(Date.now() / 1000)),
+    oauth_version: "1.0",
+    ...params,
+  };
+
+  const paramString = Object.keys(oauthParams)
+    .sort()
+    .map((k) => `${percentEncode(k)}=${percentEncode(String(oauthParams[k]))}`)
+    .join("&");
+
+  const baseString = ["GET", percentEncode(baseUrl), percentEncode(paramString)].join("&");
+
+  // 2-legged: no token secret, so the signing key ends in a bare "&"
+  const signingKey = `${percentEncode(consumerSecret)}&`;
+  oauthParams.oauth_signature = await hmacSha1Base64(baseString, signingKey);
+
+  const finalUrl = new URL(baseUrl);
+  for (const [k, v] of Object.entries(oauthParams)) {
+    finalUrl.searchParams.set(k, String(v));
+  }
+  return finalUrl.toString();
+}
+
+async function fetchFromFatSecret(query, env) {
+  // Uses OAuth 1.0 (2-legged, HMAC-SHA1) — no IP whitelist, no token
+  // exchange round-trip. The request is signed and sent in one shot.
+  if (!env.FATSECRET_CONSUMER_KEY || !env.FATSECRET_CONSUMER_SECRET) return null;
+
+  const signedUrl = await signFatSecretRequest(
+    { method: "foods.search", search_expression: query, format: "json" },
+    env.FATSECRET_CONSUMER_KEY,
+    env.FATSECRET_CONSUMER_SECRET
+  );
+
+  const searchRes = await fetch(signedUrl);
   if (!searchRes.ok) return null;
   const data = await searchRes.json().catch(() => null);
   const food = data?.foods?.food?.[0] ?? data?.foods?.food;
