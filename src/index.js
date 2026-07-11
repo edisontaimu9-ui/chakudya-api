@@ -19,7 +19,7 @@
  *  - env.RATE_LIMIT_KV         (NEW — a KV namespace binding)
  */
 
-// ─── CORS ─────────────────────────────────────────────────────────────────────
+// ─── CORS ────────────────────────────────────────────────────────────────────
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -76,7 +76,7 @@ function serverErr(e) {
   return err("Internal server error", 500);
 }
 
-// ─── AUTH ─────────────────────────────────────────────────────────────────────
+// ─── AUTH ────────────────────────────────────────────────────────────────────
 
 function getBearerToken(request) {
   const auth = request.headers.get("Authorization") || "";
@@ -134,6 +134,13 @@ function routePolicy(resource, method, param) {
   const isPackagedSubmit = resource === "packaged" && param === "submit" && method === "POST";
   const isRagRetrieve = resource === "rag" && (param === "retrieve" || !param) && method === "POST";
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
+  const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
+
+  // Foods lookup can trigger external API calls (USDA/OFF/FatSecret) — public
+  // but capped to protect those quotas, separate from plain local reads.
+  if (isFoodsLookup) {
+    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+  }
 
   // Community submissions: public, but tightly rate-limited to deter spam.
   if (isPackagedSubmit) {
@@ -276,7 +283,7 @@ function limitParam(url, fallback = 50, max = 100) {
   return Math.min(intParam(url, "limit", fallback), max);
 }
 
-// ─── COHERE EMBEDDING ────────────────────────────────────────────────────────
+// ─── COHERE EMBEDDING ─────────────────────────────────────────────────────────
 
 async function embedText(text, env, inputType = "search_query") {
   const res = await fetch("https://api.cohere.com/v1/embed", {
@@ -301,7 +308,174 @@ async function embedText(text, env, inputType = "search_query") {
   return data.embeddings[0];
 }
 
-// ─── RAG HANDLER ─────────────────────────────────────────────────────────────
+// ─── EXTERNAL FOOD LOOKUP (USDA FDC / Open Food Facts / FatSecret) ────────────
+// Cascade: local cache -> USDA (name search) -> Open Food Facts (barcode) ->
+// FatSecret (name search). First external hit gets cached into
+// external_foods_cache so subsequent lookups never re-call the API.
+
+function normalizeFood(source, raw) {
+  // Produces the common shape stored in external_foods_cache and returned
+  // to the client, regardless of which upstream API it came from.
+  return {
+    food_name: raw.food_name ?? "",
+    category: raw.category ?? null,
+    energy_kcal: raw.energy_kcal ?? null,
+    protein_g: raw.protein_g ?? null,
+    fat_g: raw.fat_g ?? null,
+    carbs_g: raw.carbs_g ?? null,
+    barcode: raw.barcode ?? null,
+    source,
+    external_id: raw.external_id ?? null,
+    raw_data: raw.raw_data ?? null,
+  };
+}
+
+async function fetchFromUSDA(query, env) {
+  if (!env.USDA_FDC_API_KEY) return null;
+  const url = `https://api.nal.usda.gov/fdc/v1/foods/search` +
+    `?api_key=${env.USDA_FDC_API_KEY}` +
+    `&query=${encodeURIComponent(query)}` +
+    `&pageSize=1&dataType=Foundation,SR%20Legacy`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  const food = data?.foods?.[0];
+  if (!food) return null;
+
+  const getNutrient = (name) =>
+    food.foodNutrients?.find((n) => n.nutrientName === name)?.value ?? null;
+
+  return normalizeFood("usda_fdc", {
+    food_name: food.description,
+    energy_kcal: getNutrient("Energy"),
+    protein_g: getNutrient("Protein"),
+    fat_g: getNutrient("Total lipid (fat)"),
+    carbs_g: getNutrient("Carbohydrate, by difference"),
+    external_id: String(food.fdcId),
+    raw_data: food,
+  });
+}
+
+async function fetchFromOpenFoodFacts(barcode, env) {
+  if (!barcode) return null;
+  const url = `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json`;
+  const res = await fetch(url, {
+    headers: {
+      // Required by Open Food Facts terms of use — identify your app.
+      "User-Agent": "ChakudyaAPI/1.0 (chakudya-api.edisontaimu9.workers.dev)",
+    },
+  });
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  if (data?.status !== 1 || !data.product) return null;
+  const p = data.product;
+  const n = p.nutriments || {};
+
+  return normalizeFood("openfoodfacts", {
+    food_name: p.product_name || p.generic_name || "Unknown product",
+    category: p.categories?.split(",")[0]?.trim() ?? null,
+    energy_kcal: n["energy-kcal_100g"] ?? null,
+    protein_g: n["proteins_100g"] ?? null,
+    fat_g: n["fat_100g"] ?? null,
+    carbs_g: n["carbohydrates_100g"] ?? null,
+    barcode,
+    external_id: p.code,
+    raw_data: p,
+  });
+}
+
+async function fetchFromFatSecret(query, env) {
+  // TODO: confirm auth flow against your FatSecret Premier plan before relying
+  // on this in production. This assumes OAuth 2.0 client-credentials grant,
+  // which is FatSecret Platform API's standard method as of this writing.
+  if (!env.FATSECRET_CLIENT_ID || !env.FATSECRET_CLIENT_SECRET) return null;
+
+  const tokenRes = await fetch("https://oauth.fatsecret.com/connect/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: "Basic " + btoa(`${env.FATSECRET_CLIENT_ID}:${env.FATSECRET_CLIENT_SECRET}`),
+    },
+    body: "grant_type=client_credentials&scope=basic",
+  });
+  if (!tokenRes.ok) return null;
+  const { access_token } = await tokenRes.json().catch(() => ({}));
+  if (!access_token) return null;
+
+  const searchRes = await fetch(
+    `https://platform.fatsecret.com/rest/foods/search/v1?search_expression=${encodeURIComponent(query)}&format=json`,
+    { headers: { Authorization: `Bearer ${access_token}` } }
+  );
+  if (!searchRes.ok) return null;
+  const data = await searchRes.json().catch(() => null);
+  const food = data?.foods?.food?.[0] ?? data?.foods?.food;
+  if (!food) return null;
+
+  // FatSecret's search endpoint returns a text description like
+  // "Per 100g - Calories: 52kcal | Fat: 0.17g | Carbs: 13.81g | Protein: 0.26g"
+  // rather than structured fields — parse it best-effort.
+  const desc = food.food_description || "";
+  const grab = (label) => {
+    const m = desc.match(new RegExp(`${label}:\\s*([\\d.]+)`));
+    return m ? parseFloat(m[1]) : null;
+  };
+
+  return normalizeFood("fatsecret", {
+    food_name: food.food_name,
+    energy_kcal: grab("Calories"),
+    fat_g: grab("Fat"),
+    carbs_g: grab("Carbs"),
+    protein_g: grab("Protein"),
+    external_id: food.food_id,
+    raw_data: food,
+  });
+}
+
+async function lookupFoodCascade(db, { query, barcode }, env) {
+  // 1. Local curated data
+  if (query) {
+    const local = await db.select("foods", {
+      filters: { food_name: `ilike.*${query}*` },
+      limit: 1,
+    });
+    if (local.ok && local.body?.[0]) {
+      return { food: local.body[0], source: "local", cached: false };
+    }
+  }
+  if (barcode) {
+    const localPackaged = await db.select("packaged_foods", {
+      filters: { barcode: `eq.${barcode}`, status: "eq.approved" },
+      limit: 1,
+    });
+    if (localPackaged.ok && localPackaged.body?.[0]) {
+      return { food: localPackaged.body[0], source: "local_packaged", cached: false };
+    }
+  }
+
+  // 2. Previously-cached external results
+  const cacheFilters = {};
+  if (barcode) cacheFilters.barcode = `eq.${barcode}`;
+  else if (query) cacheFilters.food_name = `ilike.*${query}*`;
+  const cached = await db.select("external_foods_cache", { filters: cacheFilters, limit: 1 });
+  if (cached.ok && cached.body?.[0]) {
+    return { food: cached.body[0], source: cached.body[0].source, cached: true };
+  }
+
+  // 3. External APIs, in order. Barcode lookups go to Open Food Facts first
+  // since that's what it's built for; name searches go USDA -> FatSecret.
+  let result = null;
+  if (barcode) result = await fetchFromOpenFoodFacts(barcode, env);
+  if (!result && query) result = await fetchFromUSDA(query, env);
+  if (!result && query) result = await fetchFromFatSecret(query, env);
+
+  if (!result) return null;
+
+  // 4. Cache it so next time this is a step-2 hit, not a fresh API call.
+  const { ok, body } = await db.insert("external_foods_cache", result);
+  return { food: ok ? body : result, source: result.source, cached: false, freshly_cached: ok };
+}
+
+
 
 // POST /rag/retrieve  — semantic search
 // POST /rag/ingest    — add a document chunk to the knowledge base
@@ -395,7 +569,7 @@ function handleRoot() {
     name: "Chakudya API",
     tagline: "Malawi's first open Food & Nutrition Database",
     version: "1.1.0",
-    maintainer: "Edison Taimu",
+    maintainer: "Taimu Tech Solutions",
     auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit and POST /rag/retrieve, which are public but rate-limited.",
     endpoints: {
       foods: [
@@ -442,7 +616,33 @@ function handleRoot() {
   });
 }
 
-// ── /foods ───────────────────────────────────────────────────────────────────
+// ── /foods ────────────────────────────────────────────────────────────────────
+
+// GET /foods/lookup?q=banana
+// GET /foods/lookup?barcode=6007048001598
+// Checks local data first, then previously-cached external results, then
+// falls through to USDA FDC / Open Food Facts / FatSecret and caches
+// whatever it finds so the next lookup for the same food is a local hit.
+async function handleFoodsLookup(request, url, db, env) {
+  if (request.method !== "GET") return err("Only GET is supported for lookup", 405);
+
+  const query = url.searchParams.get("q") || "";
+  const barcode = url.searchParams.get("barcode") || "";
+  if (!query && !barcode) return err("Provide 'q' (food name) or 'barcode'");
+
+  const result = await lookupFoodCascade(db, { query, barcode }, env);
+  if (!result) {
+    return json(
+      { status: "not_found", message: "No match in local data or any external source" },
+      404
+    );
+  }
+  return success(result.food, {
+    source: result.source,
+    cached: result.cached,
+    freshly_cached: !!result.freshly_cached,
+  });
+}
 
 async function handleFoods(request, url, db, id) {
   const method = request.method;
@@ -509,7 +709,7 @@ async function handleFoods(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /exchange ────────────────────────────────────────────────────────────────
+// ── /exchange ─────────────────────────────────────────────────────────────────
 
 async function handleExchange(request, url, db, id) {
   const method = request.method;
@@ -565,7 +765,7 @@ async function handleExchange(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /renal ───────────────────────────────────────────────────────────────────
+// ── /renal ────────────────────────────────────────────────────────────────────
 
 async function handleRenal(request, url, db, id) {
   const method = request.method;
@@ -613,7 +813,7 @@ async function handleRenal(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /formulas ────────────────────────────────────────────────────────────────
+// ── /formulas ─────────────────────────────────────────────────────────────────
 
 async function handleFormulas(request, url, db, id) {
   const method = request.method;
@@ -669,7 +869,7 @@ async function handleFormulas(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
-// ── /packaged ────────────────────────────────────────────────────────────────
+// ── /packaged ─────────────────────────────────────────────────────────────────
 
 async function handlePackaged(request, url, db, id, isSubmit) {
   const method = request.method;
@@ -778,6 +978,9 @@ async function router(request, env) {
   try {
     switch (resource) {
       case "foods": {
+        if (param === "lookup") {
+          return await handleFoodsLookup(request, url, db, env);
+        }
         const id = param || null;
         return await handleFoods(request, url, db, id);
       }
