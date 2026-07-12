@@ -1,5 +1,5 @@
 /**
- * Chakudya API — Malawi's First Open Food & Nutrition Database
+ * Chakudya Nutrition Registry (CNR) — Malawi's First Open Food & Nutrition Database
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
@@ -173,9 +173,10 @@ function routePolicy(resource, method, param) {
 
 function supabase(env) {
   const base = env.SUPABASE_URL.replace(/\/$/, "") + "/rest/v1";
+  const apiKey = (env.SUPABASE_KEY || "").trim();
   const headers = {
-    apikey: env.SUPABASE_KEY,
-    Authorization: `Bearer ${env.SUPABASE_KEY}`,
+    apikey: apiKey,
+    Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
     Prefer: "return=representation",
   };
@@ -191,7 +192,11 @@ function supabase(env) {
   }
 
   async function query(url, options = {}) {
-    const res = await fetch(url, { headers: { ...headers, ...options.headers }, ...options });
+    const { headers: extraHeaders, ...restOptions } = options;
+    const res = await fetch(url, {
+      ...restOptions,
+      headers: { ...headers, ...extraHeaders },
+    });
     const body = await res.json().catch(() => null);
     return { ok: res.ok, status: res.status, body };
   }
@@ -229,6 +234,22 @@ function supabase(env) {
       const url = `${base}/${table}`;
       const { ok, status, body } = await query(url, {
         method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const row = Array.isArray(body) ? body[0] : body;
+      return { ok, status, body: row };
+    },
+
+    /**
+     * Upsert on a unique constraint — if a row with the same conflict-target
+     * columns already exists, it's updated instead of duplicated. Used for
+     * external_foods_cache, which has a UNIQUE (source, external_id) constraint.
+     */
+    async upsert(table, payload, conflictTarget) {
+      const url = `${base}/${table}?on_conflict=${encodeURIComponent(conflictTarget)}`;
+      const { ok, status, body } = await query(url, {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=representation" },
         body: JSON.stringify(payload),
       });
       const row = Array.isArray(body) ? body[0] : body;
@@ -316,12 +337,45 @@ async function embedText(text, env, inputType = "search_query") {
 // FatSecret (name search). First external hit gets cached into
 // external_foods_cache so subsequent lookups never re-call the API.
 
+/**
+ * Rule-based category fallback for external sources that don't return one
+ * (USDA in particular almost never does). Matches keywords against the food
+ * name — no API call, no added latency. Only used when the source's own
+ * category is missing; never overrides a real category.
+ */
+const CATEGORY_KEYWORDS = [
+  ["Protein", ["chicken", "beef", "pork", "turkey", "lamb", "goat", "fish", "salmon",
+    "tuna", "tilapia", "sardine", "shrimp", "prawn", "egg", "bacon", "sausage",
+    "wagyu", "steak", "meat", "poultry", "mince", "liver"]],
+  ["Dairy", ["milk", "cheese", "yogurt", "yoghurt", "butter", "cream", "whey"]],
+  ["Grains", ["rice", "maize", "wheat", "bread", "pasta", "oat", "cereal", "flour",
+    "cornmeal", "nsima", "noodle", "barley"]],
+  ["Legumes", ["bean", "soya", "soy", "lentil", "pea", "groundnut", "peanut", "chickpea"]],
+  ["Vegetables", ["tomato", "carrot", "spinach", "cabbage", "onion", "pepper", "broccoli",
+    "lettuce", "potato", "pumpkin", "okra", "cassava", "kale", "cucumber"]],
+  ["Fruits", ["apple", "banana", "orange", "mango", "pineapple", "grape", "papaya",
+    "avocado", "watermelon", "lemon", "guava", "berry"]],
+  ["Fats & Oils", ["oil", "margarine", "lard", "ghee", "truffle oil"]],
+  ["Beverages", ["juice", "soda", "beer", "wine", "gin", "cola", "tea", "coffee"]],
+  ["Sweets & Snacks", ["chocolate", "candy", "cake", "cookie", "biscuit", "sugar",
+    "marmalade", "jam", "sweet"]],
+  ["Nuts & Seeds", ["almond", "cashew", "walnut", "seed", "nut"]],
+];
+
+function classifyCategory(foodName) {
+  const name = (foodName || "").toLowerCase();
+  for (const [category, keywords] of CATEGORY_KEYWORDS) {
+    if (keywords.some((kw) => name.includes(kw))) return category;
+  }
+  return null;
+}
+
 function normalizeFood(source, raw) {
   // Produces the common shape stored in external_foods_cache and returned
   // to the client, regardless of which upstream API it came from.
   return {
     food_name: raw.food_name ?? "",
-    category: raw.category ?? null,
+    category: raw.category ?? classifyCategory(raw.food_name),
     energy_kcal: raw.energy_kcal ?? null,
     protein_g: raw.protein_g ?? null,
     fat_g: raw.fat_g ?? null,
@@ -333,20 +387,60 @@ function normalizeFood(source, raw) {
   };
 }
 
+/**
+ * Rejects USDA's tendency to return loosely-related fuzzy matches (e.g. a
+ * search for "Chibuku Shake Shake" returning "BURGER KING, Vanilla Shake"
+ * because both contain the word "Shake"). Requires most of the query's
+ * meaningful words to actually appear in the candidate's name.
+ */
+function wordOverlapScore(query, candidateName) {
+  const normalize = (s) =>
+    (s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
+
+  const queryWords = [...new Set(normalize(query))];
+  if (!queryWords.length) return 0;
+  const candidateWords = new Set(normalize(candidateName));
+  const matched = queryWords.filter((w) => candidateWords.has(w)).length;
+  return matched / queryWords.length;
+}
+
 async function fetchFromUSDA(query, env) {
   if (!env.USDA_FDC_API_KEY) return null;
   const url = `https://api.nal.usda.gov/fdc/v1/foods/search` +
     `?api_key=${env.USDA_FDC_API_KEY}` +
     `&query=${encodeURIComponent(query)}` +
-    `&pageSize=1&dataType=Foundation,SR%20Legacy`;
+    `&pageSize=5&dataType=Foundation,SR%20Legacy`;
   const res = await fetch(url);
   if (!res.ok) return null;
   const data = await res.json().catch(() => null);
-  const food = data?.foods?.[0];
+  const candidates = data?.foods ?? [];
+  if (!candidates.length) return null;
+
+  // USDA sorts by its own relevance score already; take the first candidate
+  // that also clears our own word-overlap bar, rather than blindly trusting #1.
+  const RELEVANCE_THRESHOLD = 0.6;
+  const food = candidates.find(
+    (c) => wordOverlapScore(query, c.description) >= RELEVANCE_THRESHOLD
+  );
   if (!food) return null;
 
   const getNutrient = (name) =>
     food.foodNutrients?.find((n) => n.nutrientName === name)?.value ?? null;
+
+  // Keep only what's actually useful (micronutrients + provenance) instead of
+  // USDA's full ~100-field-per-nutrient payload — that bloats Supabase rows
+  // and nothing downstream reads the rest.
+  const trimmedNutrients = (food.foodNutrients ?? [])
+    .filter((n) => n.value != null && n.value !== 0)
+    .map((n) => ({
+      name: n.nutrientName,
+      value: n.value,
+      unit: n.unitName,
+    }));
 
   return normalizeFood("usda_fdc", {
     food_name: food.description,
@@ -355,7 +449,12 @@ async function fetchFromUSDA(query, env) {
     fat_g: getNutrient("Total lipid (fat)"),
     carbs_g: getNutrient("Carbohydrate, by difference"),
     external_id: String(food.fdcId),
-    raw_data: food,
+    raw_data: {
+      fdcId: food.fdcId,
+      dataType: food.dataType,
+      publishedDate: food.publishedDate,
+      nutrients: trimmedNutrients,
+    },
   });
 }
 
@@ -383,7 +482,21 @@ async function fetchFromOpenFoodFacts(barcode, env) {
     carbs_g: n["carbohydrates_100g"] ?? null,
     barcode,
     external_id: p.code,
-    raw_data: p,
+    raw_data: {
+      code: p.code,
+      brands: p.brands ?? null,
+      quantity: p.quantity ?? null,
+      nutriscore_grade: p.nutriscore_grade ?? null,
+      nova_group: p.nova_group ?? null,
+      ingredients_text: p.ingredients_text ?? null,
+      nutriments: {
+        sugars_100g: n["sugars_100g"] ?? null,
+        fiber_100g: n["fiber_100g"] ?? null,
+        salt_100g: n["salt_100g"] ?? null,
+        sodium_100g: n["sodium_100g"] ?? null,
+        "saturated-fat_100g": n["saturated-fat_100g"] ?? null,
+      },
+    },
   });
 }
 
@@ -467,7 +580,16 @@ async function fetchFromFatSecret(query, env) {
   const searchRes = await fetch(signedUrl);
   if (!searchRes.ok) return null;
   const data = await searchRes.json().catch(() => null);
-  const food = data?.foods?.food?.[0] ?? data?.foods?.food;
+  const rawFoods = data?.foods?.food;
+  const candidates = Array.isArray(rawFoods) ? rawFoods : rawFoods ? [rawFoods] : [];
+  if (!candidates.length) return null;
+
+  // Same relevance bar as USDA — FatSecret's search is just as loose
+  // (e.g. "Carlsberg Green" matching "Green Tomatoes" on the word "Green").
+  const RELEVANCE_THRESHOLD = 0.6;
+  const food = candidates.find(
+    (c) => wordOverlapScore(query, c.food_name) >= RELEVANCE_THRESHOLD
+  );
   if (!food) return null;
 
   // FatSecret's search endpoint returns a text description like
@@ -486,7 +608,12 @@ async function fetchFromFatSecret(query, env) {
     carbs_g: grab("Carbs"),
     protein_g: grab("Protein"),
     external_id: food.food_id,
-    raw_data: food,
+    raw_data: {
+      food_id: food.food_id,
+      food_type: food.food_type ?? null,
+      food_description: food.food_description ?? null,
+      food_url: food.food_url ?? null,
+    },
   });
 }
 
@@ -530,8 +657,19 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
   if (!result) return null;
 
   // 4. Cache it so next time this is a step-2 hit, not a fresh API call.
-  const { ok, body } = await db.insert("external_foods_cache", result);
-  return { food: ok ? body : result, source: result.source, cached: false, freshly_cached: ok };
+  // Upsert on (source, external_id) — if this exact external food was already
+  // cached via a different query text, this updates that row instead of
+  // creating a duplicate.
+  const { ok, status, body } = await db.upsert("external_foods_cache", result, "source,external_id");
+  if (!ok) {
+    console.error("external_foods_cache upsert failed", { status, body, result });
+  }
+  return {
+    food: ok ? body : result,
+    source: result.source,
+    cached: false,
+    freshly_cached: ok,
+  };
 }
 
 
@@ -625,7 +763,7 @@ async function handleRAG(request, url, db, env, param) {
 // GET /
 function handleRoot() {
   return success({
-    name: "Chakudya API",
+    name: "Chakudya Nutrition Registry (CNR)",
     tagline: "Malawi's first open Food & Nutrition Database",
     version: "1.1.0",
     maintainer: "Taimu Tech Solutions",

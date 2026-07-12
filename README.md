@@ -1,4 +1,4 @@
-# Chakudya API 🌽
+# Chakudya Nutrition Registry (CNR) 🌽
 
 **Malawi’s first open Food & Nutrition Database**
 
@@ -6,7 +6,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 
 ---
 
-## What’s in this API
+## What’s in CNR
 
 - Food composition data (`/foods`)
 - Exchange lists (`/exchange`)
@@ -23,7 +23,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current API version:** `1.1.0`
+- **Current CNR version:** `1.1.0`
 
 ---
 
@@ -48,7 +48,7 @@ Set these in Cloudflare Worker settings:
 - `ADMIN_API_KEY` (required for admin write routes)
 - `RATE_LIMIT_KV` (KV namespace binding used for rate limiting)
 
-Optional — power the external food lookup cascade (`GET /foods/lookup`) only; the rest of the API works without them:
+Optional — power the external food lookup cascade (`GET /foods/lookup`) only; the rest of CNR works without them:
 
 - `FATSECRET_CONSUMER_KEY` / `FATSECRET_CONSUMER_SECRET` (OAuth 1.0 Consumer credentials, from your FatSecret Platform dashboard)
 - `USDA_FDC_API_KEY` (USDA FoodData Central — free at [api.data.gov/signup](https://api.data.gov/signup))
@@ -144,7 +144,7 @@ When exceeded:
 
 ### Root
 
-- `GET /` — returns API metadata, version, auth summary, and endpoint map
+- `GET /` — returns CNR metadata, version, auth summary, and endpoint map
 
 ### Foods
 
