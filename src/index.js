@@ -173,13 +173,6 @@ function routePolicy(resource, method, param) {
 
 function supabase(env) {
   const base = env.SUPABASE_URL.replace(/\/$/, "") + "/rest/v1";
-  // Diagnostic only — confirms whether the secret is actually bound at
-  // runtime, without ever logging its value. Remove once the 401 is fixed.
-  console.log("SUPABASE_KEY diagnostic", {
-    present: typeof env.SUPABASE_KEY === "string",
-    length: typeof env.SUPABASE_KEY === "string" ? env.SUPABASE_KEY.length : 0,
-    supabaseUrlPresent: typeof env.SUPABASE_URL === "string" && env.SUPABASE_URL.length > 0,
-  });
   const headers = {
     apikey: env.SUPABASE_KEY,
     Authorization: `Bearer ${env.SUPABASE_KEY}`,
@@ -1148,6 +1141,24 @@ async function router(request, env) {
   // GET /
   if (pathname === "/" && request.method === "GET") {
     return handleRoot();
+  }
+
+  // TEMPORARY debug route — admin-gated, remove once the SUPABASE_KEY
+  // 401 issue is resolved. Never logs/returns the actual secret value.
+  if (pathname === "/debug/env" && request.method === "GET") {
+    if (!isAdmin(request, env)) return unauthorized();
+    return json({
+      SUPABASE_URL: {
+        present: typeof env.SUPABASE_URL === "string",
+        length: typeof env.SUPABASE_URL === "string" ? env.SUPABASE_URL.length : 0,
+        startsWithHttps: typeof env.SUPABASE_URL === "string" && env.SUPABASE_URL.startsWith("https://"),
+      },
+      SUPABASE_KEY: {
+        present: typeof env.SUPABASE_KEY === "string",
+        length: typeof env.SUPABASE_KEY === "string" ? env.SUPABASE_KEY.length : 0,
+      },
+      ADMIN_API_KEY: { present: typeof env.ADMIN_API_KEY === "string" },
+    });
   }
 
   const [resource, param] = segments;
