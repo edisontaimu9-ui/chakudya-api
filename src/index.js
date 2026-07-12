@@ -594,25 +594,50 @@ async function fetchFromFatSecret(query, env) {
 
   // FatSecret's search endpoint returns a text description like
   // "Per 100g - Calories: 52kcal | Fat: 0.17g | Carbs: 13.81g | Protein: 0.26g"
-  // rather than structured fields — parse it best-effort.
+  // for generic foods, but branded items are often something like
+  // "Per 1 bar (45g) - Calories: 230kcal | ..." — NOT per 100g. Blindly
+  // storing these as if they were per-100g silently corrupts every
+  // downstream calculation (portions, exchange lists, PES). We extract the
+  // actual gram/ml basis and scale everything to per-100g before caching.
   const desc = food.food_description || "";
   const grab = (label) => {
     const m = desc.match(new RegExp(`${label}:\\s*([\\d.]+)`));
     return m ? parseFloat(m[1]) : null;
   };
 
+  // Try "Per 100g" / "Per 250ml" (no parens) first, then fall back to a
+  // parenthetical gram/ml weight, e.g. "Per 1 bar (45g)".
+  const extractServingBasis = (text) => {
+    let m = text.match(/Per\s+([\d.]+)\s*(g|ml)\b/i);
+    if (m) return { amount: parseFloat(m[1]), unit: m[2].toLowerCase() };
+    m = text.match(/\(([\d.]+)\s*(g|ml)\)/i);
+    if (m) return { amount: parseFloat(m[1]), unit: m[2].toLowerCase() };
+    return null;
+  };
+
+  const basis = extractServingBasis(desc);
+  // No determinable gram/ml basis (e.g. "Per 1 cup" with no weight given) —
+  // discard rather than cache a value we can't trust the scale of.
+  if (!basis || !basis.amount) return null;
+
+  const scale = 100 / basis.amount;
+  const round2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
+  const scaleVal = (n) => (n == null ? null : round2(n * scale));
+
   return normalizeFood("fatsecret", {
     food_name: food.food_name,
-    energy_kcal: grab("Calories"),
-    fat_g: grab("Fat"),
-    carbs_g: grab("Carbs"),
-    protein_g: grab("Protein"),
+    energy_kcal: scaleVal(grab("Calories")),
+    fat_g: scaleVal(grab("Fat")),
+    carbs_g: scaleVal(grab("Carbs")),
+    protein_g: scaleVal(grab("Protein")),
     external_id: food.food_id,
     raw_data: {
       food_id: food.food_id,
       food_type: food.food_type ?? null,
       food_description: food.food_description ?? null,
       food_url: food.food_url ?? null,
+      serving_basis: `${basis.amount}${basis.unit}`,
+      scaled_to_100: basis.amount !== 100,
     },
   });
 }
