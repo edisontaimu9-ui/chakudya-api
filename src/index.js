@@ -173,9 +173,10 @@ function routePolicy(resource, method, param) {
 
 function supabase(env) {
   const base = env.SUPABASE_URL.replace(/\/$/, "") + "/rest/v1";
+  const apiKey = (env.SUPABASE_KEY || "").trim();
   const headers = {
-    apikey: env.SUPABASE_KEY,
-    Authorization: `Bearer ${env.SUPABASE_KEY}`,
+    apikey: apiKey,
+    Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
     Prefer: "return=representation",
   };
@@ -191,7 +192,11 @@ function supabase(env) {
   }
 
   async function query(url, options = {}) {
-    const res = await fetch(url, { headers: { ...headers, ...options.headers }, ...options });
+    const { headers: extraHeaders, ...restOptions } = options;
+    const res = await fetch(url, {
+      ...restOptions,
+      headers: { ...headers, ...extraHeaders },
+    });
     const body = await res.json().catch(() => null);
     return { ok: res.ok, status: res.status, body };
   }
@@ -664,7 +669,6 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
     source: result.source,
     cached: false,
     freshly_cached: ok,
-    cache_error: ok ? undefined : { status, body },
   };
 }
 
@@ -834,7 +838,6 @@ async function handleFoodsLookup(request, url, db, env) {
     source: result.source,
     cached: result.cached,
     freshly_cached: !!result.freshly_cached,
-    ...(result.cache_error ? { cache_error: result.cache_error } : {}),
   });
 }
 
@@ -1141,24 +1144,6 @@ async function router(request, env) {
   // GET /
   if (pathname === "/" && request.method === "GET") {
     return handleRoot();
-  }
-
-  // TEMPORARY debug route — admin-gated, remove once the SUPABASE_KEY
-  // 401 issue is resolved. Never logs/returns the actual secret value.
-  if (pathname === "/debug/env" && request.method === "GET") {
-    if (!isAdmin(request, env)) return unauthorized();
-    return json({
-      SUPABASE_URL: {
-        present: typeof env.SUPABASE_URL === "string",
-        length: typeof env.SUPABASE_URL === "string" ? env.SUPABASE_URL.length : 0,
-        startsWithHttps: typeof env.SUPABASE_URL === "string" && env.SUPABASE_URL.startsWith("https://"),
-      },
-      SUPABASE_KEY: {
-        present: typeof env.SUPABASE_KEY === "string",
-        length: typeof env.SUPABASE_KEY === "string" ? env.SUPABASE_KEY.length : 0,
-      },
-      ADMIN_API_KEY: { present: typeof env.ADMIN_API_KEY === "string" },
-    });
   }
 
   const [resource, param] = segments;
