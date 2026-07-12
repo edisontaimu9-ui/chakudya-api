@@ -648,6 +648,26 @@ async function fetchFromFatSecret(query, env) {
   });
 }
 
+// Local `foods`/`packaged_foods` rows don't share the external cascade's
+// column names (e.g. local uses `kcal` + `measure` + `weight_g`, external
+// uses `energy_kcal` + `barcode` + `source` + `external_id`). Rather than
+// altering the DB schema — which risks breaking RAG ingestion or any other
+// consumer of the existing columns — we normalize the API *response* only.
+// Every original field is preserved untouched; only fields that would
+// otherwise be missing get filled in, so nothing that already reads `kcal`
+// or `measure` breaks, but a client can now also always rely on
+// `energy_kcal`, `barcode`, `source`, and `external_id` being present
+// regardless of which layer of the cascade answered.
+function withExternalShape(row, source) {
+  return {
+    ...row,
+    energy_kcal: row.energy_kcal ?? row.kcal ?? null,
+    barcode: row.barcode ?? null,
+    source: row.source ?? source,
+    external_id: row.external_id ?? null,
+  };
+}
+
 async function lookupFoodCascade(db, { query, barcode }, env) {
   // 1. Local curated data
   if (query) {
@@ -656,7 +676,7 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
       limit: 1,
     });
     if (local.ok && local.body?.[0]) {
-      return { food: local.body[0], source: "local", cached: false };
+      return { food: withExternalShape(local.body[0], "local"), source: "local", cached: false };
     }
   }
   if (barcode) {
@@ -665,7 +685,11 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
       limit: 1,
     });
     if (localPackaged.ok && localPackaged.body?.[0]) {
-      return { food: localPackaged.body[0], source: "local_packaged", cached: false };
+      return {
+        food: withExternalShape(localPackaged.body[0], "local_packaged"),
+        source: "local_packaged",
+        cached: false,
+      };
     }
   }
 
