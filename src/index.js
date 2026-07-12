@@ -173,6 +173,13 @@ function routePolicy(resource, method, param) {
 
 function supabase(env) {
   const base = env.SUPABASE_URL.replace(/\/$/, "") + "/rest/v1";
+  // Diagnostic only — confirms whether the secret is actually bound at
+  // runtime, without ever logging its value. Remove once the 401 is fixed.
+  console.log("SUPABASE_KEY diagnostic", {
+    present: typeof env.SUPABASE_KEY === "string",
+    length: typeof env.SUPABASE_KEY === "string" ? env.SUPABASE_KEY.length : 0,
+    supabaseUrlPresent: typeof env.SUPABASE_URL === "string" && env.SUPABASE_URL.length > 0,
+  });
   const headers = {
     apikey: env.SUPABASE_KEY,
     Authorization: `Bearer ${env.SUPABASE_KEY}`,
