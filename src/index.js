@@ -655,8 +655,17 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
   // Upsert on (source, external_id) — if this exact external food was already
   // cached via a different query text, this updates that row instead of
   // creating a duplicate.
-  const { ok, body } = await db.upsert("external_foods_cache", result, "source,external_id");
-  return { food: ok ? body : result, source: result.source, cached: false, freshly_cached: ok };
+  const { ok, status, body } = await db.upsert("external_foods_cache", result, "source,external_id");
+  if (!ok) {
+    console.error("external_foods_cache upsert failed", { status, body, result });
+  }
+  return {
+    food: ok ? body : result,
+    source: result.source,
+    cached: false,
+    freshly_cached: ok,
+    cache_error: ok ? undefined : { status, body },
+  };
 }
 
 
@@ -825,6 +834,7 @@ async function handleFoodsLookup(request, url, db, env) {
     source: result.source,
     cached: result.cached,
     freshly_cached: !!result.freshly_cached,
+    ...(result.cache_error ? { cache_error: result.cache_error } : {}),
   });
 }
 
