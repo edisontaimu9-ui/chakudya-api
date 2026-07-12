@@ -428,8 +428,14 @@ async function fetchFromUSDA(query, env) {
   );
   if (!food) return null;
 
-  const getNutrient = (name) =>
-    food.foodNutrients?.find((n) => n.nutrientName === name)?.value ?? null;
+  // USDA returns TWO entries named "Energy" per food — one in kJ, one in
+  // KCAL. A plain name match grabs whichever comes first in the array,
+  // which is often the kJ entry, silently mislabeling it as energy_kcal
+  // (off by ~4.18x). Filter by unit when one is specified.
+  const getNutrient = (name, unit) =>
+    food.foodNutrients?.find(
+      (n) => n.nutrientName === name && (!unit || n.unitName === unit)
+    )?.value ?? null;
 
   // Keep only what's actually useful (micronutrients + provenance) instead of
   // USDA's full ~100-field-per-nutrient payload — that bloats Supabase rows
@@ -444,7 +450,7 @@ async function fetchFromUSDA(query, env) {
 
   return normalizeFood("usda_fdc", {
     food_name: food.description,
-    energy_kcal: getNutrient("Energy"),
+    energy_kcal: getNutrient("Energy", "KCAL"),
     protein_g: getNutrient("Protein"),
     fat_g: getNutrient("Total lipid (fat)"),
     carbs_g: getNutrient("Carbohydrate, by difference"),
