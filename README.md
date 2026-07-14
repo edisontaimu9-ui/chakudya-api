@@ -218,27 +218,32 @@ Submission is auto-tagged with:
 - `status: "pending"`
 - `submitted_at: <ISO timestamp>`
 
-`POST /packaged/scan` — client submits a photo of the nutrition label instead
-of typing it in. Body:
+`POST /packaged/scan` — client submits one or more photos of the product
+instead of typing it in (e.g. one of the nutrition panel, one of the
+barcode/front — they don't need to be the same face of the package). Body:
 
 ```json
 {
-  "image": "data:image/jpeg;base64,....",
+  "images": ["data:image/jpeg;base64,....", "data:image/jpeg;base64,...."],
   "barcode": "6009123456789"
 }
 ```
 
-- `image` is required — either a full `data:image/...;base64,` URL or a bare
-  base64 string (assumed JPEG). Max ~6MB decoded.
-- `barcode` is optional — if the photo's barcode wasn't captured or is
-  unclear, pass it separately (e.g. from a barcode scanner on the same
-  screen); it takes priority over anything the AI read off the packaging.
+- `images` is required — an array of 1-5 photos, each either a full
+  `data:image/...;base64,` URL or a bare base64 string (assumed JPEG). Max
+  ~6MB decoded per photo, ~15MB combined. The legacy single-image shape
+  `{ "image": "data:..." }` is still accepted.
+- `barcode` is optional — if none of the photos have a clear barcode, or you
+  already have it from a barcode scanner on the same screen, pass it
+  separately; it takes priority over anything the AI read off the packaging.
 
-The Worker sends the image to a Groq vision model, which reads the nutrition
-facts panel and returns structured values (product name, brand, energy,
-macros, ingredients, etc). If a legible label can't be found, the Worker
-returns `422` with `status: "needs_retry"` and does **not** write to the
-database. Otherwise it inserts a row into `packaged_foods` with:
+The Worker sends all photos to a Groq vision model in a single call. The
+model is prompted to treat them as different faces of the same product and
+combine what it reads across all of them (e.g. barcode from one photo,
+nutrition panel from another) into one result. If none of the photos show a
+legible nutrition label, the Worker returns `422` with `status: "needs_retry"`
+and does **not** write to the database. Otherwise it inserts a row into
+`packaged_foods` with:
 
 - `status: "pending"` (same admin review queue as manual submissions)
 - `source: "ocr_ai"`
