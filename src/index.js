@@ -3,7 +3,11 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.1.0
+ * Version: 1.2.0
+ *
+ * v1.2.0 changes:
+ *  - Added POST /packaged/scan — photo of a nutrition label -> Groq vision
+ *    OCR/AI extraction -> inserted into packaged_foods as status=pending
  *
  * v1.1.0 changes:
  *  - Added admin-key auth on all write routes (POST/PUT/PATCH/DELETE)
@@ -20,6 +24,9 @@
  *  - env.FATSECRET_CONSUMER_KEY    (OAuth 1.0 Consumer Key, from FatSecret dashboard)
  *  - env.FATSECRET_CONSUMER_SECRET (OAuth 1.0 Consumer Secret — do not commit)
  *  - env.USDA_FDC_API_KEY          (optional — USDA FoodData Central lookup, get free at api.data.gov/signup)
+ *  - env.GROQ_API_KEY              (required for POST /packaged/scan — get free at console.groq.com)
+ *  - env.GROQ_VISION_MODEL         (optional override; see note near DEFAULT_GROQ_VISION_MODEL below —
+ *                                    Groq's vision model names change/retire more often than the others)
  */
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
@@ -135,6 +142,7 @@ async function checkRateLimit(env, bucketKey, limit, windowSeconds) {
 function routePolicy(resource, method, param) {
   const isWrite = method !== "GET";
   const isPackagedSubmit = resource === "packaged" && param === "submit" && method === "POST";
+  const isPackagedScan = resource === "packaged" && param === "scan" && method === "POST";
   const isRagRetrieve = resource === "rag" && (param === "retrieve" || !param) && method === "POST";
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
@@ -148,6 +156,12 @@ function routePolicy(resource, method, param) {
   // Community submissions: public, but tightly rate-limited to deter spam.
   if (isPackagedSubmit) {
     return { auth: "public", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Photo scan costs a Groq vision call per request — public but capped
+  // harder than the manual submit form to control cost/abuse.
+  if (isPackagedScan) {
+    return { auth: "public", rate: { limit: 5, windowSeconds: 60, scope: "ip" } };
   }
 
   // RAG retrieve costs a Cohere call per request — public but capped harder than plain reads.
@@ -648,6 +662,157 @@ async function fetchFromFatSecret(query, env) {
   });
 }
 
+// ─── GROQ VISION OCR (packaged food label extraction) ────────────────────────
+// Client sends a photo of a nutrition facts panel (base64 data URL). We hand
+// it to a Groq multimodal model with a strict JSON schema prompt, then
+// normalize + sanity-check the result before it ever touches the DB.
+//
+// NOTE: Groq's vision-capable model lineup changes often (models get
+// deprecated with only weeks of notice). Set GROQ_VISION_MODEL as a secret to
+// override the default without a code deploy; check
+// https://console.groq.com/docs/vision for the current list if extraction
+// starts failing with a "model decommissioned" error.
+
+const DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct";
+
+// Keep this well under Groq's 20MB request cap and under Cloudflare Workers'
+// memory/CPU budget — a phone camera photo re-encoded as base64 JPEG at
+// reasonable quality is normally a few hundred KB to ~2MB.
+const MAX_IMAGE_BASE64_BYTES = 6 * 1024 * 1024; // ~6MB decoded
+
+/** Accepts either a bare base64 string or a full "data:image/jpeg;base64,...." URL. */
+function normalizeImageInput(image) {
+  if (typeof image !== "string" || !image.trim()) return null;
+  const dataUrlMatch = image.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/s);
+  if (dataUrlMatch) {
+    return { mimeType: dataUrlMatch[1], base64: dataUrlMatch[2].trim() };
+  }
+  // Bare base64 with no prefix — assume JPEG (the common case from a camera capture).
+  return { mimeType: "image/jpeg", base64: image.trim() };
+}
+
+function estimateBase64Bytes(base64) {
+  // Rough decoded-size estimate without actually decoding: 3 bytes per 4 chars.
+  const padding = (base64.match(/=+$/) || [""])[0].length;
+  return Math.floor((base64.length * 3) / 4) - padding;
+}
+
+/** Pulls the first {...} JSON object out of a model reply, tolerating stray prose or code fences. */
+function extractJsonObject(text) {
+  if (!text) return null;
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : text;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * If the AI read values "per serving" rather than "per 100g/100ml", scale
+ * them so packaged_foods stays consistent with the rest of the database
+ * (mirrors the same per-100 normalization already used for FatSecret above).
+ */
+function scaleNutrientsToPer100(fields, per, servingSizeText) {
+  if (per !== "serving" || !servingSizeText) return fields;
+  const m = String(servingSizeText).match(/([\d.]+)\s*(g|ml)\b/i);
+  if (!m) return fields;
+  const amount = parseFloat(m[1]);
+  if (!amount) return fields;
+  const scale = 100 / amount;
+  const round2 = (n) => (typeof n === "number" ? Math.round(n * scale * 100) / 100 : n);
+  return {
+    ...fields,
+    energy_kcal: round2(fields.energy_kcal),
+    protein_g: round2(fields.protein_g),
+    fat_g: round2(fields.fat_g),
+    saturated_fat_g: round2(fields.saturated_fat_g),
+    carbs_g: round2(fields.carbs_g),
+    sugars_g: round2(fields.sugars_g),
+    fiber_g: round2(fields.fiber_g),
+    sodium_mg: round2(fields.sodium_mg),
+    salt_g: round2(fields.salt_g),
+  };
+}
+
+const NUTRITION_LABEL_SCHEMA_PROMPT = `You are reading a photograph of a packaged food's nutrition facts panel and packaging text (e.g. a label typically seen in Malawi/Southern Africa on products such as maize flour, cooking oil, juice, biscuits, etc).
+
+Return ONLY a single JSON object (no prose, no markdown fences) with exactly these keys:
+{
+  "label_detected": boolean,      // true only if a nutrition facts panel is actually visible and legible
+  "product_name": string|null,
+  "brand": string|null,
+  "barcode": string|null,         // digits only, if a barcode/EAN number is visible anywhere in the photo
+  "serving_size": string|null,    // as printed, e.g. "30g" or "250ml"
+  "per": "100g"|"100ml"|"serving"|null,  // what basis the numbers below are printed as
+  "energy_kcal": number|null,
+  "protein_g": number|null,
+  "fat_g": number|null,
+  "saturated_fat_g": number|null,
+  "carbs_g": number|null,
+  "sugars_g": number|null,
+  "fiber_g": number|null,
+  "sodium_mg": number|null,
+  "salt_g": number|null,
+  "ingredients_text": string|null,
+  "allergens": string|null,
+  "confidence": number            // your own confidence 0.0-1.0 that the extracted values are accurate
+}
+
+Rules:
+- If energy is printed in kJ only, convert to kcal (divide by 4.184) and note that in nothing else — just return the kcal number.
+- If a field is not visible or not printed, use null. Do not guess or invent numbers.
+- If the photo does not show a legible nutrition label at all, set "label_detected": false and set numeric fields to null.
+- Output valid JSON only.`;
+
+async function extractNutritionLabel(imageInput, env) {
+  if (!env.GROQ_API_KEY) {
+    throw new Error("GROQ_API_KEY is not configured");
+  }
+
+  const model = env.GROQ_VISION_MODEL || DEFAULT_GROQ_VISION_MODEL;
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.GROQ_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      max_completion_tokens: 1024,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: NUTRITION_LABEL_SCHEMA_PROMPT },
+            {
+              type: "image_url",
+              image_url: { url: `data:${imageInput.mimeType};base64,${imageInput.base64}` },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(`Groq vision request failed: ${e.error?.message || res.status}`);
+  }
+
+  const data = await res.json();
+  const raw = data?.choices?.[0]?.message?.content || "";
+  const parsed = extractJsonObject(raw);
+  if (!parsed) throw new Error("Could not parse a JSON label from the AI response");
+  return parsed;
+}
+
 // Local `foods`/`packaged_foods` rows don't share the external cascade's
 // column names (e.g. local uses `kcal` + `measure` + `weight_g`, external
 // uses `energy_kcal` + `barcode` + `source` + `external_id`). Rather than
@@ -822,7 +987,7 @@ function handleRoot() {
     tagline: "Malawi's first open Food & Nutrition Database",
     version: "1.1.0",
     maintainer: "Taimu Tech Solutions",
-    auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit and POST /rag/retrieve, which are public but rate-limited.",
+    auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, and POST /rag/retrieve, which are public but rate-limited.",
     endpoints: {
       foods: [
         "GET  /foods",
@@ -856,6 +1021,7 @@ function handleRoot() {
       packaged_foods: [
         "GET  /packaged",
         "POST /packaged/submit  (public, rate-limited — community contribution, status=pending)",
+        "POST /packaged/scan    (public, rate-limited — photo of nutrition label -> OCR/AI -> status=pending)",
         "PUT  /packaged/:id     (admin)",
         "PATCH /packaged/:id    (admin)",
         "DELETE /packaged/:id   (admin)",
@@ -1121,6 +1287,114 @@ async function handleFormulas(request, url, db, id) {
   return err("Method not allowed", 405);
 }
 
+// ── /packaged/scan ────────────────────────────────────────────────────────────
+// POST /packaged/scan — public community contribution via photo instead of a
+// manual form. Body: { "image": "data:image/jpeg;base64,...." (or bare
+// base64), "barcode"?: string, "mime_type"?: string }
+//
+// Flow: decode -> Groq vision OCR/AI extraction -> sanity-check -> insert
+// into packaged_foods as status "pending" (same review queue as the manual
+// /packaged/submit form) -> return the extracted fields back to the client so
+// the app can show the user what was read and let them confirm/edit.
+//
+// Requires these columns on packaged_foods (nullable) in addition to the
+// existing manual-submit columns — add via Supabase SQL editor if missing:
+//   alter table packaged_foods add column if not exists source text;
+//   alter table packaged_foods add column if not exists ai_confidence numeric;
+//   alter table packaged_foods add column if not exists ocr_raw jsonb;
+async function handlePackagedScan(request, env, db) {
+  if (request.method !== "POST") return err("Method not allowed", 405);
+
+  const payload = await parseBody(request);
+  if (!payload) return err("Request body required");
+
+  const imageInput = normalizeImageInput(payload.image);
+  if (!imageInput) return err("'image' is required (base64 string or data: URL)");
+
+  const estimatedBytes = estimateBase64Bytes(imageInput.base64);
+  if (estimatedBytes > MAX_IMAGE_BASE64_BYTES) {
+    return err(
+      `Image too large (~${Math.round(estimatedBytes / 1024 / 1024)}MB). Please compress it to under ${
+        MAX_IMAGE_BASE64_BYTES / 1024 / 1024
+      }MB and try again.`,
+      413
+    );
+  }
+
+  let extracted;
+  try {
+    extracted = await extractNutritionLabel(imageInput, env);
+  } catch (e) {
+    return err(`Label scan failed: ${e.message}`, 502);
+  }
+
+  // AI couldn't find a legible label at all — don't pollute the review queue
+  // with an empty row. Give the user actionable feedback instead.
+  if (!extracted.label_detected) {
+    return json(
+      {
+        status: "needs_retry",
+        message:
+          "Couldn't read a nutrition label in that photo. Try again with better lighting, " +
+          "the panel flat and in focus, or fill in the details manually.",
+        extracted,
+      },
+      422
+    );
+  }
+
+  const scaled = scaleNutrientsToPer100(extracted, extracted.per, extracted.serving_size);
+
+  const productName = extracted.product_name?.trim();
+  if (!productName && scaled.energy_kcal == null) {
+    return json(
+      {
+        status: "needs_retry",
+        message:
+          "The label was too unclear to read reliably (no product name or energy value found). " +
+          "Try a clearer photo or fill in the details manually.",
+        extracted,
+      },
+      422
+    );
+  }
+
+  const data = {
+    status: "pending",
+    submitted_at: new Date().toISOString(),
+    source: "ocr_ai",
+    ai_confidence: typeof extracted.confidence === "number" ? extracted.confidence : null,
+    barcode: payload.barcode || extracted.barcode || null,
+    product_name: productName || "Unknown product (from photo)",
+    brand: extracted.brand ?? null,
+    serving_size: extracted.serving_size ?? null,
+    energy_kcal: scaled.energy_kcal ?? null,
+    protein_g: scaled.protein_g ?? null,
+    fat_g: scaled.fat_g ?? null,
+    saturated_fat_g: scaled.saturated_fat_g ?? null,
+    carbs_g: scaled.carbs_g ?? null,
+    sugars_g: scaled.sugars_g ?? null,
+    fiber_g: scaled.fiber_g ?? null,
+    sodium_mg: scaled.sodium_mg ?? null,
+    salt_g: scaled.salt_g ?? null,
+    ingredients_text: extracted.ingredients_text ?? null,
+    allergens: extracted.allergens ?? null,
+    ocr_raw: extracted,
+  };
+
+  const { ok, status, body } = await db.insert("packaged_foods", data);
+  if (!ok) return err(body?.message || "Submit failed", status);
+
+  const lowConfidence = data.ai_confidence != null && data.ai_confidence < 0.6;
+
+  return success(body, {
+    message: lowConfidence
+      ? "Submitted for review, but the scan confidence was low — please double-check the details."
+      : "Submitted for review. Thanks for contributing to Chakudya!",
+    needs_review: lowConfidence,
+  });
+}
+
 // ── /packaged ─────────────────────────────────────────────────────────────────
 
 async function handlePackaged(request, url, db, id, isSubmit) {
@@ -1253,6 +1527,9 @@ async function router(request, env) {
       }
 
       case "packaged": {
+        if (param === "scan") {
+          return await handlePackagedScan(request, env, db);
+        }
         const isSubmit = param === "submit";
         const id = isSubmit ? null : param || null;
         return await handlePackaged(request, url, db, id, isSubmit);
