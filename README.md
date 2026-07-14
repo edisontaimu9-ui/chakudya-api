@@ -201,6 +201,7 @@ Query params: `route`, `limit`, `offset`
 
 - `GET /packaged`
 - `POST /packaged/submit` *(public, rate-limited)*
+- `POST /packaged/scan` *(public, rate-limited)*
 - `PUT /packaged/:id` *(admin)*
 - `PATCH /packaged/:id` *(admin)*
 - `DELETE /packaged/:id` *(admin)*
@@ -216,6 +217,47 @@ Submission is auto-tagged with:
 
 - `status: "pending"`
 - `submitted_at: <ISO timestamp>`
+
+`POST /packaged/scan` — client submits a photo of the nutrition label instead
+of typing it in. Body:
+
+```json
+{
+  "image": "data:image/jpeg;base64,....",
+  "barcode": "6009123456789"
+}
+```
+
+- `image` is required — either a full `data:image/...;base64,` URL or a bare
+  base64 string (assumed JPEG). Max ~6MB decoded.
+- `barcode` is optional — if the photo's barcode wasn't captured or is
+  unclear, pass it separately (e.g. from a barcode scanner on the same
+  screen); it takes priority over anything the AI read off the packaging.
+
+The Worker sends the image to a Groq vision model, which reads the nutrition
+facts panel and returns structured values (product name, brand, energy,
+macros, ingredients, etc). If a legible label can't be found, the Worker
+returns `422` with `status: "needs_retry"` and does **not** write to the
+database. Otherwise it inserts a row into `packaged_foods` with:
+
+- `status: "pending"` (same admin review queue as manual submissions)
+- `source: "ocr_ai"`
+- `ai_confidence`: the model's own 0–1 confidence score
+- `ocr_raw`: the full raw extraction, for admin review/debugging
+
+Response includes the extracted fields and a `needs_review` flag (true when
+`ai_confidence < 0.6`) so the client can prompt the user to double-check
+before treating the submission as final.
+
+Requires `env.GROQ_API_KEY` (see `wrangler.toml`), and the following
+additional (nullable) columns on `packaged_foods` if they don't already
+exist:
+
+```sql
+alter table packaged_foods add column if not exists source text;
+alter table packaged_foods add column if not exists ai_confidence numeric;
+alter table packaged_foods add column if not exists ocr_raw jsonb;
+```
 
 ### RAG
 
