@@ -790,7 +790,12 @@ async function extractNutritionLabel(imageInput, env) {
       model,
       temperature: 0,
       max_completion_tokens: 1024,
-      response_format: { type: "json_object" },
+      // NOTE: response_format: {type:"json_object"} is intentionally omitted.
+      // Some Groq preview vision models (e.g. qwen3.6-27b) reject/fail strict
+      // JSON-mode validation server-side ("Failed to validate JSON..."). The
+      // prompt below already demands JSON-only output, and extractJsonObject()
+      // tolerantly pulls the {...} block out of the reply regardless of
+      // whether the model wraps it in prose or code fences.
       messages: [
         {
           role: "user",
