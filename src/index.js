@@ -668,12 +668,17 @@ async function fetchFromFatSecret(query, env) {
 // normalize + sanity-check the result before it ever touches the DB.
 //
 // NOTE: Groq's vision-capable model lineup changes often (models get
-// deprecated with only weeks of notice). Set GROQ_VISION_MODEL as a secret to
-// override the default without a code deploy; check
-// https://console.groq.com/docs/vision for the current list if extraction
-// starts failing with a "model decommissioned" error.
+// deprecated with only weeks of notice — meta-llama/llama-4-maverick and
+// meta-llama/llama-4-scout were BOTH retired by Groq in 2026). Set
+// GROQ_VISION_MODEL as a secret to override the default without a code
+// deploy; check https://console.groq.com/docs/vision and
+// https://console.groq.com/docs/deprecations for the current list if
+// extraction starts failing with a "model decommissioned"/"model not found"
+// error. qwen/qwen3.6-27b (current default below) is a PREVIEW model on
+// Groq's side — fine for testing, but re-check before leaning on it hard for
+// production, since preview models can be pulled without much notice.
 
-const DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct";
+const DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.6-27b";
 
 // Keep this well under Groq's 20MB request cap and under Cloudflare Workers'
 // memory/CPU budget — a phone camera photo re-encoded as base64 JPEG at
