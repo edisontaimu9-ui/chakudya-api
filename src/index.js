@@ -683,7 +683,9 @@ const DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.6-27b";
 // Keep this well under Groq's 20MB request cap and under Cloudflare Workers'
 // memory/CPU budget — a phone camera photo re-encoded as base64 JPEG at
 // reasonable quality is normally a few hundred KB to ~2MB.
-const MAX_IMAGE_BASE64_BYTES = 6 * 1024 * 1024; // ~6MB decoded
+const MAX_IMAGE_BASE64_BYTES = 6 * 1024 * 1024; // ~6MB decoded, per image
+const MAX_IMAGES_PER_SCAN = 5; // Groq's own per-request cap on image inputs
+const MAX_TOTAL_IMAGE_BASE64_BYTES = 15 * 1024 * 1024; // combined decoded cap across all images in one request
 
 /** Accepts either a bare base64 string or a full "data:image/jpeg;base64,...." URL. */
 function normalizeImageInput(image) {
@@ -694,6 +696,21 @@ function normalizeImageInput(image) {
   }
   // Bare base64 with no prefix — assume JPEG (the common case from a camera capture).
   return { mimeType: "image/jpeg", base64: image.trim() };
+}
+
+/**
+ * Accepts a request body's image field(s) in either shape:
+ *   { images: ["data:...", "data:...", ...] }  — preferred, up to MAX_IMAGES_PER_SCAN
+ *   { image: "data:..." }                       — legacy single-image shape, still supported
+ * Returns an array of normalized {mimeType, base64} objects (possibly empty).
+ */
+function normalizeImageInputs(payload) {
+  const raw = Array.isArray(payload?.images) && payload.images.length
+    ? payload.images
+    : payload?.image
+    ? [payload.image]
+    : [];
+  return raw.map(normalizeImageInput).filter(Boolean).slice(0, MAX_IMAGES_PER_SCAN);
 }
 
 function estimateBase64Bytes(base64) {
@@ -745,14 +762,14 @@ function scaleNutrientsToPer100(fields, per, servingSizeText) {
   };
 }
 
-const NUTRITION_LABEL_SCHEMA_PROMPT = `You are reading a photograph of a packaged food's nutrition facts panel and packaging text (e.g. a label typically seen in Malawi/Southern Africa on products such as maize flour, cooking oil, juice, biscuits, etc).
+const NUTRITION_LABEL_SCHEMA_PROMPT = `You are reading one or more photographs of the SAME packaged food product (e.g. a label typically seen in Malawi/Southern Africa on products such as maize flour, cooking oil, juice, biscuits, etc). The photos may show different faces of the same package — for example the nutrition facts panel in one photo and the barcode or front branding in another. Combine information across ALL the photos provided into a single answer about this one product.
 
 Return ONLY a single JSON object (no prose, no markdown fences) with exactly these keys:
 {
-  "label_detected": boolean,      // true only if a nutrition facts panel is actually visible and legible
+  "label_detected": boolean,      // true only if a nutrition facts panel is legible in at least one of the photos
   "product_name": string|null,
   "brand": string|null,
-  "barcode": string|null,         // digits only, if a barcode/EAN number is visible anywhere in the photo
+  "barcode": string|null,         // digits only, if a barcode/EAN number is visible in ANY of the photos
   "serving_size": string|null,    // as printed, e.g. "30g" or "250ml"
   "per": "100g"|"100ml"|"serving"|null,  // what basis the numbers below are printed as
   "energy_kcal": number|null,
@@ -771,16 +788,24 @@ Return ONLY a single JSON object (no prose, no markdown fences) with exactly the
 
 Rules:
 - If energy is printed in kJ only, convert to kcal (divide by 4.184) and note that in nothing else — just return the kcal number.
-- If a field is not visible or not printed, use null. Do not guess or invent numbers.
-- If the photo does not show a legible nutrition label at all, set "label_detected": false and set numeric fields to null.
+- If a field is not visible or not printed in ANY photo, use null. Do not guess or invent numbers.
+- If none of the photos show a legible nutrition label, set "label_detected": false and set numeric fields to null (a barcode-only or front-of-pack-only photo does not count as a legible label).
 - Output valid JSON only.`;
 
-async function extractNutritionLabel(imageInput, env) {
+async function extractNutritionLabel(imageInputs, env) {
   if (!env.GROQ_API_KEY) {
     throw new Error("GROQ_API_KEY is not configured");
   }
+  if (!imageInputs.length) {
+    throw new Error("No images provided");
+  }
 
   const model = env.GROQ_VISION_MODEL || DEFAULT_GROQ_VISION_MODEL;
+  const imageContent = imageInputs.map((img) => ({
+    type: "image_url",
+    image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+  }));
+
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -805,13 +830,7 @@ async function extractNutritionLabel(imageInput, env) {
       messages: [
         {
           role: "user",
-          content: [
-            { type: "text", text: NUTRITION_LABEL_SCHEMA_PROMPT },
-            {
-              type: "image_url",
-              image_url: { url: `data:${imageInput.mimeType};base64,${imageInput.base64}` },
-            },
-          ],
+          content: [{ type: "text", text: NUTRITION_LABEL_SCHEMA_PROMPT }, ...imageContent],
         },
       ],
     }),
@@ -1304,14 +1323,16 @@ async function handleFormulas(request, url, db, id) {
 }
 
 // ── /packaged/scan ────────────────────────────────────────────────────────────
-// POST /packaged/scan — public community contribution via photo instead of a
-// manual form. Body: { "image": "data:image/jpeg;base64,...." (or bare
-// base64), "barcode"?: string, "mime_type"?: string }
+// POST /packaged/scan — public community contribution via photo(s) instead of
+// a manual form. Body: { "images": ["data:image/jpeg;base64,....", ...] }
+// (up to 5 photos — e.g. one of the nutrition panel, one of the barcode, one
+// of the front of pack; they don't need to be the same face of the package).
+// The legacy single-image shape { "image": "data:..." } is still accepted.
 //
-// Flow: decode -> Groq vision OCR/AI extraction -> sanity-check -> insert
-// into packaged_foods as status "pending" (same review queue as the manual
-// /packaged/submit form) -> return the extracted fields back to the client so
-// the app can show the user what was read and let them confirm/edit.
+// Flow: decode -> single Groq vision call with ALL photos attached -> AI
+// combines info across them -> sanity-check -> insert into packaged_foods as
+// status "pending" (same review queue as the manual /packaged/submit form)
+// -> return the extracted fields back to the client.
 //
 // Requires these columns on packaged_foods (nullable) in addition to the
 // existing manual-submit columns — add via Supabase SQL editor if missing:
@@ -1324,22 +1345,34 @@ async function handlePackagedScan(request, env, db) {
   const payload = await parseBody(request);
   if (!payload) return err("Request body required");
 
-  const imageInput = normalizeImageInput(payload.image);
-  if (!imageInput) return err("'image' is required (base64 string or data: URL)");
+  const imageInputs = normalizeImageInputs(payload);
+  if (!imageInputs.length) {
+    return err("'images' is required — an array of 1-5 base64 strings or data: URLs (or a single 'image')");
+  }
 
-  const estimatedBytes = estimateBase64Bytes(imageInput.base64);
-  if (estimatedBytes > MAX_IMAGE_BASE64_BYTES) {
+  let totalBytes = 0;
+  for (const img of imageInputs) {
+    const bytes = estimateBase64Bytes(img.base64);
+    if (bytes > MAX_IMAGE_BASE64_BYTES) {
+      return err(
+        `One of the photos is too large (~${Math.round(bytes / 1024 / 1024)}MB). Please compress each photo to under ${
+          MAX_IMAGE_BASE64_BYTES / 1024 / 1024
+        }MB and try again.`,
+        413
+      );
+    }
+    totalBytes += bytes;
+  }
+  if (totalBytes > MAX_TOTAL_IMAGE_BASE64_BYTES) {
     return err(
-      `Image too large (~${Math.round(estimatedBytes / 1024 / 1024)}MB). Please compress it to under ${
-        MAX_IMAGE_BASE64_BYTES / 1024 / 1024
-      }MB and try again.`,
+      `These photos are too large combined (~${Math.round(totalBytes / 1024 / 1024)}MB). Please use fewer photos or compress them further.`,
       413
     );
   }
 
   let extracted;
   try {
-    extracted = await extractNutritionLabel(imageInput, env);
+    extracted = await extractNutritionLabel(imageInputs, env);
   } catch (e) {
     return err(`Label scan failed: ${e.message}`, 502);
   }
