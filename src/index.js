@@ -1389,7 +1389,7 @@ async function handlePackagedScan(request, env, db) {
     fat_g: scaled.fat_g ?? null,
     saturated_fat_g: scaled.saturated_fat_g ?? null,
     carbs_g: scaled.carbs_g ?? null,
-    sugars_g: scaled.sugars_g ?? null,
+    sugar_g: scaled.sugars_g ?? null,
     fiber_g: scaled.fiber_g ?? null,
     sodium_mg: scaled.sodium_mg ?? null,
     salt_g: scaled.salt_g ?? null,
