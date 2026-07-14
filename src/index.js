@@ -702,11 +702,12 @@ function estimateBase64Bytes(base64) {
   return Math.floor((base64.length * 3) / 4) - padding;
 }
 
-/** Pulls the first {...} JSON object out of a model reply, tolerating stray prose or code fences. */
+/** Pulls the first {...} JSON object out of a model reply, tolerating stray prose, code fences, or a leaked <think> reasoning block. */
 function extractJsonObject(text) {
   if (!text) return null;
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : text;
+  const withoutThinking = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const fenced = withoutThinking.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : withoutThinking;
   const start = candidate.indexOf("{");
   const end = candidate.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) return null;
@@ -789,7 +790,12 @@ async function extractNutritionLabel(imageInput, env) {
     body: JSON.stringify({
       model,
       temperature: 0,
-      max_completion_tokens: 1024,
+      max_completion_tokens: 2048,
+      // qwen3.6-27b defaults to a "thinking" mode that burns tokens on internal
+      // reasoning before writing the actual answer, which was truncating our
+      // JSON output before it could close. "none" disables thinking mode for
+      // Qwen models on Groq so the reply goes straight to the JSON.
+      reasoning_effort: "none",
       // NOTE: response_format: {type:"json_object"} is intentionally omitted.
       // Some Groq preview vision models (e.g. qwen3.6-27b) reject/fail strict
       // JSON-mode validation server-side ("Failed to validate JSON..."). The
