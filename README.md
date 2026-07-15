@@ -224,6 +224,23 @@ Submission is auto-tagged with:
 - `status: "pending"`
 - `submitted_at: <ISO timestamp>`
 
+**Normalization:** if the submitter enters values "per serving" rather than
+per 100g/100ml, pass `per: "serving"` alongside a parseable `serving_size`
+(e.g. `"30g"`, `"250ml"`) and nutrient fields are scaled to per-100 before
+being stored — the same normalization `/packaged/scan` already applies to
+AI-read labels, so `packaged_foods` stays on one consistent basis regardless
+of submission path. `per` is a hint only and is never written to the DB.
+Omit `per` (or send `per: "100g"` / `"100ml"`) if values are already per-100.
+
+**Macro/calorie check:** when `energy_kcal`, `protein_g`, `fat_g`, and
+`carbs_g` are all present, the API cross-checks them against the declared
+calories using Atwater factors (protein 4 kcal/g, carbs 4 kcal/g, fat 9
+kcal/g). A mismatch beyond tolerance (the greater of 20 kcal or 15%) does
+**not** block the submission — it's stored as-is (`status: "pending"`) but
+the response sets `needs_review: true` and includes a `macro_check` object
+so the client can prompt a double-check before the admin review queue picks
+it up.
+
 `POST /packaged/scan` — client submits one or more photos of the product
 instead of typing it in (e.g. one of the nutrition panel, one of the
 barcode/front — they don't need to be the same face of the package). Body:
@@ -256,9 +273,12 @@ and does **not** write to the database. Otherwise it inserts a row into
 - `ai_confidence`: the model's own 0–1 confidence score
 - `ocr_raw`: the full raw extraction, for admin review/debugging
 
-Response includes the extracted fields and a `needs_review` flag (true when
-`ai_confidence < 0.6`) so the client can prompt the user to double-check
-before treating the submission as final.
+Response includes the extracted fields and a `needs_review` flag — true when
+`ai_confidence < 0.6` **or** when the macro/calorie check below flags a
+mismatch — so the client can prompt the user to double-check before treating
+the submission as final. Also runs the same macro/calorie cross-check
+documented under `/packaged/submit` above and includes the resulting
+`macro_check` object in the response when energy + macros were all read.
 
 Requires `env.GROQ_API_KEY` (see `wrangler.toml`), and the following
 additional (nullable) columns on `packaged_foods` if they don't already
