@@ -3,7 +3,15 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.2.0
+ * Version: 1.3.0
+ *
+ * v1.3.0 changes:
+ *  - Added session memory (Write → Consolidate → Recall → Apply):
+ *    POST /memory/write, GET /memory/recall, POST /memory/consolidate
+ *  - Added hourly cron trigger (scheduled()) that auto-consolidates any
+ *    session with 6+ unconsolidated facts via a Groq summarization call
+ *  - Requires the `assistant_memory` table + `match_memory` /
+ *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
  * v1.2.0 changes:
  *  - Added POST /packaged/scan — photo of a nutrition label -> Groq vision
@@ -24,9 +32,18 @@
  *  - env.FATSECRET_CONSUMER_KEY    (OAuth 1.0 Consumer Key, from FatSecret dashboard)
  *  - env.FATSECRET_CONSUMER_SECRET (OAuth 1.0 Consumer Secret — do not commit)
  *  - env.USDA_FDC_API_KEY          (optional — USDA FoodData Central lookup, get free at api.data.gov/signup)
- *  - env.GROQ_API_KEY              (required for POST /packaged/scan — get free at console.groq.com)
+ *  - env.GROQ_API_KEY              (required for POST /packaged/scan AND memory consolidation — get free at console.groq.com)
  *  - env.GROQ_VISION_MODEL         (optional override; see note near DEFAULT_GROQ_VISION_MODEL below —
  *                                    Groq's vision model names change/retire more often than the others)
+ *  - env.GROQ_TEXT_MODEL           (optional override for memory-consolidation summaries; defaults to llama-3.3-70b-versatile)
+ *
+ * Session memory setup (NEW in v1.3.0):
+ *  1. Run sql/memory_schema.sql in the Supabase SQL editor (creates
+ *     `assistant_memory` table + `match_memory` / `sessions_needing_consolidation`
+ *     RPC functions; requires the `vector` extension, already enabled for RAG).
+ *  2. wrangler.toml now declares an hourly [triggers] cron — redeploy
+ *     (`npx wrangler deploy`) for Cloudflare to register it; cron triggers
+ *     aren't picked up by a dashboard-only Quick Edit save.
  */
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
@@ -146,6 +163,9 @@ function routePolicy(resource, method, param) {
   const isRagRetrieve = resource === "rag" && (param === "retrieve" || !param) && method === "POST";
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
+  const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
+  const isMemoryRecall = resource === "memory" && param === "recall" && method === "GET";
+  const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
 
   // Foods lookup can trigger external API calls (USDA/OFF/FatSecret) — public
   // but capped to protect those quotas, separate from plain local reads.
@@ -172,6 +192,23 @@ function routePolicy(resource, method, param) {
   // RAG ingest writes to the knowledge base AND costs a Cohere call — admin only.
   if (isRagIngest) {
     return { auth: "admin", rate: { limit: 300, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // Memory write/recall each cost a Cohere embed call — public (the Oasis
+  // client calls these directly during a chat, no admin key available
+  // there) but capped like RAG retrieve/ingest.
+  if (isMemoryWrite) {
+    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+  }
+  if (isMemoryRecall) {
+    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Consolidation runs an LLM summarization call and rewrites memory rows —
+  // triggered by the hourly cron (which calls it internally, bypassing HTTP
+  // auth) or manually by an admin for testing.
+  if (isMemoryConsolidate) {
+    return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
@@ -1013,6 +1050,176 @@ async function handleRAG(request, url, db, env, param) {
   return notFound("RAG route");
 }
 
+// ─── SESSION MEMORY (Write → Consolidate → Recall → Apply) ───────────────────
+// Per-session clinical scratchpad for Oasis AI, scoped by the app's existing
+// SESSION_ID (fresh per page load — this is deliberately session-scoped, not
+// a long-term cross-visit profile). Mirrors the RAG layer's Cohere embedding
+// + pgvector pattern, using its own `assistant_memory` table so consolidation
+// (which prunes/rewrites rows) never touches the RAG knowledge base.
+//
+//   Write       POST /memory/write      — capture a raw fact for a session
+//   Consolidate POST /memory/consolidate — summarize a session's accumulated
+//                                          facts into one row (admin/cron)
+//   Recall      GET  /memory/recall      — top-K relevant memory for a query
+//   Apply       (client-side) — Oasis AI injects recalled memory into the
+//                                 system prompt before its Groq call
+//
+// Requires the `assistant_memory` table + `match_memory` / // ── /memory ───
+// `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql.
+
+const MEMORY_MIN_FACTS_TO_CONSOLIDATE = 6; // don't bother summarizing a session with only a couple of facts
+
+/**
+ * Summarizes a session's unconsolidated "fact" rows into one "summary" row
+ * via a single Groq text completion, then marks the source facts
+ * consolidated=true. Shared between the admin-triggered POST
+ * /memory/consolidate route and the hourly cron handler. Returns
+ * { consolidated: boolean, reason?: string, summaryId? }.
+ */
+async function consolidateSession(sessionId, db, env) {
+  const { ok, status, body: facts } = await db.select("assistant_memory", {
+    filters: { session_id: `eq.${sessionId}`, kind: "eq.fact", consolidated: "eq.false" },
+    limit: 100,
+    order: "created_at.asc",
+  });
+  if (!ok) return { consolidated: false, reason: `Query failed (${status})` };
+  if (!Array.isArray(facts) || facts.length < MEMORY_MIN_FACTS_TO_CONSOLIDATE) {
+    return { consolidated: false, reason: "Not enough unconsolidated facts yet" };
+  }
+
+  if (!env.GROQ_API_KEY) {
+    return { consolidated: false, reason: "GROQ_API_KEY not configured" };
+  }
+
+  const factLines = facts.map((f) => `- ${f.content}`).join("\n");
+  const prompt = `You are compressing a clinical dietitian's session notes into a single concise memory summary. Below are raw notes captured during one patient session, in chronological order.
+
+${factLines}
+
+Write ONE paragraph (max ~120 words) capturing the key patient facts, clinical context, goals, and any plan/decisions made so far. Preserve specific clinical values (weights, lab results, diagnoses, targets) exactly as given — do not round or approximate them. Do not add information that wasn't in the notes. Output only the summary paragraph, no preamble.`;
+
+  let summaryText;
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile",
+        temperature: 0.2,
+        max_completion_tokens: 300,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      return { consolidated: false, reason: `Groq summarization failed: ${e.error?.message || res.status}` };
+    }
+    const data = await res.json();
+    summaryText = data?.choices?.[0]?.message?.content?.trim();
+  } catch (e) {
+    return { consolidated: false, reason: `Groq summarization failed: ${e.message}` };
+  }
+  if (!summaryText) return { consolidated: false, reason: "Empty summary from Groq" };
+
+  let embedding;
+  try {
+    embedding = await embedText(summaryText, env, "search_document");
+  } catch (e) {
+    return { consolidated: false, reason: `Embedding failed: ${e.message}` };
+  }
+
+  const patientLabel = facts.find((f) => f.patient_label)?.patient_label || null;
+  const { ok: insOk, status: insStatus, body: summaryRow } = await db.insert("assistant_memory", {
+    session_id: sessionId,
+    patient_label: patientLabel,
+    content: summaryText,
+    kind: "summary",
+    embedding: JSON.stringify(embedding),
+    consolidated: true,
+  });
+  if (!insOk) return { consolidated: false, reason: `Insert failed (${insStatus})` };
+
+  // Mark the source facts consolidated so they drop out of future
+  // consolidation batches (still queryable/recallable individually — only
+  // the "needs consolidating" cron scan excludes them now).
+  await Promise.all(
+    facts.map((f) => db.update("assistant_memory", f.id, { consolidated: true }, "PATCH"))
+  );
+
+  return { consolidated: true, summaryId: summaryRow?.[0]?.id ?? summaryRow?.id ?? null };
+}
+
+async function handleMemory(request, url, db, env, param) {
+  // ── POST /memory/write ───────────────────────────────────────────────────
+  if (param === "write" && request.method === "POST") {
+    const body = await parseBody(request);
+    if (!body) return err("Request body required");
+    const { session_id, content, kind = "fact", patient_label } = body;
+    if (!session_id) return err("'session_id' is required");
+    if (!content || !String(content).trim()) return err("'content' is required");
+    if (!["fact", "summary"].includes(kind)) return err("'kind' must be 'fact' or 'summary'");
+
+    let embedding;
+    try {
+      embedding = await embedText(String(content).trim(), env, "search_document");
+    } catch (e) {
+      return err(`Embedding failed: ${e.message}`, 502);
+    }
+
+    const { ok, status, body: row } = await db.insert("assistant_memory", {
+      session_id,
+      patient_label: patient_label || null,
+      content: String(content).trim(),
+      kind,
+      embedding: JSON.stringify(embedding),
+      consolidated: false,
+    });
+    if (!ok) return err(row?.message || "Write failed", status);
+    return success(row, { message: "Memory written" });
+  }
+
+  // ── GET /memory/recall?session_id=...&query=...&top_k=5 ────────────────
+  if (param === "recall" && request.method === "GET") {
+    const sessionId = url.searchParams.get("session_id") || "";
+    const query = url.searchParams.get("query") || "";
+    const topK = intParam(url, "top_k", 5);
+    if (!sessionId) return err("'session_id' is required");
+    if (!query) return err("'query' is required");
+
+    let queryEmbedding;
+    try {
+      queryEmbedding = await embedText(query, env, "search_query");
+    } catch (e) {
+      return err(`Embedding failed: ${e.message}`, 502);
+    }
+
+    const { ok, status, body: rows } = await db.rpc("match_memory", {
+      query_embedding: queryEmbedding,
+      match_session_id: sessionId,
+      match_count: Math.min(topK, 20),
+    });
+    if (!ok) return err(rows?.message || "Recall failed", status);
+    return success(rows, { session_id: sessionId, query, count: Array.isArray(rows) ? rows.length : 0 });
+  }
+
+  // ── POST /memory/consolidate ────────────────────────────────────────────
+  // Admin-only over HTTP (manual testing); the hourly cron calls
+  // consolidateSession() directly, bypassing this route entirely.
+  if (param === "consolidate" && request.method === "POST") {
+    const body = await parseBody(request);
+    const sessionId = body?.session_id;
+    if (!sessionId) return err("'session_id' is required");
+    const result = await consolidateSession(sessionId, db, env);
+    if (!result.consolidated) return json({ status: "skipped", reason: result.reason }, 200);
+    return success({ session_id: sessionId, summary_id: result.summaryId }, { message: "Session consolidated" });
+  }
+
+  return notFound("Memory route");
+}
+
 // ─── ROUTE HANDLERS ──────────────────────────────────────────────────────────
 
 // GET /
@@ -1020,9 +1227,9 @@ function handleRoot() {
   return success({
     name: "Chakudya Nutrition Registry (CNR)",
     tagline: "Malawi's first open Food & Nutrition Database",
-    version: "1.1.0",
+    version: "1.2.0",
     maintainer: "Taimu Tech Solutions",
-    auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, and POST /rag/retrieve, which are public but rate-limited.",
+    auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
     endpoints: {
       foods: [
         "GET  /foods",
@@ -1064,6 +1271,11 @@ function handleRoot() {
       rag: [
         "POST /rag/retrieve     (public, rate-limited) → semantic search (query, context, top_k)",
         "POST /rag/ingest       (admin) → add document chunk (content, source, context)",
+      ],
+      memory: [
+        "POST /memory/write        (public, rate-limited) → capture a session fact (session_id, content)",
+        "GET  /memory/recall       (public, rate-limited) → top-K relevant memory for a session (session_id, query, top_k)",
+        "POST /memory/consolidate  (admin) → summarize a session's facts (session_id) — also run hourly by cron",
       ],
     },
   });
@@ -1588,6 +1800,10 @@ async function router(request, env) {
         return await handleRAG(request, url, db, env, param || null);
       }
 
+      case "memory": {
+        return await handleMemory(request, url, db, env, param || null);
+      }
+
       default:
         return notFound();
     }
@@ -1598,6 +1814,29 @@ async function router(request, env) {
 
 // ─── WORKER ENTRY ────────────────────────────────────────────────────────────
 
+/**
+ * Hourly cron (see wrangler.toml [triggers]) — the "Consolidate" step of the
+ * Write/Consolidate/Recall/Apply memory cycle. Finds sessions that have
+ * accumulated enough unconsolidated facts and summarizes each via
+ * consolidateSession(). Runs independently per session; one failure doesn't
+ * block the rest.
+ */
+async function runScheduledConsolidation(env) {
+  const db = supabase(env);
+  const { ok, body: candidates } = await db.rpc("sessions_needing_consolidation", {
+    min_facts: MEMORY_MIN_FACTS_TO_CONSOLIDATE,
+  });
+  if (!ok || !Array.isArray(candidates) || !candidates.length) return;
+
+  for (const { session_id } of candidates) {
+    try {
+      await consolidateSession(session_id, db, env);
+    } catch (e) {
+      console.error(`[consolidate] session ${session_id} failed:`, e.message);
+    }
+  }
+}
+
 export default {
   async fetch(request, env) {
     try {
@@ -1605,5 +1844,9 @@ export default {
     } catch (e) {
       return serverErr(e);
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runScheduledConsolidation(env));
   },
 };
