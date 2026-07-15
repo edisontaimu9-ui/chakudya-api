@@ -772,12 +772,29 @@ function extractJsonObject(text) {
   }
 }
 
+// Default nutrient key set for values coming out of the AI extraction schema
+// (NUTRITION_LABEL_SCHEMA_PROMPT uses "sugars_g"). Manual /packaged/submit
+// payloads target the packaged_foods DB column names directly, which use
+// "sugar_g" (singular) — see PACKAGED_FOOD_DB_NUTRIENT_FIELDS below.
+const PACKAGED_FOOD_NUTRIENT_FIELDS = [
+  "energy_kcal", "protein_g", "fat_g", "saturated_fat_g",
+  "carbs_g", "sugars_g", "fiber_g", "sodium_mg", "salt_g",
+];
+const PACKAGED_FOOD_DB_NUTRIENT_FIELDS = [
+  "energy_kcal", "protein_g", "fat_g", "saturated_fat_g",
+  "carbs_g", "sugar_g", "fiber_g", "sodium_mg", "salt_g",
+];
+
 /**
- * If the AI read values "per serving" rather than "per 100g/100ml", scale
- * them so packaged_foods stays consistent with the rest of the database
+ * If the values were read/entered "per serving" rather than "per 100g/100ml",
+ * scale them so packaged_foods stays consistent with the rest of the database
  * (mirrors the same per-100 normalization already used for FatSecret above).
+ * Used by both /packaged/scan (AI-extracted fields) and /packaged/submit
+ * (manual entry) — pass the matching nutrientKeys list for each field-naming
+ * convention. No-op if `per` isn't "serving" or no parseable serving size is
+ * given, so values already declared per-100g/ml pass through untouched.
  */
-function scaleNutrientsToPer100(fields, per, servingSizeText) {
+function scaleNutrientsToPer100(fields, per, servingSizeText, nutrientKeys = PACKAGED_FOOD_NUTRIENT_FIELDS) {
   if (per !== "serving" || !servingSizeText) return fields;
   const m = String(servingSizeText).match(/([\d.]+)\s*(g|ml)\b/i);
   if (!m) return fields;
@@ -785,17 +802,43 @@ function scaleNutrientsToPer100(fields, per, servingSizeText) {
   if (!amount) return fields;
   const scale = 100 / amount;
   const round2 = (n) => (typeof n === "number" ? Math.round(n * scale * 100) / 100 : n);
+  const out = { ...fields };
+  for (const key of nutrientKeys) {
+    if (out[key] != null) out[key] = round2(out[key]);
+  }
+  return out;
+}
+
+/**
+ * Cross-checks protein/carbs/fat against the declared energy value using the
+ * standard Atwater factors (protein 4 kcal/g, carbs 4 kcal/g, fat 9 kcal/g).
+ * Packaged-food labels routinely round each figure independently, and things
+ * like fiber or sugar alcohols legitimately shift the true energy count, so
+ * this FLAGS a mismatch for the admin review queue rather than rejecting the
+ * submission outright.
+ */
+function checkMacrosMatchCalories({ energy_kcal, protein_g, fat_g, carbs_g }) {
+  const num = (v) => {
+    if (typeof v === "number") return v;
+    if (typeof v === "string" && v.trim() !== "") return Number(v);
+    return null;
+  };
+  const kcal = num(energy_kcal), p = num(protein_g), f = num(fat_g), c = num(carbs_g);
+  if ([kcal, p, f, c].some((n) => n == null || Number.isNaN(n))) {
+    return { checked: false };
+  }
+  const calculated_kcal = Math.round((p * 4 + c * 4 + f * 9) * 100) / 100;
+  const difference = Math.round(Math.abs(calculated_kcal - kcal) * 100) / 100;
+  // Tolerance: greater of 20 kcal flat or 15% relative — absorbs normal label
+  // rounding without being noisy on legitimate submissions.
+  const tolerance = Math.round(Math.max(20, kcal * 0.15) * 100) / 100;
   return {
-    ...fields,
-    energy_kcal: round2(fields.energy_kcal),
-    protein_g: round2(fields.protein_g),
-    fat_g: round2(fields.fat_g),
-    saturated_fat_g: round2(fields.saturated_fat_g),
-    carbs_g: round2(fields.carbs_g),
-    sugars_g: round2(fields.sugars_g),
-    fiber_g: round2(fields.fiber_g),
-    sodium_mg: round2(fields.sodium_mg),
-    salt_g: round2(fields.salt_g),
+    checked: true,
+    calculated_kcal,
+    declared_kcal: kcal,
+    difference,
+    tolerance,
+    matches: difference <= tolerance,
   };
 }
 
@@ -1643,16 +1686,34 @@ async function handlePackagedScan(request, env, db) {
     ocr_raw: extracted,
   };
 
+  const macroCheck = checkMacrosMatchCalories(data);
+
   const { ok, status, body } = await db.insert("packaged_foods", data);
   if (!ok) return err(body?.message || "Submit failed", status);
 
   const lowConfidence = data.ai_confidence != null && data.ai_confidence < 0.6;
+  const macroMismatch = macroCheck.checked && !macroCheck.matches;
+  const needsReview = lowConfidence || macroMismatch;
+
+  let message;
+  if (lowConfidence && macroMismatch) {
+    message =
+      "Submitted for review, but the scan confidence was low and the calories don't closely " +
+      "match protein/carbs/fat — please double-check the details.";
+  } else if (macroMismatch) {
+    message =
+      `Submitted for review — declared calories (${macroCheck.declared_kcal} kcal) don't closely ` +
+      `match protein/carbs/fat (~${macroCheck.calculated_kcal} kcal calculated). Please double-check the label.`;
+  } else if (lowConfidence) {
+    message = "Submitted for review, but the scan confidence was low — please double-check the details.";
+  } else {
+    message = "Submitted for review. Thanks for contributing to Chakudya!";
+  }
 
   return success(body, {
-    message: lowConfidence
-      ? "Submitted for review, but the scan confidence was low — please double-check the details."
-      : "Submitted for review. Thanks for contributing to Chakudya!",
-    needs_review: lowConfidence,
+    message,
+    needs_review: needsReview,
+    macro_check: macroCheck.checked ? macroCheck : undefined,
   });
 }
 
@@ -1684,10 +1745,38 @@ async function handlePackaged(request, url, db, id, isSubmit) {
     if (!payload.barcode) return err("'barcode' is required");
     if (!payload.product_name) return err("'product_name' is required");
 
-    const data = { status: "pending", submitted_at: new Date().toISOString(), ...payload };
+    // `per` ("100g" | "100ml" | "serving") is an optional hint, not a
+    // packaged_foods column — pull it (and serving_size, handled separately
+    // below) out before building the insert payload so it never hits the DB.
+    const { per, serving_size, ...rest } = payload;
+
+    // Same per-100g/ml normalization /packaged/scan applies to AI-read
+    // labels, so packaged_foods stays consistent no matter which submission
+    // path a row came from. No-op if the submitter already entered per-100
+    // values (the common case) or omitted `per`/`serving_size`.
+    const normalized = scaleNutrientsToPer100(rest, per, serving_size, PACKAGED_FOOD_DB_NUTRIENT_FIELDS);
+    const macroCheck = checkMacrosMatchCalories(normalized);
+
+    const data = {
+      status: "pending",
+      submitted_at: new Date().toISOString(),
+      serving_size: serving_size ?? null,
+      ...normalized,
+    };
     const { ok, status, body } = await db.insert("packaged_foods", data);
     if (!ok) return err(body?.message || "Submit failed", status);
-    return success(body, { message: "Packaged food submitted for review" });
+
+    const macroMismatch = macroCheck.checked && !macroCheck.matches;
+    const message = macroMismatch
+      ? `Packaged food submitted for review — declared calories (${macroCheck.declared_kcal} kcal) don't closely ` +
+        `match protein/carbs/fat (~${macroCheck.calculated_kcal} kcal calculated). Please double-check the label.`
+      : "Packaged food submitted for review";
+
+    return success(body, {
+      message,
+      needs_review: macroMismatch,
+      macro_check: macroCheck.checked ? macroCheck : undefined,
+    });
   }
 
   if (!id) return err("ID required for this method");
