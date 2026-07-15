@@ -14,6 +14,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - Enteral formulas (`/formulas`)
 - Packaged foods + community submission flow (`/packaged`, `/packaged/submit`)
 - RAG semantic retrieval and ingestion (`/rag/retrieve`, `/rag/ingest`)
+- Session memory for Oasis AI — Write/Consolidate/Recall (`/memory/write`, `/memory/recall`, `/memory/consolidate`)
 
 ---
 
@@ -23,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.1.0`
+- **Current CNR version:** `1.3.0`
 
 ---
 
@@ -116,11 +117,14 @@ npx wrangler deploy
   - `/formulas`
   - `/packaged/:id`
 - `POST /rag/ingest`
+- `POST /memory/consolidate` (also runs automatically via hourly cron, bypassing HTTP auth)
 
 Public exceptions:
 
 - `POST /packaged/submit` (public, rate-limited)
 - `POST /rag/retrieve` (public, rate-limited)
+- `POST /memory/write` (public, rate-limited)
+- `GET /memory/recall` (public, rate-limited)
 - All `GET` endpoints
 
 ---
@@ -130,6 +134,8 @@ Public exceptions:
 - **Standard reads (`GET`)**: `100/min` per IP per resource
 - **Packaged submit (`POST /packaged/submit`)**: `10/min` per IP
 - **RAG retrieve (`POST /rag/retrieve`)**: `20/min` per IP
+- **Memory write (`POST /memory/write`)**: `30/min` per IP
+- **Memory recall (`GET /memory/recall`)**: `30/min` per IP
 - **Admin writes (general)**: `60/min` per admin token
 - **RAG ingest (`POST /rag/ingest`)**: `30/min` per admin token
 
@@ -289,6 +295,59 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
   "metadata": {}
 }
 ```
+
+### Memory (Write → Consolidate → Recall → Apply)
+
+Per-session clinical scratchpad for Oasis AI. Scoped by `session_id` (the
+app's own `SESSION_ID`, regenerated per page load) — this is intentionally
+session-scoped working memory, not a long-term cross-visit profile.
+
+- `POST /memory/write` *(public, rate-limited)*
+- `GET /memory/recall` *(public, rate-limited)*
+- `POST /memory/consolidate` *(admin — also run automatically, hourly, by a cron trigger)*
+
+**Setup required** (not automatic — run once):
+
+1. Run `sql/memory_schema.sql` in the Supabase SQL editor. Creates the
+   `assistant_memory` table plus `match_memory` and
+   `sessions_needing_consolidation` RPC functions (same pgvector + Cohere
+   `embed-multilingual-v3.0` pattern as `rag_knowledge_base` / `match_documents`).
+2. `wrangler.toml` declares an hourly cron trigger
+   (`[triggers] crons = ["0 * * * *"]`). Cron triggers are only registered on
+   a real deploy (`npx wrangler deploy`) — a Cloudflare dashboard Quick Edit
+   save does **not** pick this up.
+
+`POST /memory/write` body — captures one raw fact ("Write"):
+
+```json
+{
+  "session_id": "S_ABC123_XYZ9",
+  "content": "Patient reports 3-day history of poor oral intake, BMI 17.2",
+  "kind": "fact",
+  "patient_label": "Bed 4"
+}
+```
+
+`GET /memory/recall?session_id=...&query=...&top_k=5` — top-K most relevant
+memory rows (facts and/or summaries) for that session ("Recall"), ranked by
+cosine similarity to `query`.
+
+`POST /memory/consolidate` body — manually trigger summarization for one
+session ("Consolidate"):
+
+```json
+{ "session_id": "S_ABC123_XYZ9" }
+```
+
+Sessions with fewer than 6 unconsolidated facts are skipped
+(`{"status":"skipped","reason":"Not enough unconsolidated facts yet"}`). When
+consolidation runs, it summarizes the session's raw facts into one row via a
+single Groq text completion (`llama-3.3-70b-versatile` by default, override
+with `GROQ_TEXT_MODEL`), inserts it as `kind: "summary"`, and marks the
+source facts `consolidated: true` so they drop out of future consolidation
+batches (they remain individually recallable). The hourly cron runs this
+automatically for every session that qualifies — no manual step needed in
+normal operation.
 
 ---
 

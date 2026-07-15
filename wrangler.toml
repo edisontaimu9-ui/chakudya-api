@@ -23,6 +23,8 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 #   npx wrangler secret put FATSECRET_CONSUMER_KEY
 #   npx wrangler secret put FATSECRET_CONSUMER_SECRET
 #   npx wrangler secret put USDA_FDC_API_KEY
+#   npx wrangler secret put GROQ_API_KEY
+#   npx wrangler secret put GROQ_VISION_MODEL   (optional override)
 #
 # FatSecret uses OAuth 1.0 (2-legged, HMAC-SHA1), signed natively in
 # index.js via Web Crypto — no token exchange, no IP whitelist required.
@@ -31,12 +33,29 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # power the external food lookup cascade (foods/lookup). The rest of
 # the API works without them.
 #
+# GROQ_API_KEY powers POST /packaged/scan (photo -> OCR/AI nutrition label
+# extraction) and POST /memory/consolidate (session-memory summarization,
+# also run hourly by the cron trigger below). Without it, those routes
+# fail/skip; everything else still works. Get a free key at
+# https://console.groq.com.
+#
+# GROQ_TEXT_MODEL (optional) overrides the text model used for memory
+# consolidation summaries — defaults to "llama-3.3-70b-versatile" (the same
+# one oasisAI.js already uses client-side).
+#
 # [vars] is for non-sensitive config only.
 # Secrets below are declared so wrangler knows they exist;
 # actual values live in the dashboard.
 
 # [vars]
 # ENVIRONMENT = "production"
+
+# ── Cron Trigger — hourly session-memory consolidation ─────────
+# The "Consolidate" step of Write/Consolidate/Recall/Apply: finds sessions
+# with 6+ unconsolidated memory facts and summarizes each via Groq.
+# See sql/memory_schema.sql for the required table + RPC functions.
+[triggers]
+crons = ["0 * * * *"]
 
 # ── Workers Observability (optional, free tier) ────────────────
 [observability]
