@@ -161,6 +161,17 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 **Invalidation:** a successful admin write (`POST`/`PUT`/`PATCH`/`DELETE`) to a cached resource automatically purges the bare list URL and the single-id URL for that resource. Filtered/paginated variants beyond those two shapes just expire naturally within the TTL above. Note this is the per-Worker Cache API, not zone-level CDN cache, so there's no dashboard "purge everything" button for it — the automatic purge on write is the main invalidation path.
 
+**Verifying it's working:** every cached response carries an `X-Cache: HIT` or `X-Cache: MISS` header (Cloudflare's own `cf-cache-status` doesn't apply here since this is the Workers Cache API, not zone-level caching). Check it directly:
+
+```bash
+curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?query=nsima" | grep -i x-cache
+# first request  -> X-Cache: MISS
+curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?query=nsima" | grep -i x-cache
+# second request -> X-Cache: HIT
+```
+
+Note: Cache API entries are per-datacenter, not global — if your first two requests happen to land on different Cloudflare edge nodes, the second one can still show `MISS`. Repeat a couple of times if that happens; it'll settle into `HIT` once requests are routed to a datacenter that already has the entry.
+
 ---
 
 ## Endpoints
