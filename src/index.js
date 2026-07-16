@@ -3,7 +3,12 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.4.0
+ * Version: 1.4.1
+ *
+ * v1.4.1 changes:
+ *  - Added console.log lines for cache HIT/MISS/PURGE — visible in the
+ *    Cloudflare dashboard under Workers & Pages → chakudya-api → Logs
+ *    (enable "Real-time Logs" / Live tail to watch them stream in).
  *
  * v1.4.0 changes:
  *  - Added edge caching (Cloudflare Cache API) for GET /foods, /exchange,
@@ -152,7 +157,10 @@ function isAdmin(request, env) {
  */
 function cachePolicy(resource, param) {
   if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
-    return { ttl: 3600 }; // 1 hour — static reference data
+    // 24 hours — this data rarely changes, and any admin edit already
+    // triggers an instant purge (see purgeResourceCache below), so a long
+    // TTL only helps performance and never risks serving stale clinical data.
+    return { ttl: 86400 };
   }
   if (resource === "foods" && param === "lookup") {
     return { ttl: 1800 }; // 30 min — external lookups, already deduped server-side
@@ -1968,6 +1976,7 @@ async function router(request, env, ctx) {
   if (cacheKey) {
     const hit = await caches.default.match(cacheKey);
     if (hit) {
+      console.log(`[cache] HIT ${request.method} ${url.pathname}${url.search}`);
       const tagged = new Response(hit.body, hit);
       tagged.headers.set("X-Cache", "HIT");
       return tagged;
@@ -1978,6 +1987,7 @@ async function router(request, env, ctx) {
     const response = await dispatch(request, url, db, env, resource, param);
 
     if (cacheKey && response.status === 200) {
+      console.log(`[cache] MISS ${request.method} ${url.pathname}${url.search} — caching for ${edgeCache.ttl}s`);
       const cacheable = new Response(response.body, response);
       cacheable.headers.set("Cache-Control", `public, max-age=${edgeCache.ttl}`);
       ctx.waitUntil(caches.default.put(cacheKey, cacheable.clone()));
@@ -1992,6 +2002,7 @@ async function router(request, env, ctx) {
       response.status < 300 &&
       cachePolicy(resource, param) !== null
     ) {
+      console.log(`[cache] PURGE /${resource}${param ? "/" + param : ""} (after ${request.method})`);
       await purgeResourceCache(url.origin, resource, param, ctx);
     }
 
