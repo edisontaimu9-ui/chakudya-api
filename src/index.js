@@ -3,7 +3,18 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.3.0
+ * Version: 1.4.0
+ *
+ * v1.4.0 changes:
+ *  - Added edge caching (Cloudflare Cache API) for GET /foods, /exchange,
+ *    /renal, /formulas, and /foods/lookup — see cachePolicy(). Reference
+ *    data is cached 1hr; external lookups 30min (on top of the existing
+ *    external_foods_cache table dedup).
+ *  - Added best-effort cache purge (purgeResourceCache) after successful
+ *    admin writes to a cached resource, so edits don't wait out the full TTL.
+ *  - router()/fetch() now thread `ctx` through so cache writes can use
+ *    ctx.waitUntil() without blocking the response.
+ *  - No new bindings or secrets required — Cache API is built into Workers.
  *
  * v1.3.0 changes:
  *  - Added session memory (Write → Consolidate → Recall → Apply):
@@ -120,6 +131,32 @@ function isAdmin(request, env) {
     return false;
   }
   return !!token && token === env.ADMIN_API_KEY;
+}
+
+// ─── EDGE CACHING (Cloudflare Cache API) ────────────────────────────────────
+
+/**
+ * Which GET routes get cached at the edge, and for how long.
+ * Returns null for anything that must never be cached (writes are never
+ * routed here at all — this is only ever consulted for GET requests).
+ *
+ * Rationale:
+ *  - foods/exchange/renal/formulas are curated reference tables that only
+ *    change when the maintainer edits them directly — safe to cache hard.
+ *  - foods/lookup already dedupes external API calls via external_foods_cache
+ *    in Supabase; an edge cache on top saves the Supabase round-trip too for
+ *    repeat queries within the TTL window.
+ *  - packaged foods change with every community submission/review — not cached.
+ *  - rag/memory are session- and query-specific — never cached.
+ */
+function cachePolicy(resource, param) {
+  if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
+    return { ttl: 3600 }; // 1 hour — static reference data
+  }
+  if (resource === "foods" && param === "lookup") {
+    return { ttl: 1800 }; // 30 min — external lookups, already deduped server-side
+  }
+  return null; // packaged, rag, memory, root — no edge caching
 }
 
 // ─── RATE LIMITING (Cloudflare KV) ──────────────────────────────────────────
@@ -1808,7 +1845,76 @@ async function handlePackaged(request, url, db, id, isSubmit) {
 
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
 
-async function router(request, env) {
+/**
+ * Dispatches to the actual resource handler. Pulled out of router() so the
+ * edge-cache wrapper can call it uniformly whether or not a cache policy
+ * applies to the route.
+ */
+async function dispatch(request, url, db, env, resource, param) {
+  switch (resource) {
+    case "foods": {
+      if (param === "lookup") {
+        return await handleFoodsLookup(request, url, db, env);
+      }
+      const id = param || null;
+      return await handleFoods(request, url, db, id);
+    }
+
+    case "exchange": {
+      const id = param || null;
+      return await handleExchange(request, url, db, id);
+    }
+
+    case "renal": {
+      const id = param || null;
+      return await handleRenal(request, url, db, id);
+    }
+
+    case "formulas": {
+      const id = param || null;
+      return await handleFormulas(request, url, db, id);
+    }
+
+    case "packaged": {
+      if (param === "scan") {
+        return await handlePackagedScan(request, env, db);
+      }
+      const isSubmit = param === "submit";
+      const id = isSubmit ? null : param || null;
+      return await handlePackaged(request, url, db, id, isSubmit);
+    }
+
+    case "rag": {
+      return await handleRAG(request, url, db, env, param || null);
+    }
+
+    case "memory": {
+      return await handleMemory(request, url, db, env, param || null);
+    }
+
+    default:
+      return notFound();
+  }
+}
+
+/**
+ * Best-effort purge after an admin write. The Cache API only deletes exact
+ * URL matches, so this can't clear every filtered/paginated variant that may
+ * be cached — but it clears the two shapes people actually hit right after
+ * an edit: the bare list endpoint and the single-id endpoint. Anything else
+ * (odd filter combos) just ages out naturally within the TTL from cachePolicy.
+ */
+async function purgeResourceCache(origin, resource, param, ctx) {
+  const urls = [`${origin}/${resource}`];
+  if (param) urls.push(`${origin}/${resource}/${param}`);
+  ctx.waitUntil(
+    Promise.all(
+      urls.map((u) => caches.default.delete(new Request(u, { method: "GET" })))
+    )
+  );
+}
+
+async function router(request, env, ctx) {
   const url = new URL(request.url);
   const pathname = url.pathname.replace(/\/$/, "") || "/";
   const segments = pathname.split("/").filter(Boolean);
@@ -1851,51 +1957,39 @@ async function router(request, env) {
     if (!allowed) return rateLimited(policy.rate.windowSeconds);
   }
 
+  // ── Edge cache (Cloudflare Cache API) — GET routes only ─────────────────────
+  // Cache key includes full query string (filters/limit/offset/query text all
+  // vary the response), so different filter combos on the same resource get
+  // distinct cache entries automatically.
+  const edgeCache = request.method === "GET" ? cachePolicy(resource, param) : null;
+  const cacheKey = edgeCache ? new Request(url.toString(), request) : null;
+
+  if (cacheKey) {
+    const hit = await caches.default.match(cacheKey);
+    if (hit) return hit;
+  }
+
   try {
-    switch (resource) {
-      case "foods": {
-        if (param === "lookup") {
-          return await handleFoodsLookup(request, url, db, env);
-        }
-        const id = param || null;
-        return await handleFoods(request, url, db, id);
-      }
+    const response = await dispatch(request, url, db, env, resource, param);
 
-      case "exchange": {
-        const id = param || null;
-        return await handleExchange(request, url, db, id);
-      }
-
-      case "renal": {
-        const id = param || null;
-        return await handleRenal(request, url, db, id);
-      }
-
-      case "formulas": {
-        const id = param || null;
-        return await handleFormulas(request, url, db, id);
-      }
-
-      case "packaged": {
-        if (param === "scan") {
-          return await handlePackagedScan(request, env, db);
-        }
-        const isSubmit = param === "submit";
-        const id = isSubmit ? null : param || null;
-        return await handlePackaged(request, url, db, id, isSubmit);
-      }
-
-      case "rag": {
-        return await handleRAG(request, url, db, env, param || null);
-      }
-
-      case "memory": {
-        return await handleMemory(request, url, db, env, param || null);
-      }
-
-      default:
-        return notFound();
+    if (cacheKey && response.status === 200) {
+      const cacheable = new Response(response.body, response);
+      cacheable.headers.set("Cache-Control", `public, max-age=${edgeCache.ttl}`);
+      ctx.waitUntil(caches.default.put(cacheKey, cacheable.clone()));
+      return cacheable;
     }
+
+    // Successful admin write to a cacheable resource — clear the obvious
+    // stale shapes so the next read isn't served last hour's data.
+    if (
+      request.method !== "GET" &&
+      response.status < 300 &&
+      cachePolicy(resource, param) !== null
+    ) {
+      await purgeResourceCache(url.origin, resource, param, ctx);
+    }
+
+    return response;
   } catch (e) {
     return serverErr(e);
   }
@@ -1927,9 +2021,9 @@ async function runScheduledConsolidation(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await router(request, env);
+      return await router(request, env, ctx);
     } catch (e) {
       return serverErr(e);
     }
