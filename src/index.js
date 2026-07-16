@@ -64,6 +64,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
   "Access-Control-Max-Age": "86400",
+  "Access-Control-Expose-Headers": "X-Cache",
 };
 
 // ─── RESPONSE HELPERS ────────────────────────────────────────────────────────
@@ -1966,7 +1967,11 @@ async function router(request, env, ctx) {
 
   if (cacheKey) {
     const hit = await caches.default.match(cacheKey);
-    if (hit) return hit;
+    if (hit) {
+      const tagged = new Response(hit.body, hit);
+      tagged.headers.set("X-Cache", "HIT");
+      return tagged;
+    }
   }
 
   try {
@@ -1976,6 +1981,7 @@ async function router(request, env, ctx) {
       const cacheable = new Response(response.body, response);
       cacheable.headers.set("Cache-Control", `public, max-age=${edgeCache.ttl}`);
       ctx.waitUntil(caches.default.put(cacheKey, cacheable.clone()));
+      cacheable.headers.set("X-Cache", "MISS");
       return cacheable;
     }
 
