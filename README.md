@@ -152,7 +152,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 24 hours |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /packaged*` | ❌ | — (changes with every submission) |
 | `GET /rag/*`, `/memory/*` | ❌ | — (session/query-specific) |
@@ -171,6 +171,8 @@ curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?query=nsim
 ```
 
 Note: Cache API entries are per-datacenter, not global — if your first two requests happen to land on different Cloudflare edge nodes, the second one can still show `MISS`. Repeat a couple of times if that happens; it'll settle into `HIT` once requests are routed to a datacenter that already has the entry.
+
+Note: Cloudflare has no dashboard analytics for the Workers Cache API specifically (the "Caching" dashboard tab is for zone-level CDN caching on a proxied domain, which is separate from this). To watch cache activity live instead: Workers & Pages → chakudya-api → Logs → enable **Real-time Logs**, then hit any cached endpoint — you'll see `[cache] HIT`, `[cache] MISS`, and `[cache] PURGE` lines streaming in as requests come through.
 
 ---
 
