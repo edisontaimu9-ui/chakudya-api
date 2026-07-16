@@ -146,6 +146,23 @@ When exceeded:
 
 ---
 
+## Caching (Cloudflare Cache API, `v1.4.0+`)
+
+GET responses for reference-style resources are cached at the Cloudflare edge, keyed on the full request URL (so different filters/query params get distinct cache entries). No extra bindings needed — this uses the Workers built-in `caches.default`.
+
+| Resource | Cached? | TTL |
+|---|---|---|
+| `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 1 hour |
+| `GET /foods/lookup` | ✅ | 30 min |
+| `GET /packaged*` | ❌ | — (changes with every submission) |
+| `GET /rag/*`, `/memory/*` | ❌ | — (session/query-specific) |
+
+`/foods/lookup` was already deduping external USDA/FatSecret/Open Food Facts calls via the `external_foods_cache` Supabase table — the edge cache sits on top of that, so a repeat query within 30 min skips the Supabase round-trip entirely too.
+
+**Invalidation:** a successful admin write (`POST`/`PUT`/`PATCH`/`DELETE`) to a cached resource automatically purges the bare list URL and the single-id URL for that resource. Filtered/paginated variants beyond those two shapes just expire naturally within the TTL above. Note this is the per-Worker Cache API, not zone-level CDN cache, so there's no dashboard "purge everything" button for it — the automatic purge on write is the main invalidation path.
+
+---
+
 ## Endpoints
 
 ### Root
