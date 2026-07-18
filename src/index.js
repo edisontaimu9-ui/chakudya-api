@@ -3,12 +3,7 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.4.1
- *
- * v1.4.1 changes:
- *  - Added console.log lines for cache HIT/MISS/PURGE — visible in the
- *    Cloudflare dashboard under Workers & Pages → chakudya-api → Logs
- *    (enable "Real-time Logs" / Live tail to watch them stream in).
+ * Version: 1.4.0
  *
  * v1.4.0 changes:
  *  - Added edge caching (Cloudflare Cache API) for GET /foods, /exchange,
@@ -157,7 +152,7 @@ function isAdmin(request, env) {
  */
 function cachePolicy(resource, param) {
   if (resource === "products" && !param) {
-    // Product list changes with every crawl run — short TTL, not the 24h
+    // Product list changes with every crawl run — short TTL, not the 1hr
     // reference-data TTL below. Single-product GETs (/products/:id) and
     // /nutrition are left uncached since they're low-traffic detail views.
     return { ttl: 900 }; // 15 min
@@ -166,10 +161,7 @@ function cachePolicy(resource, param) {
     return { ttl: 86400 }; // changes only when you add a manufacturer
   }
   if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
-    // 24 hours — this data rarely changes, and any admin edit already
-    // triggers an instant purge (see purgeResourceCache below), so a long
-    // TTL only helps performance and never risks serving stale clinical data.
-    return { ttl: 86400 };
+    return { ttl: 3600 }; // 1 hour — static reference data
   }
   if (resource === "foods" && param === "lookup") {
     return { ttl: 1800 }; // 30 min — external lookups, already deduped server-side
@@ -259,17 +251,17 @@ function routePolicy(resource, method, param) {
     return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
 
+  // Crawl trigger queues a real scrape job (GitHub Actions) — admin only,
+  // capped low so a mistake doesn't queue dozens of runs back to back.
+  if (resource === "crawl" && method === "POST") {
+    return { auth: "admin", rate: { limit: 10, windowSeconds: 60, scope: "admin" } };
+  }
+
   // Consolidation runs an LLM summarization call and rewrites memory rows —
   // triggered by the hourly cron (which calls it internally, bypassing HTTP
   // auth) or manually by an admin for testing.
   if (isMemoryConsolidate) {
     return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
-  }
-
-  // Crawl trigger queues a real scrape job (GitHub Actions) — admin only,
-  // capped low so a mistake doesn't queue dozens of runs back to back.
-  if (resource === "crawl" && method === "POST") {
-    return { auth: "admin", rate: { limit: 10, windowSeconds: 60, scope: "admin" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
@@ -2235,7 +2227,6 @@ async function router(request, env, ctx) {
   if (cacheKey) {
     const hit = await caches.default.match(cacheKey);
     if (hit) {
-      console.log(`[cache] HIT ${request.method} ${url.pathname}${url.search}`);
       const tagged = new Response(hit.body, hit);
       tagged.headers.set("X-Cache", "HIT");
       return tagged;
@@ -2246,7 +2237,6 @@ async function router(request, env, ctx) {
     const response = await dispatch(request, url, db, env, resource, param);
 
     if (cacheKey && response.status === 200) {
-      console.log(`[cache] MISS ${request.method} ${url.pathname}${url.search} — caching for ${edgeCache.ttl}s`);
       const cacheable = new Response(response.body, response);
       cacheable.headers.set("Cache-Control", `public, max-age=${edgeCache.ttl}`);
       ctx.waitUntil(caches.default.put(cacheKey, cacheable.clone()));
@@ -2261,7 +2251,6 @@ async function router(request, env, ctx) {
       response.status < 300 &&
       cachePolicy(resource, param) !== null
     ) {
-      console.log(`[cache] PURGE /${resource}${param ? "/" + param : ""} (after ${request.method})`);
       await purgeResourceCache(url.origin, resource, param, ctx);
     }
 
