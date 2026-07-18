@@ -156,6 +156,15 @@ function isAdmin(request, env) {
  *  - rag/memory are session- and query-specific — never cached.
  */
 function cachePolicy(resource, param) {
+  if (resource === "products" && !param) {
+    // Product list changes with every crawl run — short TTL, not the 24h
+    // reference-data TTL below. Single-product GETs (/products/:id) and
+    // /nutrition are left uncached since they're low-traffic detail views.
+    return { ttl: 900 }; // 15 min
+  }
+  if (resource === "manufacturers") {
+    return { ttl: 86400 }; // changes only when you add a manufacturer
+  }
   if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
     // 24 hours — this data rarely changes, and any admin edit already
     // triggers an instant purge (see purgeResourceCache below), so a long
@@ -255,6 +264,12 @@ function routePolicy(resource, method, param) {
   // auth) or manually by an admin for testing.
   if (isMemoryConsolidate) {
     return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // Crawl trigger queues a real scrape job (GitHub Actions) — admin only,
+  // capped low so a mistake doesn't queue dozens of runs back to back.
+  if (resource === "crawl" && method === "POST") {
+    return { auth: "admin", rate: { limit: 10, windowSeconds: 60, scope: "admin" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
@@ -1366,6 +1381,26 @@ function handleRoot() {
         "GET  /memory/recall       (public, rate-limited) → top-K relevant memory for a session (session_id, query, top_k)",
         "POST /memory/consolidate  (admin) → summarize a session's facts (session_id) — also run hourly by cron",
       ],
+      manufacturers: [
+        "GET  /manufacturers",
+        "POST /manufacturers        (admin)",
+        "PATCH /manufacturers/:id   (admin)",
+        "DELETE /manufacturers/:id  (admin)",
+      ],
+      products: [
+        "GET  /products             — filters: category, route, manufacturer_id, search, include_inactive",
+        "GET  /products/:id",
+        "POST /products             (admin)",
+        "PUT  /products/:id         (admin)",
+        "PATCH /products/:id        (admin)",
+        "DELETE /products/:id       (admin — soft delete, sets is_active=false)",
+      ],
+      nutrition: ["GET /nutrition?product_id=123"],
+      crawler: [
+        "POST /crawl                (admin, rate-limited) → queue a crawl for all enabled manufacturers",
+        "POST /crawl/:manufacturer_slug  (admin, rate-limited) → queue a crawl for one manufacturer",
+        "GET  /status               → recent crawl_logs rows",
+      ],
     },
   });
 }
@@ -1621,6 +1656,207 @@ async function handleFormulas(request, url, db, id) {
   }
 
   return err("Method not allowed", 405);
+}
+
+// ── /manufacturers ───────────────────────────────────────────────────────────
+
+async function handleManufacturers(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const limit = limitParam(url);
+    const offset = intParam(url, "offset", 0);
+    const { ok, status, body, total } = await db.select("manufacturers", {
+      filters: {},
+      limit,
+      offset,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.insert("manufacturers", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Manufacturer created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("manufacturers", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Manufacturer updated" });
+  }
+
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("manufacturers", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Manufacturer ${id} deleted` });
+  }
+
+  return err("Method not allowed", 405);
+}
+
+// ── /products ─────────────────────────────────────────────────────────────────
+//
+// Serves the crawler's normalized catalog (see crawler_schema.sql). The
+// crawler itself (Python/Playwright, running in GitHub Actions) writes to
+// Supabase directly with the service key — it does NOT go through this
+// Worker. This handler is for the read side (site/app queries) plus manual
+// admin edits/corrections to crawled data.
+
+async function handleProducts(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const limit = limitParam(url);
+    const offset = intParam(url, "offset", 0);
+    const category = url.searchParams.get("category") || "";
+    const route = url.searchParams.get("route") || "";
+    const manufacturerId = url.searchParams.get("manufacturer_id") || "";
+    const search = url.searchParams.get("search") || "";
+    const activeOnly = url.searchParams.get("include_inactive") !== "true";
+
+    const filters = {};
+    if (category) filters["category"] = `eq.${category}`;
+    if (route) filters["route"] = `eq.${route}`;
+    if (manufacturerId) filters["manufacturer_id"] = `eq.${manufacturerId}`;
+    if (search) filters["product_name"] = `ilike.*${search}*`;
+    if (activeOnly) filters["is_active"] = `eq.true`;
+
+    if (id) {
+      const { ok, status, body } = await db.select("products", {
+        filters: { id: `eq.${id}` },
+        limit: 1,
+      });
+      if (!ok) return err(body?.message || "Query failed", status);
+      if (!body || !body.length) return notFound("Product");
+      return success(body[0]);
+    }
+
+    const { ok, status, body, total } = await db.select("products", {
+      filters,
+      limit,
+      offset,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.insert("products", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Product created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PUT") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("products", id, payload, "PUT");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Product replaced" });
+  }
+
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("products", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Product updated" });
+  }
+
+  if (method === "DELETE") {
+    // Soft delete by default — crawled catalogs should almost never hard-delete;
+    // a product missing from a manufacturer's site today may reappear.
+    const { ok, status, body } = await db.update(
+      "products",
+      id,
+      { is_active: false },
+      "PATCH"
+    );
+    if (!ok) return err(body?.message || "Deactivate failed", status);
+    return success(body, { message: `Product ${id} deactivated` });
+  }
+
+  return err("Method not allowed", 405);
+}
+
+// ── /nutrition ────────────────────────────────────────────────────────────────
+// GET /nutrition?product_id=123
+
+async function handleNutrition(request, url, db) {
+  if (request.method !== "GET") return err("Only GET is supported", 405);
+
+  const productId = url.searchParams.get("product_id");
+  if (!productId) return err("product_id query param required");
+
+  const { ok, status, body } = await db.select("product_nutrition", {
+    filters: { product_id: `eq.${productId}` },
+    limit: 200,
+  });
+  if (!ok) return err(body?.message || "Query failed", status);
+  return success(body);
+}
+
+// ── /crawl ────────────────────────────────────────────────────────────────────
+//
+// The Worker does NOT run the crawl (Playwright needs a real browser process,
+// which Cloudflare Workers can't host). POST /crawl and POST /crawl/:manufacturer
+// just record a request row in crawl_logs — a GitHub Actions workflow polls
+// for status:"requested" rows (or is triggered directly via repository_dispatch)
+// and does the actual scraping, writing products/nutrition/etc. straight to
+// Supabase with the service key. GET /status reads back recent crawl_logs rows.
+
+async function handleCrawlTrigger(request, url, db, manufacturerSlug) {
+  if (request.method !== "POST") return err("Only POST is supported", 405);
+
+  let manufacturerId = null;
+  if (manufacturerSlug) {
+    const { ok, body } = await db.select("manufacturers", {
+      filters: { slug: `eq.${manufacturerSlug}` },
+      limit: 1,
+    });
+    if (!ok || !body || !body.length) return notFound("Manufacturer");
+    manufacturerId = body[0].id;
+  }
+
+  const { ok, status, body } = await db.insert("crawl_logs", {
+    manufacturer_id: manufacturerId,
+    status: "requested",
+  });
+  if (!ok) return err(body?.message || "Failed to queue crawl", status);
+  return success(body, {
+    message: manufacturerSlug
+      ? `Crawl queued for ${manufacturerSlug}`
+      : "Crawl queued for all enabled manufacturers",
+  });
+}
+
+async function handleCrawlStatus(request, url, db) {
+  if (request.method !== "GET") return err("Only GET is supported", 405);
+
+  const limit = limitParam(url);
+  const manufacturerId = url.searchParams.get("manufacturer_id") || "";
+  const filters = {};
+  if (manufacturerId) filters["manufacturer_id"] = `eq.${manufacturerId}`;
+
+  const { ok, status, body, total } = await db.select("crawl_logs", {
+    filters,
+    limit,
+    offset: 0,
+    order: "started_at.desc",
+  });
+  if (!ok) return err(body?.message || "Query failed", status);
+  return listSuccess(body, { count: total, limit, offset: 0 });
 }
 
 // ── /packaged/scan ────────────────────────────────────────────────────────────
@@ -1899,6 +2135,29 @@ async function dispatch(request, url, db, env, resource, param) {
 
     case "memory": {
       return await handleMemory(request, url, db, env, param || null);
+    }
+
+    case "manufacturers": {
+      const id = param || null;
+      return await handleManufacturers(request, url, db, id);
+    }
+
+    case "products": {
+      const id = param || null;
+      return await handleProducts(request, url, db, id);
+    }
+
+    case "nutrition": {
+      return await handleNutrition(request, url, db);
+    }
+
+    case "crawl": {
+      // param here is a manufacturer slug, e.g. POST /crawl/abbott-nutrition
+      return await handleCrawlTrigger(request, url, db, param || null);
+    }
+
+    case "status": {
+      return await handleCrawlStatus(request, url, db);
     }
 
     default:
