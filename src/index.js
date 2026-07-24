@@ -57,6 +57,12 @@
  *     aren't picked up by a dashboard-only Quick Edit save.
  */
 
+// ─── VERSION ─────────────────────────────────────────────────────────────────
+// Single source of truth for the version reported by GET / (handleRoot).
+// Bump this alongside the changelog comment at the top of this file — the two
+// had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
+const CNR_VERSION = "1.4.0";
+
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
 const CORS_HEADERS = {
@@ -211,7 +217,7 @@ function routePolicy(resource, method, param) {
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
-  const isMemoryRecall = resource === "memory" && param === "recall" && method === "GET";
+  const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
 
   // Foods lookup can trigger external API calls (USDA/OFF/FatSecret) — public
@@ -409,6 +415,18 @@ function intParam(url, key, fallback) {
 /** Same as intParam but capped to prevent absurdly large queries (e.g. ?limit=999999). */
 function limitParam(url, fallback = 50, max = 100) {
   return Math.min(intParam(url, "limit", fallback), max);
+}
+
+/**
+ * Escapes PostgREST/Postgres LIKE wildcard characters (% and _) in raw user
+ * search input before it's wrapped in `ilike.*value*`. Without this, a search
+ * like "50% juice" or "under_ripe" is silently interpreted as a wildcard
+ * pattern instead of a literal string, returning surprising/broad matches
+ * (not an injection risk — PostgREST parameterizes the SQL — but a real
+ * correctness bug for anyone searching a food/product name containing % or _).
+ */
+function escapeLikePattern(raw) {
+  return String(raw).replace(/[%_]/g, (c) => `\\${c}`);
 }
 
 // ─── COHERE EMBEDDING ─────────────────────────────────────────────────────────
@@ -1005,7 +1023,7 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
   // 1. Local curated data
   if (query) {
     const local = await db.select("foods", {
-      filters: { food_name: `ilike.*${query}*` },
+      filters: { food_name: `ilike.*${escapeLikePattern(query)}*` },
       limit: 1,
     });
     if (local.ok && local.body?.[0]) {
@@ -1029,7 +1047,7 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
   // 2. Previously-cached external results
   const cacheFilters = {};
   if (barcode) cacheFilters.barcode = `eq.${barcode}`;
-  else if (query) cacheFilters.food_name = `ilike.*${query}*`;
+  else if (query) cacheFilters.food_name = `ilike.*${escapeLikePattern(query)}*`;
   const cached = await db.select("external_foods_cache", { filters: cacheFilters, limit: 1 });
   if (cached.ok && cached.body?.[0]) {
     return { food: cached.body[0], source: cached.body[0].source, cached: true };
@@ -1277,11 +1295,24 @@ async function handleMemory(request, url, db, env, param) {
     return success(row, { message: "Memory written" });
   }
 
-  // ── GET /memory/recall?session_id=...&query=...&top_k=5 ────────────────
-  if (param === "recall" && request.method === "GET") {
-    const sessionId = url.searchParams.get("session_id") || "";
-    const query = url.searchParams.get("query") || "";
-    const topK = intParam(url, "top_k", 5);
+  // ── POST /memory/recall (preferred) or GET /memory/recall?session_id=...&query=...&top_k=5 (legacy) ──
+  // POST is preferred because session_id and query text are clinical-context
+  // data — as GET query-string params they'd otherwise land in Cloudflare
+  // access logs, browser history, and any intermediate proxy. GET is kept
+  // working so existing clients don't break; migrate them to POST when convenient.
+  if (param === "recall" && (request.method === "POST" || request.method === "GET")) {
+    let sessionId, query, topK;
+    if (request.method === "POST") {
+      const body = await parseBody(request);
+      if (!body) return err("Request body required");
+      sessionId = body.session_id || "";
+      query = body.query || "";
+      topK = typeof body.top_k === "number" ? body.top_k : 5;
+    } else {
+      sessionId = url.searchParams.get("session_id") || "";
+      query = url.searchParams.get("query") || "";
+      topK = intParam(url, "top_k", 5);
+    }
     if (!sessionId) return err("'session_id' is required");
     if (!query) return err("'query' is required");
 
@@ -1323,8 +1354,8 @@ function handleRoot() {
   return success({
     name: "Chakudya Nutrition Registry (CNR)",
     tagline: "Malawi's first open Food & Nutrition Database",
-    version: "1.2.0",
-    maintainer: "Taimu Tech Solutions",
+    version: CNR_VERSION,
+    maintainer: "Edison Taimu",
     auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
     endpoints: {
       foods: [
@@ -1370,7 +1401,7 @@ function handleRoot() {
       ],
       memory: [
         "POST /memory/write        (public, rate-limited) → capture a session fact (session_id, content)",
-        "GET  /memory/recall       (public, rate-limited) → top-K relevant memory for a session (session_id, query, top_k)",
+        "POST /memory/recall       (public, rate-limited) → top-K relevant memory for a session (session_id, query, top_k) — preferred; GET with the same params still works but is deprecated since it puts clinical text in the URL/logs",
         "POST /memory/consolidate  (admin) → summarize a session's facts (session_id) — also run hourly by cron",
       ],
       manufacturers: [
@@ -1443,7 +1474,7 @@ async function handleFoods(request, url, db, id) {
 
     const filters = {};
     if (category) filters["category"] = `eq.${category}`;
-    if (search) filters["food_name"] = `ilike.*${search}*`;
+    if (search) filters["food_name"] = `ilike.*${escapeLikePattern(search)}*`;
 
     const { ok, status, body, total } = await db.select("foods", {
       filters,
@@ -1718,7 +1749,7 @@ async function handleProducts(request, url, db, id) {
     if (category) filters["category"] = `eq.${category}`;
     if (route) filters["route"] = `eq.${route}`;
     if (manufacturerId) filters["manufacturer_id"] = `eq.${manufacturerId}`;
-    if (search) filters["product_name"] = `ilike.*${search}*`;
+    if (search) filters["product_name"] = `ilike.*${escapeLikePattern(search)}*`;
     if (activeOnly) filters["is_active"] = `eq.true`;
 
     if (id) {
