@@ -152,9 +152,11 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 24 hours |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
-| `GET /packaged*` | ❌ | — (changes with every submission) |
+| `GET /manufacturers` | ✅ | 24 hours |
+| `GET /products` (list) | ✅ | 15 min |
+| `GET /packaged*`, `/products/:id`, `/nutrition`, `/status` | ❌ | — (change often or are low-traffic detail views) |
 | `GET /rag/*`, `/memory/*` | ❌ | — (session/query-specific) |
 
 `/foods/lookup` was already deduping external USDA/FatSecret/Open Food Facts calls via the `external_foods_cache` Supabase table — the edge cache sits on top of that, so a repeat query within 30 min skips the Supabase round-trip entirely too.
@@ -320,6 +322,37 @@ alter table packaged_foods add column if not exists ai_confidence numeric;
 alter table packaged_foods add column if not exists ocr_raw jsonb;
 ```
 
+### Manufacturers
+
+- `GET /manufacturers`
+- `POST /manufacturers` *(admin)*
+- `PATCH /manufacturers/:id` *(admin)*
+- `DELETE /manufacturers/:id` *(admin)*
+
+### Products (crawler-fed catalog)
+
+- `GET /products` — filters: `category`, `route`, `manufacturer_id`, `search`, `include_inactive`
+- `GET /products/:id`
+- `POST /products` *(admin)*
+- `PUT /products/:id` *(admin)*
+- `PATCH /products/:id` *(admin)*
+- `DELETE /products/:id` *(admin — soft delete, sets `is_active: false`)*
+
+### Nutrition
+
+- `GET /nutrition?product_id=123`
+
+### Crawler
+
+The Worker never runs the crawl itself (Playwright needs a real browser
+process, which Workers can't host). `POST /crawl*` just queues a row in
+`crawl_logs`; a separate GitHub Actions workflow does the actual scraping and
+writes `products`/`nutrition` straight to Supabase with the service key.
+
+- `POST /crawl` *(admin, rate-limited)* — queue a crawl for all enabled manufacturers
+- `POST /crawl/:manufacturer_slug` *(admin, rate-limited)* — queue a crawl for one manufacturer
+- `GET /status` — recent `crawl_logs` rows (filter: `manufacturer_id`)
+
 ### RAG
 
 - `POST /rag/retrieve` *(public, rate-limited)*
@@ -353,7 +386,7 @@ app's own `SESSION_ID`, regenerated per page load) — this is intentionally
 session-scoped working memory, not a long-term cross-visit profile.
 
 - `POST /memory/write` *(public, rate-limited)*
-- `GET /memory/recall` *(public, rate-limited)*
+- `POST /memory/recall` *(public, rate-limited — preferred)* / `GET /memory/recall` *(deprecated, same params as query string)*
 - `POST /memory/consolidate` *(admin — also run automatically, hourly, by a cron trigger)*
 
 **Setup required** (not automatic — run once):
@@ -378,9 +411,18 @@ session-scoped working memory, not a long-term cross-visit profile.
 }
 ```
 
-`GET /memory/recall?session_id=...&query=...&top_k=5` — top-K most relevant
-memory rows (facts and/or summaries) for that session ("Recall"), ranked by
-cosine similarity to `query`.
+`POST /memory/recall` body — top-K most relevant memory rows (facts and/or
+summaries) for that session ("Recall"), ranked by cosine similarity to `query`:
+
+```json
+{ "session_id": "S_ABC123_XYZ9", "query": "renal diet history", "top_k": 5 }
+```
+
+`GET /memory/recall?session_id=...&query=...&top_k=5` still works with the
+same params but is deprecated — a GET puts `session_id` and the raw query
+text (which can contain clinical detail) into the URL, where it's exposed to
+Cloudflare access logs, browser history, and any proxy in the path. Migrate
+callers to the POST form above when convenient.
 
 `POST /memory/consolidate` body — manually trigger summarization for one
 session ("Consolidate"):
