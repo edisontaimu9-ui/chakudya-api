@@ -33,9 +33,15 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 ```text
 chakudya-api/
 ├── src/
-│   └── index.js       # Worker entry and all route handlers
-└── wrangler.toml      # Cloudflare Worker config
+│   └── index.js       # Worker entry, all route handlers, caching, rate limiting
+├── sdk/
+│   └── chakudya-client.js   # Zero-dependency JS client wrapper (see "JS Client SDK" below)
+├── smoke-test.sh       # Post-deploy verification script (see "Smoke Test" below)
+├── wrangler.toml       # Cloudflare Worker config — KV binding, cron trigger, account ID
+└── README.md
 ```
+
+> `sdk/chakudya-client.js` is not yet wired into any of Edison's live apps (Oasis CNST, Thanzi) — those currently call the Worker directly via hand-written `fetch()`. Swapping them to use the SDK is a pending TODO, not something this repo does for you automatically.
 
 ---
 
@@ -93,9 +99,29 @@ npx wrangler secret put FATSECRET_CONSUMER_SECRET
 npx wrangler secret put USDA_FDC_API_KEY
 ```
 
-### 4) Bind KV namespace
+### 4) Create and bind the KV namespace
 
-Create KV and bind it as `RATE_LIMIT_KV` in `wrangler.toml` / Cloudflare dashboard.
+```bash
+npx wrangler kv namespace create RATE_LIMIT_KV
+```
+
+This prints an `id`. Add it to `wrangler.toml`:
+
+```toml
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "<the-id-it-printed>"
+```
+
+(Or bind it via the dashboard instead: **Workers & Pages → your-worker → Settings → Bindings → Add → KV Namespace**, variable name exactly `RATE_LIMIT_KV`. Either way works, but only the `wrangler.toml` version survives a fresh clone/redeploy from a different machine — a dashboard-only binding can silently disappear on redeploy from an unedited config.)
+
+Both rate limiting and the RAG/memory query cache **fail open silently** if this binding is missing — the API keeps responding normally, it just isn't rate-limited or cached, with no error to tell you so. After any deploy or binding change, confirm it's live:
+
+```bash
+curl -s https://your-worker.workers.dev/ | grep -o '"kv_bound":[a-z]*'
+```
+
+Should print `"kv_bound":true`. If it prints `false`, the binding isn't connected.
 
 ### 5) Run & deploy
 
@@ -103,6 +129,14 @@ Create KV and bind it as `RATE_LIMIT_KV` in `wrangler.toml` / Cloudflare dashboa
 npx wrangler dev
 npx wrangler deploy
 ```
+
+### 6) Verify
+
+```bash
+bash smoke-test.sh https://your-worker.workers.dev
+```
+
+Runs the full MISS→HIT / rate-limit / cascade verification pass in one command instead of testing each piece by hand. See "Smoke Test" below for details.
 
 ---
 
