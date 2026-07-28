@@ -3,7 +3,18 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.4.0
+ * Version: 1.5.0
+ *
+ * v1.5.0 changes:
+ *  - Removed the formula/product crawler entirely from this Worker: the
+ *    trigger/status endpoints (POST /crawl, POST /crawl/:manufacturer_slug,
+ *    GET /status) and their handlers (handleCrawlTrigger, handleCrawlStatus)
+ *    are gone, and every remaining reference to "the crawler" in comments/
+ *    docs has been cleaned up too. /manufacturers, /products, and
+ *    /nutrition are untouched — they still serve whatever is already in
+ *    those tables, just with no crawl-related framing left anywhere.
+ *  - Embeddings stay on Cohere (embed-multilingual-v3.0) — no other
+ *    provider added.
  *
  * v1.4.0 changes:
  *  - Added edge caching (Cloudflare Cache API) for GET /foods, /exchange,
@@ -61,7 +72,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.4.0";
+const CNR_VERSION = "1.5.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -158,7 +169,7 @@ function isAdmin(request, env) {
  */
 function cachePolicy(resource, param) {
   if (resource === "products" && !param) {
-    // Product list changes with every crawl run — short TTL, not the 1hr
+    // Product list changes fairly often — short TTL, not the 1hr
     // reference-data TTL below. Single-product GETs (/products/:id) and
     // /nutrition are left uncached since they're low-traffic detail views.
     return { ttl: 900 }; // 15 min
@@ -255,12 +266,6 @@ function routePolicy(resource, method, param) {
   }
   if (isMemoryRecall) {
     return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
-  }
-
-  // Crawl trigger queues a real scrape job (GitHub Actions) — admin only,
-  // capped low so a mistake doesn't queue dozens of runs back to back.
-  if (resource === "crawl" && method === "POST") {
-    return { auth: "admin", rate: { limit: 10, windowSeconds: 60, scope: "admin" } };
   }
 
   // Consolidation runs an LLM summarization call and rewrites memory rows —
@@ -1419,11 +1424,6 @@ function handleRoot() {
         "DELETE /products/:id       (admin — soft delete, sets is_active=false)",
       ],
       nutrition: ["GET /nutrition?product_id=123"],
-      crawler: [
-        "POST /crawl                (admin, rate-limited) → queue a crawl for all enabled manufacturers",
-        "POST /crawl/:manufacturer_slug  (admin, rate-limited) → queue a crawl for one manufacturer",
-        "GET  /status               → recent crawl_logs rows",
-      ],
     },
   });
 }
@@ -1727,11 +1727,10 @@ async function handleManufacturers(request, url, db, id) {
 
 // ── /products ─────────────────────────────────────────────────────────────────
 //
-// Serves the crawler's normalized catalog (see crawler_schema.sql). The
-// crawler itself (Python/Playwright, running in GitHub Actions) writes to
-// Supabase directly with the service key — it does NOT go through this
-// Worker. This handler is for the read side (site/app queries) plus manual
-// admin edits/corrections to crawled data.
+// A normalized product catalog table. This handler is the full CRUD surface
+// for it (site/app reads plus admin edits/corrections) — nothing external
+// writes to this table on your behalf, so any data here comes in through
+// these routes.
 
 async function handleProducts(request, url, db, id) {
   const method = request.method;
@@ -1798,7 +1797,7 @@ async function handleProducts(request, url, db, id) {
   }
 
   if (method === "DELETE") {
-    // Soft delete by default — crawled catalogs should almost never hard-delete;
+    // Soft delete by default — a catalog like this should almost never hard-delete;
     // a product missing from a manufacturer's site today may reappear.
     const { ok, status, body } = await db.update(
       "products",
@@ -1828,58 +1827,6 @@ async function handleNutrition(request, url, db) {
   });
   if (!ok) return err(body?.message || "Query failed", status);
   return success(body);
-}
-
-// ── /crawl ────────────────────────────────────────────────────────────────────
-//
-// The Worker does NOT run the crawl (Playwright needs a real browser process,
-// which Cloudflare Workers can't host). POST /crawl and POST /crawl/:manufacturer
-// just record a request row in crawl_logs — a GitHub Actions workflow polls
-// for status:"requested" rows (or is triggered directly via repository_dispatch)
-// and does the actual scraping, writing products/nutrition/etc. straight to
-// Supabase with the service key. GET /status reads back recent crawl_logs rows.
-
-async function handleCrawlTrigger(request, url, db, manufacturerSlug) {
-  if (request.method !== "POST") return err("Only POST is supported", 405);
-
-  let manufacturerId = null;
-  if (manufacturerSlug) {
-    const { ok, body } = await db.select("manufacturers", {
-      filters: { slug: `eq.${manufacturerSlug}` },
-      limit: 1,
-    });
-    if (!ok || !body || !body.length) return notFound("Manufacturer");
-    manufacturerId = body[0].id;
-  }
-
-  const { ok, status, body } = await db.insert("crawl_logs", {
-    manufacturer_id: manufacturerId,
-    status: "requested",
-  });
-  if (!ok) return err(body?.message || "Failed to queue crawl", status);
-  return success(body, {
-    message: manufacturerSlug
-      ? `Crawl queued for ${manufacturerSlug}`
-      : "Crawl queued for all enabled manufacturers",
-  });
-}
-
-async function handleCrawlStatus(request, url, db) {
-  if (request.method !== "GET") return err("Only GET is supported", 405);
-
-  const limit = limitParam(url);
-  const manufacturerId = url.searchParams.get("manufacturer_id") || "";
-  const filters = {};
-  if (manufacturerId) filters["manufacturer_id"] = `eq.${manufacturerId}`;
-
-  const { ok, status, body, total } = await db.select("crawl_logs", {
-    filters,
-    limit,
-    offset: 0,
-    order: "started_at.desc",
-  });
-  if (!ok) return err(body?.message || "Query failed", status);
-  return listSuccess(body, { count: total, limit, offset: 0 });
 }
 
 // ── /packaged/scan ────────────────────────────────────────────────────────────
@@ -2172,15 +2119,6 @@ async function dispatch(request, url, db, env, resource, param) {
 
     case "nutrition": {
       return await handleNutrition(request, url, db);
-    }
-
-    case "crawl": {
-      // param here is a manufacturer slug, e.g. POST /crawl/abbott-nutrition
-      return await handleCrawlTrigger(request, url, db, param || null);
-    }
-
-    case "status": {
-      return await handleCrawlStatus(request, url, db);
     }
 
     default:

@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.3.0`
+- **Current CNR version:** `1.5.0`
 
 ---
 
@@ -329,7 +329,7 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 - `PATCH /manufacturers/:id` *(admin)*
 - `DELETE /manufacturers/:id` *(admin)*
 
-### Products (crawler-fed catalog)
+### Products
 
 - `GET /products` — filters: `category`, `route`, `manufacturer_id`, `search`, `include_inactive`
 - `GET /products/:id`
@@ -342,16 +342,6 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 
 - `GET /nutrition?product_id=123`
 
-### Crawler
-
-The Worker never runs the crawl itself (Playwright needs a real browser
-process, which Workers can't host). `POST /crawl*` just queues a row in
-`crawl_logs`; a separate GitHub Actions workflow does the actual scraping and
-writes `products`/`nutrition` straight to Supabase with the service key.
-
-- `POST /crawl` *(admin, rate-limited)* — queue a crawl for all enabled manufacturers
-- `POST /crawl/:manufacturer_slug` *(admin, rate-limited)* — queue a crawl for one manufacturer
-- `GET /status` — recent `crawl_logs` rows (filter: `manufacturer_id`)
 
 ### RAG
 
@@ -500,6 +490,32 @@ Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
 Access-Control-Allow-Headers: Content-Type, Authorization, apikey
 Access-Control-Max-Age: 86400
 ```
+
+---
+
+## JS Client SDK
+
+`sdk/chakudya-client.js` is a zero-dependency wrapper around every route in
+this file — drop it into Oasis, Thanzi, DietitianOS, or the portfolio site
+exactly like any other vanilla JS module:
+
+```html
+<script src="chakudya-client.js"></script>
+<script>
+  const cnr = new ChakudyaClient("https://chakudya-api.<your-subdomain>.workers.dev");
+
+  cnr.foods.list({ search: "nsima", limit: 10 }).then(console.log);
+  cnr.rag.retrieve("high potassium foods", { topK: 5 }).then(console.log);
+
+  // Admin (write) calls need the admin key:
+  const admin = new ChakudyaClient(baseUrl, { adminKey: "chakudya_admin_xxx" });
+  admin.foods.create({ food_name: "Matemba", category: "fish" });
+</script>
+```
+
+Every method resolves to the parsed `data` payload on success, or throws a
+`ChakudyaApiError` (`.status`, `.body`) on a non-2xx response — no more
+manually checking `status === "success"` at every call site.
 
 ---
 
