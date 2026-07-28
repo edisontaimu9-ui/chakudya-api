@@ -3,7 +3,22 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.5.0
+ * Version: 1.6.0
+ *
+ * v1.6.0 changes:
+ *  - Added a KV-backed query cache for POST /rag/retrieve and
+ *    POST|GET /memory/recall — a cache hit skips BOTH the Cohere embed
+ *    call and the Supabase RPC, to reduce Cohere trial-quota usage.
+ *    Reuses the existing RATE_LIMIT_KV binding under a new key prefix
+ *    (ragcache:/memcache:) — no new binding required.
+ *    RAG cache: 10 min TTL, keyed on (context, top_k, normalized query).
+ *    Memory recall cache: 2 min TTL, keyed on (session_id, top_k,
+ *    normalized query) — short TTL + session-scoped key because a
+ *    session's facts can change mid-conversation via /memory/write.
+ *    Deliberately NOT applied to /rag/ingest or /memory/write — caching a
+ *    write risks silently dropping a distinct document/fact.
+ *    Responses now include a "cache": "HIT"|"MISS" field on these two
+ *    routes so you can see it working.
  *
  * v1.5.0 changes:
  *  - Removed the formula/product crawler entirely from this Worker: the
@@ -72,7 +87,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.5.0";
+const CNR_VERSION = "1.6.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -213,6 +228,55 @@ async function checkRateLimit(env, bucketKey, limit, windowSeconds) {
   });
   return true;
 }
+
+// ─── QUERY CACHE (Cloudflare KV) — RAG retrieve & memory recall only ────────
+//
+// /rag/retrieve and /memory/recall both spend a Cohere embed call (billed
+// against the same trial quota as everything else) just to turn the query
+// text into a vector before searching. Repeat/near-repeat questions are
+// common — this caches the full response so a cache hit skips BOTH the
+// Cohere call and the Supabase RPC.
+//
+// Deliberately NOT used on /rag/ingest or /memory/write: those are writes,
+// and caching a write risks silently dropping a distinct document or a
+// distinct clinical fact on what looks like a "repeat" call. Only read
+// (query) routes are safe to cache.
+//
+// Reuses the existing RATE_LIMIT_KV binding (own key prefix, no new
+// namespace needed) — fails open (no caching, but no breakage) if it isn't
+// bound, same as checkRateLimit above.
+
+function normalizeQueryText(text) {
+  return String(text || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+async function sha256Hex(text) {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Returns the parsed cached value, or null on a miss / no KV bound. */
+async function getQueryCache(env, prefix, keyParts) {
+  if (!env.RATE_LIMIT_KV) return null;
+  const hash = await sha256Hex(keyParts.join("|"));
+  const cached = await env.RATE_LIMIT_KV.get(`${prefix}:${hash}`);
+  return cached ? JSON.parse(cached) : null;
+}
+
+/** Fire-and-forget (via ctx.waitUntil) cache write — never blocks the response. */
+function putQueryCache(env, ctx, prefix, keyParts, value, ttlSeconds) {
+  if (!env.RATE_LIMIT_KV) return;
+  const write = sha256Hex(keyParts.join("|")).then((hash) =>
+    env.RATE_LIMIT_KV.put(`${prefix}:${hash}`, JSON.stringify(value), {
+      expirationTtl: ttlSeconds,
+    })
+  );
+  if (ctx?.waitUntil) ctx.waitUntil(write);
+}
+
+const RAG_CACHE_TTL_SECONDS = 600; // 10 min — reference content changes rarely
+const MEMORY_RECALL_CACHE_TTL_SECONDS = 120; // 2 min — a session's facts can change mid-conversation, keep this short
 
 /**
  * Central policy: how each route is protected.
@@ -1087,7 +1151,7 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
 
 // POST /rag/retrieve  — semantic search
 // POST /rag/ingest    — add a document chunk to the knowledge base
-async function handleRAG(request, url, db, env, param) {
+async function handleRAG(request, url, db, env, param, ctx) {
   if (request.method !== "POST") return err("Method not allowed", 405);
 
   const body = await parseBody(request);
@@ -1137,6 +1201,20 @@ async function handleRAG(request, url, db, env, param) {
       );
     }
 
+    const cappedTopK = Math.min(top_k, 20);
+
+    // Cache hit — skip the Cohere embed call AND the Supabase RPC entirely.
+    const cacheKeyParts = ["rag", context, String(cappedTopK), normalizeQueryText(query)];
+    const cached = await getQueryCache(env, "ragcache", cacheKeyParts);
+    if (cached) {
+      return success(cached.chunks, {
+        query,
+        context,
+        count: cached.chunks.length,
+        cache: "HIT",
+      });
+    }
+
     let queryEmbedding;
     try {
       queryEmbedding = await embedText(query, env, "search_query");
@@ -1152,17 +1230,21 @@ async function handleRAG(request, url, db, env, param) {
 
     const { ok, status, body: chunks } = await db.rpc("match_documents", {
       query_embedding: queryEmbedding,
-      match_count: Math.min(top_k, 20),
+      match_count: cappedTopK,
       context_filter: contextFilter,
       query_text: query,
     });
 
     if (!ok) return err(chunks?.message || "RAG search failed", status);
 
-    return success(chunks, {
+    const chunkList = Array.isArray(chunks) ? chunks : [];
+    putQueryCache(env, ctx, "ragcache", cacheKeyParts, { chunks: chunkList }, RAG_CACHE_TTL_SECONDS);
+
+    return success(chunkList, {
       query,
       context,
-      count: Array.isArray(chunks) ? chunks.length : 0,
+      count: chunkList.length,
+      cache: "MISS",
     });
   }
 
@@ -1271,7 +1353,7 @@ Write ONE paragraph (max ~120 words) capturing the key patient facts, clinical c
   return { consolidated: true, summaryId: summaryRow?.[0]?.id ?? summaryRow?.id ?? null };
 }
 
-async function handleMemory(request, url, db, env, param) {
+async function handleMemory(request, url, db, env, param, ctx) {
   // ── POST /memory/write ───────────────────────────────────────────────────
   if (param === "write" && request.method === "POST") {
     const body = await parseBody(request);
@@ -1321,6 +1403,24 @@ async function handleMemory(request, url, db, env, param) {
     if (!sessionId) return err("'session_id' is required");
     if (!query) return err("'query' is required");
 
+    const cappedTopK = Math.min(topK, 20);
+
+    // Cache key includes session_id so one patient's recall can never be
+    // served from another session's cache entry. Short TTL (2 min) because
+    // a session's facts can change mid-conversation via /memory/write —
+    // this is only meant to absorb rapid repeat/near-repeat recalls within
+    // the same short window, not to serve stale clinical context.
+    const cacheKeyParts = ["memory", sessionId, String(cappedTopK), normalizeQueryText(query)];
+    const cached = await getQueryCache(env, "memcache", cacheKeyParts);
+    if (cached) {
+      return success(cached.rows, {
+        session_id: sessionId,
+        query,
+        count: cached.rows.length,
+        cache: "HIT",
+      });
+    }
+
     let queryEmbedding;
     try {
       queryEmbedding = await embedText(query, env, "search_query");
@@ -1331,10 +1431,19 @@ async function handleMemory(request, url, db, env, param) {
     const { ok, status, body: rows } = await db.rpc("match_memory", {
       query_embedding: queryEmbedding,
       match_session_id: sessionId,
-      match_count: Math.min(topK, 20),
+      match_count: cappedTopK,
     });
     if (!ok) return err(rows?.message || "Recall failed", status);
-    return success(rows, { session_id: sessionId, query, count: Array.isArray(rows) ? rows.length : 0 });
+
+    const rowList = Array.isArray(rows) ? rows : [];
+    putQueryCache(env, ctx, "memcache", cacheKeyParts, { rows: rowList }, MEMORY_RECALL_CACHE_TTL_SECONDS);
+
+    return success(rowList, {
+      session_id: sessionId,
+      query,
+      count: rowList.length,
+      cache: "MISS",
+    });
   }
 
   // ── POST /memory/consolidate ────────────────────────────────────────────
@@ -2065,7 +2174,7 @@ async function handlePackaged(request, url, db, id, isSubmit) {
  * edge-cache wrapper can call it uniformly whether or not a cache policy
  * applies to the route.
  */
-async function dispatch(request, url, db, env, resource, param) {
+async function dispatch(request, url, db, env, resource, param, ctx) {
   switch (resource) {
     case "foods": {
       if (param === "lookup") {
@@ -2100,11 +2209,11 @@ async function dispatch(request, url, db, env, resource, param) {
     }
 
     case "rag": {
-      return await handleRAG(request, url, db, env, param || null);
+      return await handleRAG(request, url, db, env, param || null, ctx);
     }
 
     case "memory": {
-      return await handleMemory(request, url, db, env, param || null);
+      return await handleMemory(request, url, db, env, param || null, ctx);
     }
 
     case "manufacturers": {
@@ -2203,7 +2312,7 @@ async function router(request, env, ctx) {
   }
 
   try {
-    const response = await dispatch(request, url, db, env, resource, param);
+    const response = await dispatch(request, url, db, env, resource, param, ctx);
 
     if (cacheKey && response.status === 200) {
       const cacheable = new Response(response.body, response);

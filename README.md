@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.5.0`
+- **Current CNR version:** `1.6.0`
 
 ---
 
@@ -156,8 +156,9 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /manufacturers` | ✅ | 24 hours |
 | `GET /products` (list) | ✅ | 15 min |
-| `GET /packaged*`, `/products/:id`, `/nutrition`, `/status` | ❌ | — (change often or are low-traffic detail views) |
-| `GET /rag/*`, `/memory/*` | ❌ | — (session/query-specific) |
+| `GET /packaged*`, `/products/:id`, `/nutrition` | ❌ | — (change often or are low-traffic detail views) |
+| `POST /rag/retrieve`, `POST`/`GET /memory/recall` | ❌ (edge cache) — ✅ (separate KV query cache, see below) | — |
+| `POST /rag/ingest`, `POST /memory/write` | ❌ | — (writes; never cached) |
 
 `/foods/lookup` was already deduping external USDA/FatSecret/Open Food Facts calls via the `external_foods_cache` Supabase table — the edge cache sits on top of that, so a repeat query within 30 min skips the Supabase round-trip entirely too.
 
@@ -175,6 +176,31 @@ curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?query=nsim
 Note: Cache API entries are per-datacenter, not global — if your first two requests happen to land on different Cloudflare edge nodes, the second one can still show `MISS`. Repeat a couple of times if that happens; it'll settle into `HIT` once requests are routed to a datacenter that already has the entry.
 
 Note: Cloudflare has no dashboard analytics for the Workers Cache API specifically (the "Caching" dashboard tab is for zone-level CDN caching on a proxied domain, which is separate from this). To watch cache activity live instead: Workers & Pages → chakudya-api → Logs → enable **Real-time Logs**, then hit any cached endpoint — you'll see `[cache] HIT`, `[cache] MISS`, and `[cache] PURGE` lines streaming in as requests come through.
+
+---
+
+## RAG / Memory Query Cache (Cloudflare KV, `v1.6.0+`)
+
+The edge cache above only applies to `GET` requests — `/rag/retrieve` and `/memory/recall` are `POST` (recall also supports a legacy `GET`), and each one spends a Cohere embed call just to turn the query text into a vector before searching. That's a separate, KV-backed cache (reuses the existing `RATE_LIMIT_KV` binding under its own key prefix — no new binding needed) that caches the *whole response*, so a hit skips the Cohere call **and** the Supabase RPC.
+
+| Route | TTL | Cache key |
+|---|---|---|
+| `POST /rag/retrieve` | 10 min | `context` + `top_k` + normalized query text |
+| `POST`/`GET /memory/recall` | 2 min | `session_id` + `top_k` + normalized query text |
+
+`/memory/recall`'s key always includes `session_id`, so one patient session can never be served from another's cache entry. Its TTL is deliberately short (2 min, vs 10 min for RAG) because a session's facts can change mid-conversation via `/memory/write` — this cache is only meant to absorb rapid repeat/near-repeat recalls, not to serve stale clinical context.
+
+`/rag/ingest` and `/memory/write` are never cached — caching a write risks silently dropping a distinct document or fact on what looks like a "repeat" call.
+
+**Verifying it's working:** both routes return a `cache: "HIT"` or `cache: "MISS"` field in the JSON body (not a header, since this is a query-cache on POST routes, not the edge `GET` cache above):
+
+```bash
+curl -s -X POST "https://your-worker.workers.dev/rag/retrieve" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"what is nsima made of","context":"both","top_k":3}' | grep -o '"cache":"[A-Z]*"'
+# first call  -> "cache":"MISS"
+# second call (same query, within 10 min) -> "cache":"HIT"
+```
 
 ---
 
