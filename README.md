@@ -34,14 +34,12 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 chakudya-api/
 ├── src/
 │   └── index.js       # Worker entry, all route handlers, caching, rate limiting
-├── sdk/
-│   └── chakudya-client.js   # Zero-dependency JS client wrapper (see "JS Client SDK" below)
 ├── smoke-test.sh       # Post-deploy verification script (see "Smoke Test" below)
 ├── wrangler.toml       # Cloudflare Worker config — KV binding, cron trigger, account ID
 └── README.md
 ```
 
-> `sdk/chakudya-client.js` is not yet wired into any of Edison's live apps (Oasis CNST, Thanzi) — those currently call the Worker directly via hand-written `fetch()`. Swapping them to use the SDK is a pending TODO, not something this repo does for you automatically.
+> The JS client SDK has moved to its own repo: [Chakudya-sdk](https://github.com/edisontaimu9-ui/Chakudya-sdk). See "JS Client SDK" below.
 
 ---
 
@@ -569,27 +567,14 @@ Access-Control-Max-Age: 86400
 
 ## JS Client SDK
 
-`sdk/chakudya-client.js` is a zero-dependency wrapper around every route in
-this file — drop it into Oasis, Thanzi, DietitianOS, or the portfolio site
-exactly like any other vanilla JS module:
+The zero-dependency JS client for this API now lives in its own repo:
 
-```html
-<script src="chakudya-client.js"></script>
-<script>
-  const cnr = new ChakudyaClient("https://chakudya-api.<your-subdomain>.workers.dev");
+**[github.com/edisontaimu9-ui/Chakudya-sdk](https://github.com/edisontaimu9-ui/Chakudya-sdk)**
 
-  cnr.foods.list({ search: "nsima", limit: 10 }).then(console.log);
-  cnr.rag.retrieve("high potassium foods", { topK: 5 }).then(console.log);
-
-  // Admin (write) calls need the admin key:
-  const admin = new ChakudyaClient(baseUrl, { adminKey: "chakudya_admin_xxx" });
-  admin.foods.create({ food_name: "Matemba", category: "fish" });
-</script>
-```
-
-Every method resolves to the parsed `data` payload on success, or throws a
-`ChakudyaApiError` (`.status`, `.body`) on a non-2xx response — no more
-manually checking `status === "success"` at every call site.
+It ships browser (`<script>` tag / UMD), ESM, and CommonJS builds, plus
+TypeScript types, and wraps every route in this file — `foods`, `exchange`,
+`renal`, `formulas`, `manufacturers`, `products`, `packaged`, `nutrition`,
+`rag`, and `memory`. See that repo's README for install and usage examples.
 
 ---
 
