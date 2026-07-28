@@ -167,9 +167,9 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 **Verifying it's working:** every cached response carries an `X-Cache: HIT` or `X-Cache: MISS` header (Cloudflare's own `cf-cache-status` doesn't apply here since this is the Workers Cache API, not zone-level caching). Check it directly:
 
 ```bash
-curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?query=nsima" | grep -i x-cache
+curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?q=nsima" | grep -i x-cache
 # first request  -> X-Cache: MISS
-curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?query=nsima" | grep -i x-cache
+curl -sD - -o /dev/null "https://your-worker.workers.dev/foods/lookup?q=nsima" | grep -i x-cache
 # second request -> X-Cache: HIT
 ```
 
@@ -201,6 +201,20 @@ curl -s -X POST "https://your-worker.workers.dev/rag/retrieve" \
 # first call  -> "cache":"MISS"
 # second call (same query, within 10 min) -> "cache":"HIT"
 ```
+
+---
+
+## Smoke Test
+
+`smoke-test.sh` re-runs the full manual verification pass (KV binding, RAG cache, edge cache, rate limiting, memory recall cache + session isolation, foods lookup cascade) in one command instead of doing it by hand after every deploy or dashboard change:
+
+```bash
+bash smoke-test.sh
+# or against a different deployment:
+bash smoke-test.sh https://your-worker.workers.dev
+```
+
+Takes about 90 seconds (most of that is a deliberate 60s pause to let the rate-limit window reset before the script continues). Exits non-zero if anything fails, so it's safe to wire into a CI step later if useful.
 
 ---
 

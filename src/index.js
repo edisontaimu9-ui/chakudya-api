@@ -209,24 +209,30 @@ function clientIp(request) {
 
 /**
  * Fixed-window rate limiter backed by KV.
- * Returns true if the request is allowed, false if the limit was hit.
- * Fails OPEN (allows the request) if RATE_LIMIT_KV isn't bound, so the API
+ * Returns { allowed, retryAfter }. retryAfter is the number of seconds left
+ * in the current window — accurate to the second, rather than always
+ * reporting the full window length regardless of when within it the caller
+ * was blocked.
+ * Fails OPEN (allowed: true) if RATE_LIMIT_KV isn't bound, so the API
  * doesn't go fully down just because the namespace wasn't configured yet —
- * but this should be treated as a setup TODO, not a permanent state.
+ * but this should be treated as a setup TODO, not a permanent state. Check
+ * GET / -> kv_bound to confirm the binding is actually live.
  */
 async function checkRateLimit(env, bucketKey, limit, windowSeconds) {
-  if (!env.RATE_LIMIT_KV) return true;
+  if (!env.RATE_LIMIT_KV) return { allowed: true, retryAfter: 0 };
 
-  const windowId = Math.floor(Date.now() / 1000 / windowSeconds);
+  const nowSeconds = Date.now() / 1000;
+  const windowId = Math.floor(nowSeconds / windowSeconds);
   const key = `rl:${bucketKey}:${windowId}`;
+  const retryAfter = Math.ceil((windowId + 1) * windowSeconds - nowSeconds);
 
   const current = parseInt((await env.RATE_LIMIT_KV.get(key)) || "0", 10);
-  if (current >= limit) return false;
+  if (current >= limit) return { allowed: false, retryAfter };
 
   await env.RATE_LIMIT_KV.put(key, String(current + 1), {
     expirationTtl: windowSeconds + 5,
   });
-  return true;
+  return { allowed: true, retryAfter: 0 };
 }
 
 // ─── QUERY CACHE (Cloudflare KV) — RAG retrieve & memory recall only ────────
@@ -1464,13 +1470,19 @@ async function handleMemory(request, url, db, env, param, ctx) {
 // ─── ROUTE HANDLERS ──────────────────────────────────────────────────────────
 
 // GET /
-function handleRoot() {
+function handleRoot(env) {
   return success({
     name: "Chakudya Nutrition Registry (CNR)",
     tagline: "Malawi's first open Food & Nutrition Database",
     version: CNR_VERSION,
     maintainer: "Edison Taimu",
     auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
+    // Rate limiting and the RAG/memory query cache both fail OPEN (silently)
+    // if RATE_LIMIT_KV isn't bound — meaning the API keeps working but with
+    // no rate limiting and no caching, and nothing else would tell you that.
+    // Check this flag after any deploy or dashboard binding change instead
+    // of finding out the hard way via a manual MISS/HIT test cycle.
+    kv_bound: !!env?.RATE_LIMIT_KV,
     endpoints: {
       foods: [
         "GET  /foods",
@@ -2266,7 +2278,7 @@ async function router(request, env, ctx) {
 
   // GET /
   if (pathname === "/" && request.method === "GET") {
-    return handleRoot();
+    return handleRoot(env);
   }
 
   const [resource, param] = segments;
@@ -2286,13 +2298,13 @@ async function router(request, env, ctx) {
   // Admin-authenticated requests are exempt from rate limiting — the admin
   // key itself is the access control; volume caps only apply to public routes.
   if (policy.auth !== "admin") {
-    const allowed = await checkRateLimit(
+    const { allowed, retryAfter } = await checkRateLimit(
       env,
       rateBucketKey,
       policy.rate.limit,
       policy.rate.windowSeconds
     );
-    if (!allowed) return rateLimited(policy.rate.windowSeconds);
+    if (!allowed) return rateLimited(retryAfter);
   }
 
   // ── Edge cache (Cloudflare Cache API) — GET routes only ─────────────────────

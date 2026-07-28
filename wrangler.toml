@@ -50,6 +50,20 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # [vars]
 # ENVIRONMENT = "production"
 
+# ── KV Namespace — rate limiting + RAG/memory query cache ──────────
+# Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).
+# Both fail OPEN (silently) if this isn't bound — no error, just no rate
+# limiting and no caching. If you ever add this binding via the dashboard
+# instead of here, a later `wrangler deploy` from an unedited wrangler.toml
+# WILL NOT remove a dashboard-only binding, but keeping it declared here too
+# means the binding travels with the repo instead of living only in one
+# person's dashboard session. Replace <id> with the id shown under
+# Storage & Databases -> KV -> chakudya-rate-limit in the dashboard, or via:
+#   npx wrangler kv namespace list
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "413e22969b074518b12a5c0022cf3a84"
+
 # ── Cron Trigger — hourly session-memory consolidation ─────────
 # The "Consolidate" step of Write/Consolidate/Recall/Apply: finds sessions
 # with 6+ unconsolidated memory facts and summarizes each via Groq.
