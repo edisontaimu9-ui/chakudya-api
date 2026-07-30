@@ -3,7 +3,26 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.6.0
+ * Version: 1.7.0
+ *
+ * v1.7.0 changes:
+ *  - Added POST /rag/ask — a RAG Search Orchestrator layered on top of the
+ *    existing /rag/retrieve and /rag/ingest (neither of which changed: same
+ *    endpoints, same request/response shape, same query params).
+ *    Pipeline: Intent Detection (Groq llama-3.1-8b-instant, heuristic
+ *    fallback) -> fan-out Search Orchestrator (semantic vector search,
+ *    Malawi FCT / foods exact search, packaged/OCR-sourced foods, diabetes
+ *    exchange list, renal exchange list, enteral formula DB, barcode lookup,
+ *    and — only when local sources come back empty — the existing USDA
+ *    FDC / Open Food Facts / FatSecret fallback cascade via
+ *    lookupFoodCascade) -> Rerank (Cohere rerank-multilingual-v3.0, with a
+ *    heuristic-score fallback if reranking fails or isn't configured) ->
+ *    Build Context -> grounded LLM answer (Groq) with bracketed source
+ *    citations. Optional `session_id` pulls in the existing session-memory
+ *    layer (match_memory) as extra personalized context. Whole-answer KV
+ *    cache (5 min TTL, skipped whenever session_id is present since that
+ *    context is session-specific). Public, rate-limited (costs an embed +
+ *    optional rerank + LLM call per request).
  *
  * v1.6.0 changes:
  *  - Added a KV-backed query cache for POST /rag/retrieve and
@@ -87,7 +106,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.6.0";
+const CNR_VERSION = "1.7.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -296,6 +315,7 @@ function routePolicy(resource, method, param) {
   const isPackagedScan = resource === "packaged" && param === "scan" && method === "POST";
   const isRagRetrieve = resource === "rag" && (param === "retrieve" || !param) && method === "POST";
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
+  const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
@@ -326,6 +346,14 @@ function routePolicy(resource, method, param) {
   // RAG ingest writes to the knowledge base AND costs a Cohere call — admin only.
   if (isRagIngest) {
     return { auth: "admin", rate: { limit: 300, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // RAG orchestrator (/rag/ask): intent classification (Groq) + embed
+  // (Cohere) + fan-out searches + rerank (Cohere) + answer (Groq) per
+  // request — public but capped harder than plain /rag/retrieve since it's
+  // the most expensive route in the API.
+  if (isRagAsk) {
+    return { auth: "public", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
   }
 
   // Memory write/recall each cost a Cohere embed call — public (the Oasis
@@ -1195,6 +1223,11 @@ async function handleRAG(request, url, db, env, param, ctx) {
     return success(row, { message: "Document ingested into RAG knowledge base" });
   }
 
+  // ── POST /rag/ask — RAG Search Orchestrator ────────────────────────────────
+  if (param === "ask") {
+    return await handleRagAsk(request, url, db, env, ctx, body);
+  }
+
   // ── POST /rag/retrieve ─────────────────────────────────────────────────────
   if (param === "retrieve" || !param) {
     const { query, context = "both", top_k = 5 } = body;
@@ -1255,6 +1288,488 @@ async function handleRAG(request, url, db, env, param, ctx) {
   }
 
   return notFound("RAG route");
+}
+
+// ─── RAG SEARCH ORCHESTRATOR (POST /rag/ask) ─────────────────────────────────
+//
+//   User Query
+//       -> Intent Detection            (classifyIntent)
+//       -> Search Orchestrator          (fan-out, Promise.allSettled)
+//            - Semantic Search (Vector DB)     -> semanticSearchForAsk (match_documents)
+//            - Exact SQL Search / Malawi FCT   -> searchFoodsExact (foods)
+//            - Packaged / OCR-sourced foods    -> searchPackagedExact (packaged_foods)
+//            - Diabetes Exchange List          -> scanTableByKeywords (exchange_lists)
+//            - Renal Exchange List             -> scanTableByKeywords (renal_foods)
+//            - Enteral Formula Database        -> scanTableByKeywords (enteral_formulas)
+//            - Barcode Lookup                  -> lookupFoodCascade (barcode branch)
+//            - USDA FDC / Open Food Facts /
+//              FatSecret (fallback only)       -> lookupFoodCascade (query branch)
+//       -> Rerank Results                (rerankCandidates, Cohere rerank-multilingual-v3.0)
+//       -> Build Context                 (numbered, tagged snippet block)
+//       -> LLM (Groq)                    (answerWithLLM) -> grounded answer + citations
+//
+// Intent detection decides which of the 8 sources above are actually worth
+// querying for this particular question — e.g. a greeting doesn't need an
+// enteral-formula table scan, and a specific-food question doesn't need the
+// diabetes exchange list. This keeps the orchestrator's per-request cost
+// (Cohere embed, Cohere rerank, Groq classify, Groq answer, N Supabase
+// queries) proportional to what the question actually needs instead of
+// always hitting all 8 sources on every request.
+
+const ASK_CACHE_TTL_SECONDS = 300; // 5 min — shorter than RAG_CACHE_TTL_SECONDS since this caches a full generated answer, not just raw chunks
+
+const RAG_ASK_INTENTS = [
+  "food_search",
+  "barcode_search",
+  "nutrition_question",
+  "exchange_list",
+  "enteral_formula",
+  "general_chat",
+];
+
+// Which sources the orchestrator fans out to per intent. `externalFallback`
+// only fires when the local structured sources (foods/packaged/barcode) came
+// back completely empty — see handleRagAsk.
+const INTENT_SOURCE_PLAN = {
+  food_search: { semantic: true, foods: true, packaged: true, exchange: false, renal: false, formulas: false, externalFallback: true },
+  barcode_search: { semantic: true, foods: true, packaged: true, exchange: false, renal: false, formulas: false, externalFallback: true },
+  nutrition_question: { semantic: true, foods: true, packaged: false, exchange: false, renal: false, formulas: false, externalFallback: false },
+  exchange_list: { semantic: true, foods: true, packaged: false, exchange: true, renal: true, formulas: false, externalFallback: false },
+  enteral_formula: { semantic: true, foods: true, packaged: false, exchange: false, renal: false, formulas: true, externalFallback: false },
+  general_chat: { semantic: true, foods: false, packaged: false, exchange: false, renal: false, formulas: false, externalFallback: false },
+};
+
+/** Finds the first 8-14 digit run in free text — a plausible barcode/EAN/UPC. */
+function extractBarcode(text) {
+  const match = String(text || "").match(/(?<!\d)\d{8,14}(?!\d)/);
+  return match ? match[0] : null;
+}
+
+const RAG_ASK_STOPWORDS = new Set([
+  "the", "and", "for", "with", "what", "is", "are", "how", "much", "many",
+  "does", "that", "this", "can", "should", "have", "has", "from", "about",
+  "into", "per", "food", "foods", "you", "your", "tell", "me", "please",
+  "need", "want", "would", "could", "give", "list", "does", "any",
+]);
+
+/** Loose keyword extraction for the schema-agnostic keyword scan (scanTableByKeywords). */
+function extractKeywords(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !RAG_ASK_STOPWORDS.has(w));
+}
+
+/** Keyword-only intent guess — used when GROQ_API_KEY isn't configured, or Groq classification fails. */
+function heuristicIntent(query) {
+  const q = query.toLowerCase().trim();
+  if (extractBarcode(query)) return "barcode_search";
+  if (/\b(renal|kidney|dialysis|ckd)\b/.test(q)) return "exchange_list";
+  if (/\b(exchange|diabet|carb counting|glycaemic|glycemic)\b/.test(q)) return "exchange_list";
+  if (/\b(enteral|tube.?feed|parenteral|\btpn\b|formula)\b/.test(q)) return "enteral_formula";
+  if (/^(hi|hello|hey|thanks|thank you|good morning|good afternoon|good evening)\b/.test(q)) return "general_chat";
+  if (/\b(what is|why|explain|difference between|how does|how do)\b/.test(q)) return "nutrition_question";
+  return "food_search";
+}
+
+/**
+ * Classifies a query into one of RAG_ASK_INTENTS via a cheap/fast Groq call
+ * (same llama-3.1-8b-instant pattern already used client-side in Oasis's
+ * FatSecret query classifier), falling back to heuristicIntent() if
+ * GROQ_API_KEY isn't configured or the call/parse fails for any reason.
+ * Never throws — always returns a usable { intent, barcode } pair.
+ */
+async function classifyIntent(query, env) {
+  if (!env.GROQ_API_KEY) {
+    return { intent: heuristicIntent(query), barcode: extractBarcode(query) };
+  }
+
+  const prompt = `Classify this nutrition-app user query into exactly one intent label: food_search, barcode_search, nutrition_question, exchange_list, enteral_formula, general_chat.
+
+- food_search: looking up a specific food/ingredient/product's nutrition info
+- barcode_search: the query is or contains a product barcode number
+- nutrition_question: a general nutrition/clinical knowledge question, not about one specific food
+- exchange_list: about diabetic or renal food exchange/portion lists
+- enteral_formula: about tube-feeding/enteral/parenteral formulas
+- general_chat: greetings, thanks, small talk, anything not nutrition-related
+
+Query: "${query}"
+
+Respond with ONLY this JSON, no other text: {"intent": "<label>", "barcode": "<digits found in the query, or null>"}`;
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        temperature: 0,
+        max_completion_tokens: 60,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) throw new Error(`Groq classify failed (${res.status})`);
+
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content?.trim() || "";
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+
+    const intent = RAG_ASK_INTENTS.includes(parsed.intent) ? parsed.intent : heuristicIntent(query);
+    const barcode = /^\d{8,14}$/.test(String(parsed.barcode || "")) ? String(parsed.barcode) : extractBarcode(query);
+    return { intent, barcode };
+  } catch (e) {
+    return { intent: heuristicIntent(query), barcode: extractBarcode(query) };
+  }
+}
+
+const ASK_ROW_EXCLUDED_FIELDS = new Set(["embedding", "created_at", "updated_at", "id"]);
+
+/**
+ * Schema-agnostic row -> text formatter. Used for tables (exchange_lists,
+ * renal_foods, enteral_formulas) whose exact column names aren't assumed —
+ * this just serializes whatever non-empty, non-internal fields exist, so it
+ * keeps working even if those tables' schemas differ from what's documented.
+ */
+function rowToText(row, maxLen = 400) {
+  if (!row) return "";
+  const parts = [];
+  for (const [k, v] of Object.entries(row)) {
+    if (ASK_ROW_EXCLUDED_FIELDS.has(k) || v === null || v === undefined || v === "") continue;
+    parts.push(`${k}: ${v}`);
+  }
+  const text = parts.join(", ");
+  return text.length > maxLen ? `${text.slice(0, maxLen)}…` : text;
+}
+
+/**
+ * Fetches up to `limit` rows from `table` and keeps only the ones where at
+ * least one extracted query keyword appears anywhere in the row (checked via
+ * a stringified, lowercased scan rather than a column-specific ilike filter,
+ * since exchange_lists/renal_foods/enteral_formulas don't have a documented
+ * single "name" column to filter on). Returns { row, score } sorted
+ * descending by keyword-match count, capped to 8.
+ */
+async function scanTableByKeywords(db, table, keywords, limit = 150) {
+  if (!keywords.length) return [];
+  const { ok, body } = await db.select(table, { limit, offset: 0 });
+  if (!ok || !Array.isArray(body)) return [];
+
+  const scored = [];
+  for (const row of body) {
+    const haystack = JSON.stringify(row).toLowerCase();
+    let score = 0;
+    for (const kw of keywords) {
+      if (haystack.includes(kw)) score += 1;
+    }
+    if (score > 0) scored.push({ row, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 8);
+}
+
+/** Malawi FCT / curated foods table — exact ilike search on food_name. */
+async function searchFoodsExact(db, query, limit = 5) {
+  if (!query) return [];
+  const { ok, body } = await db.select("foods", {
+    filters: { food_name: `ilike.*${escapeLikePattern(query)}*` },
+    limit,
+  });
+  return ok && Array.isArray(body) ? body : [];
+}
+
+/** Community/OCR-submitted packaged foods — exact ilike search on product_name, approved only. */
+async function searchPackagedExact(db, query, limit = 5) {
+  if (!query) return [];
+  const { ok, body } = await db.select("packaged_foods", {
+    filters: { product_name: `ilike.*${escapeLikePattern(query)}*`, status: "eq.approved" },
+    limit,
+  });
+  return ok && Array.isArray(body) ? body : [];
+}
+
+/**
+ * Semantic (vector DB) search against rag_knowledge_base via match_documents
+ * — same embed + RPC pattern as POST /rag/retrieve, but with its own cache
+ * key prefix (asksemcache) so it never collides with or disturbs the
+ * existing /rag/retrieve cache entries. Returns the query embedding too, so
+ * handleRagAsk can reuse it for match_memory instead of embedding twice.
+ */
+async function semanticSearchForAsk(query, context, topK, db, env, ctx) {
+  const cappedTopK = Math.min(topK, 10);
+  const cacheKeyParts = ["asksem", context, String(cappedTopK), normalizeQueryText(query)];
+  const cached = await getQueryCache(env, "asksemcache", cacheKeyParts);
+  if (cached) return { chunks: cached.chunks, embedding: null, cacheHit: true };
+
+  let queryEmbedding;
+  try {
+    queryEmbedding = await embedText(query, env, "search_query");
+  } catch (e) {
+    return { chunks: [], embedding: null, error: e.message };
+  }
+
+  const contextFilter = !context || context === "both" ? null : context;
+  const { ok, body: chunks } = await db.rpc("match_documents", {
+    query_embedding: queryEmbedding,
+    match_count: cappedTopK,
+    context_filter: contextFilter,
+    query_text: query,
+  });
+
+  const chunkList = ok && Array.isArray(chunks) ? chunks : [];
+  putQueryCache(env, ctx, "asksemcache", cacheKeyParts, { chunks: chunkList }, RAG_CACHE_TTL_SECONDS);
+  return { chunks: chunkList, embedding: queryEmbedding, cacheHit: false };
+}
+
+/**
+ * Reranks candidates against the query via Cohere rerank-multilingual-v3.0.
+ * Falls back to a plain score-descending sort (whatever score each source
+ * already attached) if COHERE_API_KEY is missing, there's <=1 candidate, or
+ * the rerank call itself fails — reranking is an enhancement, not a hard
+ * dependency of the orchestrator.
+ */
+async function rerankCandidates(query, candidates, env, topN) {
+  const capped = candidates.slice(0, 30); // guard against oversized rerank payloads
+  const heuristicOrder = () =>
+    capped.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, topN);
+
+  if (!env.COHERE_API_KEY || capped.length <= 1) return heuristicOrder();
+
+  try {
+    const res = await fetch("https://api.cohere.com/v1/rerank", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.COHERE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "rerank-multilingual-v3.0",
+        query,
+        documents: capped.map((c) => `${c.title}: ${c.text}`.slice(0, 1000)),
+        top_n: Math.min(topN, capped.length),
+      }),
+    });
+    if (!res.ok) throw new Error(`Cohere rerank failed (${res.status})`);
+
+    const data = await res.json();
+    const results = Array.isArray(data.results) ? data.results : [];
+    if (!results.length) return heuristicOrder();
+    return results.map((r) => ({ ...capped[r.index], score: r.relevance_score }));
+  } catch (e) {
+    return heuristicOrder();
+  }
+}
+
+/**
+ * Grounded answer generation (Groq). Instructed to answer ONLY from the
+ * numbered context block and to cite snippet numbers inline, and to say so
+ * plainly rather than invent facts when the context is insufficient. Never
+ * throws — degrades to a message pointing at the raw sources if
+ * GROQ_API_KEY is missing or the call fails.
+ */
+async function answerWithLLM(query, contextBlock, env) {
+  if (!env.GROQ_API_KEY) {
+    return "I found relevant information below, but I can't generate a written answer right now (GROQ_API_KEY not configured on the server) — see the numbered sources for the raw matches.";
+  }
+
+  const systemPrompt = `You are Chakudya AI, a grounded nutrition assistant for Malawi's Chakudya Nutrition Registry. Answer ONLY using the numbered context snippets provided by the user. Cite the snippet number(s) you used inline in square brackets, e.g. [1] or [2][3]. If the snippets don't contain enough information to answer confidently, say so plainly instead of guessing — do not invent nutrient values, brand details, or clinical guidance that isn't in the context. Keep answers concise and clinically accurate for a Malawian dietetics context.`;
+  const userPrompt = `Context:\n${contextBlock}\n\nQuestion: ${query}`;
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile",
+        temperature: 0.2,
+        max_completion_tokens: 500,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      return `(LLM answer unavailable: ${e.error?.message || res.status}) — see the numbered sources below.`;
+    }
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content?.trim() || "(Empty response from the LLM — see the numbered sources below.)";
+  } catch (e) {
+    return `(LLM answer unavailable: ${e.message}) — see the numbered sources below.`;
+  }
+}
+
+/**
+ * POST /rag/ask — the orchestrator itself. Body: { query (required),
+ * context ("clinical"|"general"|"both", default "both"), top_k (default 6,
+ * capped 10), session_id (optional — pulls in session memory as extra
+ * context) }.
+ */
+async function handleRagAsk(request, url, db, env, ctx, body) {
+  const { query, context = "both", top_k = 6, session_id = null } = body || {};
+
+  if (!query || !String(query).trim()) return err("'query' is required");
+
+  const VALID_CONTEXTS = ["clinical", "general", "both"];
+  if (!VALID_CONTEXTS.includes(context)) {
+    return err(`'context' must be one of: ${VALID_CONTEXTS.join(", ")} (got "${context}")`);
+  }
+
+  const cappedTopK = Math.min(Math.max(parseInt(top_k, 10) || 6, 1), 10);
+  const trimmedQuery = String(query).trim();
+
+  // Whole-answer cache — skipped whenever session_id is present, since the
+  // memory-personalized answer for one session shouldn't be served back to
+  // a different session asking the same surface-level question.
+  const cacheKeyParts = ["ask", context, String(cappedTopK), normalizeQueryText(trimmedQuery)];
+  if (!session_id) {
+    const cached = await getQueryCache(env, "askcache", cacheKeyParts);
+    if (cached) return success(cached, { query: trimmedQuery, context, cache: "HIT" });
+  }
+
+  // ── 1. Intent Detection ──────────────────────────────────────────────────
+  const { intent, barcode: detectedBarcode } = await classifyIntent(trimmedQuery, env);
+  const barcode = extractBarcode(trimmedQuery) || detectedBarcode || null;
+  const plan = INTENT_SOURCE_PLAN[intent] || INTENT_SOURCE_PLAN.food_search;
+  const keywords = extractKeywords(trimmedQuery);
+
+  // ── 2. Search Orchestrator — fan out across every source the intent plan calls for ──
+  const tasks = {};
+  if (plan.semantic) tasks.semantic = semanticSearchForAsk(trimmedQuery, context, cappedTopK, db, env, ctx);
+  if (plan.foods) tasks.foods = searchFoodsExact(db, trimmedQuery);
+  if (plan.packaged) tasks.packaged = searchPackagedExact(db, trimmedQuery);
+  if (plan.exchange) tasks.exchange = scanTableByKeywords(db, "exchange_lists", keywords);
+  if (plan.renal) tasks.renal = scanTableByKeywords(db, "renal_foods", keywords);
+  if (plan.formulas) tasks.formulas = scanTableByKeywords(db, "enteral_formulas", keywords);
+  if (barcode) tasks.barcode = lookupFoodCascade(db, { query: "", barcode }, env);
+
+  const taskKeys = Object.keys(tasks);
+  const settled = await Promise.allSettled(Object.values(tasks));
+  const results = {};
+  taskKeys.forEach((key, i) => {
+    results[key] = settled[i].status === "fulfilled" ? settled[i].value : null;
+  });
+
+  // USDA FDC / Open Food Facts / FatSecret fallback (via the existing
+  // lookupFoodCascade cascade) — only fires when every local structured
+  // source came back empty, to avoid burning external API quota on queries
+  // the local registry already answers.
+  const hasLocalFoodHits =
+    (results.foods?.length || 0) > 0 || (results.packaged?.length || 0) > 0 || !!results.barcode;
+  if (plan.externalFallback && !hasLocalFoodHits && !barcode) {
+    try {
+      results.external = await lookupFoodCascade(db, { query: trimmedQuery, barcode: "" }, env);
+    } catch (e) {
+      results.external = null;
+    }
+  }
+
+  // ── 3. Optional session memory tie-in (Write → Consolidate → Recall → Apply) ──
+  let memoryRows = [];
+  if (session_id && results.semantic?.embedding) {
+    try {
+      const { ok, body: rows } = await db.rpc("match_memory", {
+        query_embedding: results.semantic.embedding,
+        match_session_id: session_id,
+        match_count: 3,
+      });
+      if (ok && Array.isArray(rows)) memoryRows = rows;
+    } catch (e) {
+      // Session memory is a bonus, not a required source — fail silently.
+    }
+  }
+
+  // ── 4. Assemble candidates from every source that returned something ────
+  const candidates = [];
+
+  for (const chunk of results.semantic?.chunks || []) {
+    candidates.push({
+      source: "knowledge_base",
+      title: chunk.source || "Reference note",
+      text: chunk.content || "",
+      score: typeof chunk.similarity === "number" ? chunk.similarity : null,
+    });
+  }
+  for (const row of results.foods || []) {
+    candidates.push({ source: "malawi_fct", title: row.food_name || "Food", text: rowToText(row), score: null });
+  }
+  for (const row of results.packaged || []) {
+    candidates.push({ source: "packaged_foods", title: row.product_name || "Packaged food", text: rowToText(row), score: null });
+  }
+  for (const { row } of results.exchange || []) {
+    candidates.push({ source: "diabetes_exchange", title: row.food_item || row.food_name || row.name || "Exchange item", text: rowToText(row), score: null });
+  }
+  for (const { row } of results.renal || []) {
+    candidates.push({ source: "renal_exchange", title: row.food_item || row.food_name || row.name || "Renal food", text: rowToText(row), score: null });
+  }
+  for (const { row } of results.formulas || []) {
+    candidates.push({ source: "enteral_formula", title: row.formula_name || row.name || "Formula", text: rowToText(row), score: null });
+  }
+  if (results.barcode) {
+    candidates.push({
+      source: `barcode_${results.barcode.source}`,
+      title: results.barcode.food?.food_name || results.barcode.food?.product_name || "Barcode match",
+      text: rowToText(results.barcode.food),
+      score: 1,
+    });
+  }
+  if (results.external) {
+    candidates.push({
+      source: `external_${results.external.source}`,
+      title: results.external.food?.food_name || results.external.food?.product_name || "External match",
+      text: rowToText(results.external.food),
+      score: 0.9,
+    });
+  }
+  for (const row of memoryRows) {
+    candidates.push({ source: "session_memory", title: "Session context", text: row.content || "", score: 1 });
+  }
+
+  if (!candidates.length) {
+    return success(
+      {
+        answer:
+          "I couldn't find anything in the Chakudya registry or connected sources for that — could you rephrase, or add more detail (e.g. the food name, brand, or barcode)?",
+        intent,
+        barcode_detected: barcode,
+        sources: [],
+      },
+      { query: trimmedQuery, context, cache: "MISS" }
+    );
+  }
+
+  // ── 5. Rerank ─────────────────────────────────────────────────────────────
+  const ranked = await rerankCandidates(trimmedQuery, candidates, env, cappedTopK);
+
+  // ── 6. Build Context ──────────────────────────────────────────────────────
+  const contextBlock = ranked
+    .map((c, i) => `[${i + 1}] (${c.source}: ${c.title})\n${c.text}`)
+    .join("\n\n")
+    .slice(0, 6000);
+
+  // ── 7. LLM answer, grounded + cited ──────────────────────────────────────
+  const answer = await answerWithLLM(trimmedQuery, contextBlock, env);
+
+  const payload = {
+    answer,
+    intent,
+    barcode_detected: barcode,
+    sources: ranked.map((c, i) => ({ id: i + 1, source: c.source, title: c.title })),
+  };
+
+  if (!session_id) {
+    putQueryCache(env, ctx, "askcache", cacheKeyParts, payload, ASK_CACHE_TTL_SECONDS);
+  }
+
+  return success(payload, { query: trimmedQuery, context, cache: "MISS" });
 }
 
 // ─── SESSION MEMORY (Write → Consolidate → Recall → Apply) ───────────────────
@@ -1476,7 +1991,7 @@ function handleRoot(env) {
     tagline: "Malawi's first open Food & Nutrition Database",
     version: CNR_VERSION,
     maintainer: "Edison Taimu",
-    auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
+    auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /rag/ask, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
     // Rate limiting and the RAG/memory query cache both fail OPEN (silently)
     // if RATE_LIMIT_KV isn't bound — meaning the API keeps working but with
     // no rate limiting and no caching, and nothing else would tell you that.
@@ -1524,6 +2039,7 @@ function handleRoot(env) {
       rag: [
         "POST /rag/retrieve     (public, rate-limited) → semantic search (query, context, top_k)",
         "POST /rag/ingest       (admin) → add document chunk (content, source, context)",
+        "POST /rag/ask          (public, rate-limited) → RAG Search Orchestrator: intent detection -> fan-out search (semantic + Malawi FCT + packaged/OCR foods + exchange/renal/formula DBs + barcode + USDA/OFF/FatSecret fallback) -> rerank -> grounded LLM answer with citations (query, context, top_k, session_id)",
       ],
       memory: [
         "POST /memory/write        (public, rate-limited) → capture a session fact (session_id, content)",

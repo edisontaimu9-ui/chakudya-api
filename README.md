@@ -441,6 +441,58 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 }
 ```
 
+`POST /rag/ask` *(public, rate-limited — 15 req/min per IP)* — RAG Search Orchestrator
+
+Runs the full pipeline: **Intent Detection** (Groq `llama-3.1-8b-instant`, with a
+keyword-based heuristic fallback) → **Search Orchestrator** (fans out, in
+parallel, across whichever of the sources below the detected intent needs) →
+**Rerank** (Cohere `rerank-multilingual-v3.0`, heuristic-score fallback if
+unavailable) → **Build Context** → grounded **LLM answer** (Groq) with
+bracketed `[n]` citations back to the numbered sources.
+
+Sources it can draw from, depending on intent:
+
+| Source | Backing |
+|---|---|
+| Semantic Search (Vector DB) | `rag_knowledge_base` via `match_documents` |
+| Malawi FCT / Exact SQL Search | `foods` (ilike `food_name`) |
+| Packaged / OCR-sourced foods | `packaged_foods` (ilike `product_name`, approved only) |
+| Diabetes Exchange List | `exchange_lists` (keyword scan) |
+| Renal Exchange List | `renal_foods` (keyword scan) |
+| Enteral Formula Database | `enteral_formulas` (keyword scan) |
+| Barcode Lookup | `lookupFoodCascade` (local → cache → Open Food Facts) |
+| USDA FDC / Open Food Facts / FatSecret | `lookupFoodCascade`, **fallback only** — fires when the local sources above returned nothing |
+| Session memory *(optional)* | `assistant_memory` via `match_memory`, only when `session_id` is passed |
+
+Body:
+
+```json
+{
+  "query": "string",
+  "context": "clinical | general | both",
+  "top_k": 6,
+  "session_id": "string (optional)"
+}
+```
+
+Response `data`:
+
+```json
+{
+  "answer": "string — grounded answer with [n] citations",
+  "intent": "food_search | barcode_search | nutrition_question | exchange_list | enteral_formula | general_chat",
+  "barcode_detected": "string | null",
+  "sources": [{ "id": 1, "source": "malawi_fct", "title": "..." }]
+}
+```
+
+Whole answers are cached 5 minutes (keyed on context + top_k + normalized
+query) — skipped entirely whenever `session_id` is passed, since a
+memory-personalized answer for one session must never be served back to a
+different session asking the same surface question. `/rag/retrieve` and
+`/rag/ingest` above are unchanged — same endpoints, same request/response
+shape, same query params.
+
 ### Memory (Write → Consolidate → Recall → Apply)
 
 Per-session clinical scratchpad for Oasis AI. Scoped by `session_id` (the
