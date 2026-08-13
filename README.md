@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.6.0`
+- **Current CNR version:** `1.8.0`
 
 ---
 
@@ -255,6 +255,41 @@ Takes about 90 seconds (most of that is a deliberate 60s pause to let the rate-l
 ### Root
 
 - `GET /` — returns CNR metadata, version, auth summary, and endpoint map
+
+### Health
+
+- `GET /health` *(public, rate-limited)* — pings Supabase, Cohere, and Groq
+  in parallel and reports per-service status plus an overall
+  `healthy`/`degraded` verdict. Useful for quickly narrowing down which
+  upstream is the cause when a route starts failing, instead of guessing
+  from a generic `500`.
+
+Optional integrations (USDA FDC, FatSecret, the rate-limit/query-cache KV)
+are reported as `configured`/`bound` or not, without a network call —
+they're not pinged and don't affect the overall verdict, since the rest of
+the API already degrades gracefully without them.
+
+Response:
+
+```json
+{
+  "status": "healthy",
+  "version": "1.8.0",
+  "checked_at": "2026-08-13T22:40:00.000Z",
+  "services": {
+    "supabase": { "status": "ok" },
+    "cohere": { "status": "ok" },
+    "groq": { "status": "error", "detail": "HTTP 401" },
+    "usda_fdc": { "status": "configured" },
+    "fatsecret": { "status": "not_configured" },
+    "rate_limit_kv": { "status": "bound" }
+  }
+}
+```
+
+Returns `200` when `status: "healthy"`, `503` when `status: "degraded"`
+(i.e. Supabase, Cohere, or Groq — the required upstreams — failed to
+respond).
 
 ### Foods
 

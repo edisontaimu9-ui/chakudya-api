@@ -69,6 +69,21 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.8.0 changes:
+ *  - Added POST /packaged/:id/approve and POST /packaged/:id/reject — admin
+ *    review queue for community/OCR submissions (paired with the new
+ *    GET /packaged/pending listing). Requires reviewed_at/reviewed_by/
+ *    rejection_reason columns on packaged_foods — see comment above
+ *    handlePackagedPending.
+ *  - Barcode duplicate handling on POST /packaged/submit and POST
+ *    /packaged/scan — packaged_foods.barcode has a UNIQUE constraint, so a
+ *    matching pending/approved row now blocks the new submission (409,
+ *    existing row returned) instead of failing on the raw DB constraint;
+ *    a matching rejected row is overwritten in place as a resubmission.
+ *  - Added GET /health — pings Supabase/Cohere/Groq in parallel and reports
+ *    per-service status plus overall healthy/degraded, so a single request
+ *    tells you which upstream is the cause when routes start failing.
+ *
  * v1.2.0 changes:
  *  - Added POST /packaged/scan — photo of a nutrition label -> Groq vision
  *    OCR/AI extraction -> inserted into packaged_foods as status=pending
@@ -106,7 +121,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.7.0";
+const CNR_VERSION = "1.8.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -311,6 +326,7 @@ const MEMORY_RECALL_CACHE_TTL_SECONDS = 120; // 2 min — a session's facts can 
  */
 function routePolicy(resource, method, param, action) {
   const isWrite = method !== "GET";
+  const isHealth = resource === "health" && method === "GET";
   const isPackagedSubmit = resource === "packaged" && param === "submit" && method === "POST";
   const isPackagedScan = resource === "packaged" && param === "scan" && method === "POST";
   const isPackagedPending = resource === "packaged" && param === "pending" && method === "GET";
@@ -323,6 +339,12 @@ function routePolicy(resource, method, param, action) {
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
+
+  // Health check — public, moderate cap. Each hit fans out 2-3 upstream
+  // pings, so it shouldn't be as generously limited as a plain local read.
+  if (isHealth) {
+    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+  }
 
   // Foods lookup can trigger external API calls (USDA/OFF/FatSecret) — public
   // but capped to protect those quotas, separate from plain local reads.
@@ -2018,6 +2040,97 @@ async function handleMemory(request, url, db, env, param, ctx) {
   return notFound("Memory route");
 }
 
+// ─── HEALTH CHECK ────────────────────────────────────────────────────────────
+//
+// GET /health — pings the required upstream services in parallel (Supabase,
+// Cohere, Groq) and reports each one's status plus an overall
+// healthy/degraded verdict. Meant to answer "which upstream broke?" in one
+// request instead of guessing from a generic 500 on whatever route failed.
+// Optional integrations (USDA FDC, FatSecret, the rate-limit/query-cache KV)
+// are reported as configured/bound or not, without a network call — they
+// don't affect the overall verdict since the rest of the API works without
+// them (see the "Optional" env var list in the README).
+
+/** Fetch with a timeout, so one hung upstream can't hang the whole health check. */
+async function pingWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return { ok: res.ok, httpStatus: res.status };
+  } catch (e) {
+    return { ok: false, httpStatus: null, error: e.name === "AbortError" ? "Timed out" : e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function checkSupabase(env) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_KEY) return { status: "not_configured" };
+  const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/foods?select=id&limit=1`;
+  const res = await pingWithTimeout(url, {
+    headers: { apikey: env.SUPABASE_KEY, Authorization: `Bearer ${env.SUPABASE_KEY}` },
+  });
+  return res.ok ? { status: "ok" } : { status: "error", detail: res.error || `HTTP ${res.httpStatus}` };
+}
+
+async function checkCohere(env) {
+  if (!env.COHERE_API_KEY) return { status: "not_configured" };
+  const res = await pingWithTimeout("https://api.cohere.com/v1/models?page_size=1", {
+    headers: { Authorization: `Bearer ${env.COHERE_API_KEY}` },
+  });
+  return res.ok ? { status: "ok" } : { status: "error", detail: res.error || `HTTP ${res.httpStatus}` };
+}
+
+async function checkGroq(env) {
+  if (!env.GROQ_API_KEY) return { status: "not_configured" };
+  // OpenAI-compatible /models endpoint — lists available models, no
+  // completion tokens billed, cheapest possible liveness check.
+  const res = await pingWithTimeout("https://api.groq.com/openai/v1/models", {
+    headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` },
+  });
+  return res.ok ? { status: "ok" } : { status: "error", detail: res.error || `HTTP ${res.httpStatus}` };
+}
+
+async function handleHealth(request, env) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const [supabase_, cohere_, groq_] = await Promise.all([
+    checkSupabase(env),
+    checkCohere(env),
+    checkGroq(env),
+  ]);
+
+  const services = {
+    supabase: supabase_,
+    cohere: cohere_,
+    groq: groq_,
+    // Optional integrations — configuration/binding presence only, no
+    // network call (FatSecret in particular needs a signed OAuth request,
+    // not a simple ping; not worth the complexity for a health check).
+    usda_fdc: { status: env.USDA_FDC_API_KEY ? "configured" : "not_configured" },
+    fatsecret: {
+      status: env.FATSECRET_CONSUMER_KEY && env.FATSECRET_CONSUMER_SECRET ? "configured" : "not_configured",
+    },
+    rate_limit_kv: { status: env.RATE_LIMIT_KV ? "bound" : "not_bound" },
+  };
+
+  // Only the three required upstreams affect the overall verdict — the
+  // optional ones are visibility-only, matching how the rest of the API
+  // already treats them (it degrades gracefully without them, see README).
+  const degraded = [supabase_, cohere_, groq_].some((s) => s.status === "error");
+
+  return json(
+    {
+      status: degraded ? "degraded" : "healthy",
+      version: CNR_VERSION,
+      checked_at: new Date().toISOString(),
+      services,
+    },
+    degraded ? 503 : 200
+  );
+}
+
 // ─── ROUTE HANDLERS ──────────────────────────────────────────────────────────
 
 // GET /
@@ -2035,6 +2148,9 @@ function handleRoot(env) {
     // of finding out the hard way via a manual MISS/HIT test cycle.
     kv_bound: !!env?.RATE_LIMIT_KV,
     endpoints: {
+      health: [
+        "GET  /health           (public, rate-limited) → pings Supabase/Cohere/Groq in parallel, reports per-service status + overall healthy/degraded",
+      ],
       foods: [
         "GET  /foods",
         "GET  /foods/:id",
@@ -2919,6 +3035,10 @@ async function handlePackagedReject(request, db, id) {
  */
 async function dispatch(request, url, db, env, resource, param, ctx, action) {
   switch (resource) {
+    case "health": {
+      return await handleHealth(request, env);
+    }
+
     case "foods": {
       if (param === "lookup") {
         return await handleFoodsLookup(request, url, db, env);
