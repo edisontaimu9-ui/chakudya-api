@@ -1033,6 +1033,25 @@ function checkMacrosMatchCalories({ energy_kcal, protein_g, fat_g, carbs_g }) {
   };
 }
 
+/**
+ * Looks for an existing packaged_foods row with the same barcode, so a new
+ * submission can be flagged as a probable duplicate rather than silently
+ * piling up alongside it in the review queue. Prefers an already-approved
+ * row (the "real" entry a duplicate should be compared/merged against);
+ * falls back to the most recent pending one if nothing's approved yet.
+ * Returns null if there's no barcode to check or nothing matches.
+ */
+async function findDuplicateByBarcode(db, barcode) {
+  if (!barcode) return null;
+  const { ok, body } = await db.select("packaged_foods", {
+    filters: { barcode: `eq.${barcode}` },
+    limit: 10,
+    order: "submitted_at.desc",
+  });
+  if (!ok || !Array.isArray(body) || !body.length) return null;
+  return body.find((row) => row.status === "approved") || body[0];
+}
+
 const NUTRITION_LABEL_SCHEMA_PROMPT = `You are reading one or more photographs of the SAME packaged food product (e.g. a label typically seen in Malawi/Southern Africa on products such as maize flour, cooking oil, juice, biscuits, etc). The photos may show different faces of the same package — for example the nutrition facts panel in one photo and the barcode or front branding in another. Combine information across ALL the photos provided into a single answer about this one product.
 
 Return ONLY a single JSON object (no prose, no markdown fences) with exactly these keys:
@@ -2503,6 +2522,7 @@ async function handleNutrition(request, url, db) {
 //   alter table packaged_foods add column if not exists source text;
 //   alter table packaged_foods add column if not exists ai_confidence numeric;
 //   alter table packaged_foods add column if not exists ocr_raw jsonb;
+//   alter table packaged_foods add column if not exists duplicate_of bigint;
 async function handlePackagedScan(request, env, db) {
   if (request.method !== "POST") return err("Method not allowed", 405);
 
@@ -2596,16 +2616,24 @@ async function handlePackagedScan(request, env, db) {
   };
 
   const macroCheck = checkMacrosMatchCalories(data);
+  const duplicate = await findDuplicateByBarcode(db, data.barcode);
+  data.duplicate_of = duplicate ? duplicate.id : null;
 
   const { ok, status, body } = await db.insert("packaged_foods", data);
   if (!ok) return err(body?.message || "Submit failed", status);
 
   const lowConfidence = data.ai_confidence != null && data.ai_confidence < 0.6;
   const macroMismatch = macroCheck.checked && !macroCheck.matches;
-  const needsReview = lowConfidence || macroMismatch;
+  const needsReview = lowConfidence || macroMismatch || !!duplicate;
 
   let message;
-  if (lowConfidence && macroMismatch) {
+  if (duplicate) {
+    message =
+      `Submitted for review — heads up, this barcode already has a ${duplicate.status} entry ` +
+      `("${duplicate.product_name}", id ${duplicate.id}). It'll be compared against that during review.` +
+      (lowConfidence ? " Scan confidence was also low." : "") +
+      (macroMismatch ? " Declared calories don't closely match protein/carbs/fat either." : "");
+  } else if (lowConfidence && macroMismatch) {
     message =
       "Submitted for review, but the scan confidence was low and the calories don't closely " +
       "match protein/carbs/fat — please double-check the details.";
@@ -2623,6 +2651,7 @@ async function handlePackagedScan(request, env, db) {
     message,
     needs_review: needsReview,
     macro_check: macroCheck.checked ? macroCheck : undefined,
+    duplicate_of: duplicate ? { id: duplicate.id, status: duplicate.status, product_name: duplicate.product_name } : undefined,
   });
 }
 
@@ -2665,26 +2694,40 @@ async function handlePackaged(request, url, db, id, isSubmit) {
     // values (the common case) or omitted `per`/`serving_size`.
     const normalized = scaleNutrientsToPer100(rest, per, serving_size, PACKAGED_FOOD_DB_NUTRIENT_FIELDS);
     const macroCheck = checkMacrosMatchCalories(normalized);
+    const duplicate = await findDuplicateByBarcode(db, payload.barcode);
 
     const data = {
       status: "pending",
       submitted_at: new Date().toISOString(),
       serving_size: serving_size ?? null,
+      duplicate_of: duplicate ? duplicate.id : null,
       ...normalized,
     };
     const { ok, status, body } = await db.insert("packaged_foods", data);
     if (!ok) return err(body?.message || "Submit failed", status);
 
     const macroMismatch = macroCheck.checked && !macroCheck.matches;
-    const message = macroMismatch
-      ? `Packaged food submitted for review — declared calories (${macroCheck.declared_kcal} kcal) don't closely ` +
-        `match protein/carbs/fat (~${macroCheck.calculated_kcal} kcal calculated). Please double-check the label.`
-      : "Packaged food submitted for review";
+    let message = "Packaged food submitted for review";
+    if (duplicate && macroMismatch) {
+      message =
+        `Submitted for review, but this barcode already has a ${duplicate.status} entry ` +
+        `("${duplicate.product_name}", id ${duplicate.id}) — and declared calories don't closely ` +
+        `match protein/carbs/fat. Please double-check both.`;
+    } else if (duplicate) {
+      message =
+        `Submitted for review — heads up, this barcode already has a ${duplicate.status} entry ` +
+        `("${duplicate.product_name}", id ${duplicate.id}). It'll be compared against that during review.`;
+    } else if (macroMismatch) {
+      message =
+        `Packaged food submitted for review — declared calories (${macroCheck.declared_kcal} kcal) don't closely ` +
+        `match protein/carbs/fat (~${macroCheck.calculated_kcal} kcal calculated). Please double-check the label.`;
+    }
 
     return success(body, {
       message,
-      needs_review: macroMismatch,
+      needs_review: macroMismatch || !!duplicate,
       macro_check: macroCheck.checked ? macroCheck : undefined,
+      duplicate_of: duplicate ? { id: duplicate.id, status: duplicate.status, product_name: duplicate.product_name } : undefined,
     });
   }
 
@@ -2725,6 +2768,9 @@ async function handlePackaged(request, url, db, id, isSubmit) {
 //   alter table packaged_foods add column if not exists reviewed_at timestamptz;
 //   alter table packaged_foods add column if not exists reviewed_by text;
 //   alter table packaged_foods add column if not exists rejection_reason text;
+//   alter table packaged_foods add column if not exists duplicate_of bigint;
+// (duplicate_of is also required by handlePackagedScan/handlePackaged above —
+// listed here too since this is the queue an admin actually reads it from.)
 
 /** GET /packaged/pending (admin) — the review queue, oldest first (FIFO). */
 async function handlePackagedPending(request, url, db) {
