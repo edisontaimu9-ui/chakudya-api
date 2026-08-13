@@ -2522,7 +2522,6 @@ async function handleNutrition(request, url, db) {
 //   alter table packaged_foods add column if not exists source text;
 //   alter table packaged_foods add column if not exists ai_confidence numeric;
 //   alter table packaged_foods add column if not exists ocr_raw jsonb;
-//   alter table packaged_foods add column if not exists duplicate_of bigint;
 async function handlePackagedScan(request, env, db) {
   if (request.method !== "POST") return err("Method not allowed", 405);
 
@@ -2615,22 +2614,48 @@ async function handlePackagedScan(request, env, db) {
     ocr_raw: extracted,
   };
 
-  const macroCheck = checkMacrosMatchCalories(data);
+  // packaged_foods.barcode has a UNIQUE constraint, so — same as
+  // /packaged/submit — a duplicate must be caught BEFORE attempting an
+  // insert, not handled by linking two rows together after the fact.
   const duplicate = await findDuplicateByBarcode(db, data.barcode);
-  data.duplicate_of = duplicate ? duplicate.id : null;
 
-  const { ok, status, body } = await db.insert("packaged_foods", data);
+  if (duplicate && duplicate.status !== "rejected") {
+    return json(
+      {
+        status: "success",
+        message:
+          `This barcode already has a ${duplicate.status} entry ` +
+          `("${duplicate.product_name}", id ${duplicate.id}) — not submitting a duplicate.`,
+        already_exists: true,
+        data: duplicate,
+      },
+      409
+    );
+  }
+
+  const macroCheck = checkMacrosMatchCalories(data);
+
+  // A previously-rejected row already owns this barcode — overwrite it
+  // (reset to pending, clear the old review trail) instead of inserting,
+  // since a second row for the same barcode is impossible.
+  const { ok, status, body } = duplicate
+    ? await db.update(
+        "packaged_foods",
+        duplicate.id,
+        { ...data, reviewed_at: null, reviewed_by: null, rejection_reason: null },
+        "PATCH"
+      )
+    : await db.insert("packaged_foods", data);
   if (!ok) return err(body?.message || "Submit failed", status);
 
   const lowConfidence = data.ai_confidence != null && data.ai_confidence < 0.6;
   const macroMismatch = macroCheck.checked && !macroCheck.matches;
-  const needsReview = lowConfidence || macroMismatch || !!duplicate;
+  const needsReview = lowConfidence || macroMismatch;
 
   let message;
   if (duplicate) {
     message =
-      `Submitted for review — heads up, this barcode already has a ${duplicate.status} entry ` +
-      `("${duplicate.product_name}", id ${duplicate.id}). It'll be compared against that during review.` +
+      "Resubmitted for review (a previous submission with this barcode was rejected)." +
       (lowConfidence ? " Scan confidence was also low." : "") +
       (macroMismatch ? " Declared calories don't closely match protein/carbs/fat either." : "");
   } else if (lowConfidence && macroMismatch) {
@@ -2651,7 +2676,7 @@ async function handlePackagedScan(request, env, db) {
     message,
     needs_review: needsReview,
     macro_check: macroCheck.checked ? macroCheck : undefined,
-    duplicate_of: duplicate ? { id: duplicate.id, status: duplicate.status, product_name: duplicate.product_name } : undefined,
+    resubmission_of_rejected: duplicate ? duplicate.id : undefined,
   });
 }
 
@@ -2683,6 +2708,28 @@ async function handlePackaged(request, url, db, id, isSubmit) {
     if (!payload.barcode) return err("'barcode' is required");
     if (!payload.product_name) return err("'product_name' is required");
 
+    // packaged_foods.barcode has a UNIQUE constraint (a second row for the
+    // same barcode is impossible at the DB level, regardless of status), so
+    // duplicates must be handled BEFORE attempting an insert, not after.
+    const duplicate = await findDuplicateByBarcode(db, payload.barcode);
+
+    // An approved or still-pending match already occupies this barcode —
+    // don't attempt an insert (it would just fail the unique constraint).
+    // Return the existing entry so the client can show it immediately.
+    if (duplicate && duplicate.status !== "rejected") {
+      return json(
+        {
+          status: "success",
+          message:
+            `This barcode already has a ${duplicate.status} entry ` +
+            `("${duplicate.product_name}", id ${duplicate.id}) — not submitting a duplicate.`,
+          already_exists: true,
+          data: duplicate,
+        },
+        409
+      );
+    }
+
     // `per` ("100g" | "100ml" | "serving") is an optional hint, not a
     // packaged_foods column — pull it (and serving_size, handled separately
     // below) out before building the insert payload so it never hits the DB.
@@ -2694,40 +2741,44 @@ async function handlePackaged(request, url, db, id, isSubmit) {
     // values (the common case) or omitted `per`/`serving_size`.
     const normalized = scaleNutrientsToPer100(rest, per, serving_size, PACKAGED_FOOD_DB_NUTRIENT_FIELDS);
     const macroCheck = checkMacrosMatchCalories(normalized);
-    const duplicate = await findDuplicateByBarcode(db, payload.barcode);
 
     const data = {
       status: "pending",
       submitted_at: new Date().toISOString(),
       serving_size: serving_size ?? null,
-      duplicate_of: duplicate ? duplicate.id : null,
       ...normalized,
     };
-    const { ok, status, body } = await db.insert("packaged_foods", data);
+
+    // A previously-rejected row already owns this barcode — since a second
+    // row can't be inserted, resubmission means overwriting that row (reset
+    // to pending, clear the old review trail) rather than an insert.
+    const { ok, status, body } = duplicate
+      ? await db.update(
+          "packaged_foods",
+          duplicate.id,
+          { ...data, reviewed_at: null, reviewed_by: null, rejection_reason: null },
+          "PATCH"
+        )
+      : await db.insert("packaged_foods", data);
     if (!ok) return err(body?.message || "Submit failed", status);
 
     const macroMismatch = macroCheck.checked && !macroCheck.matches;
-    let message = "Packaged food submitted for review";
-    if (duplicate && macroMismatch) {
-      message =
-        `Submitted for review, but this barcode already has a ${duplicate.status} entry ` +
-        `("${duplicate.product_name}", id ${duplicate.id}) — and declared calories don't closely ` +
-        `match protein/carbs/fat. Please double-check both.`;
-    } else if (duplicate) {
-      message =
-        `Submitted for review — heads up, this barcode already has a ${duplicate.status} entry ` +
-        `("${duplicate.product_name}", id ${duplicate.id}). It'll be compared against that during review.`;
+    let message;
+    if (duplicate) {
+      message = "Packaged food resubmitted for review (a previous submission with this barcode was rejected).";
     } else if (macroMismatch) {
       message =
         `Packaged food submitted for review — declared calories (${macroCheck.declared_kcal} kcal) don't closely ` +
         `match protein/carbs/fat (~${macroCheck.calculated_kcal} kcal calculated). Please double-check the label.`;
+    } else {
+      message = "Packaged food submitted for review";
     }
 
     return success(body, {
       message,
-      needs_review: macroMismatch || !!duplicate,
+      needs_review: macroMismatch,
       macro_check: macroCheck.checked ? macroCheck : undefined,
-      duplicate_of: duplicate ? { id: duplicate.id, status: duplicate.status, product_name: duplicate.product_name } : undefined,
+      resubmission_of_rejected: duplicate ? duplicate.id : undefined,
     });
   }
 
@@ -2768,9 +2819,14 @@ async function handlePackaged(request, url, db, id, isSubmit) {
 //   alter table packaged_foods add column if not exists reviewed_at timestamptz;
 //   alter table packaged_foods add column if not exists reviewed_by text;
 //   alter table packaged_foods add column if not exists rejection_reason text;
-//   alter table packaged_foods add column if not exists duplicate_of bigint;
-// (duplicate_of is also required by handlePackagedScan/handlePackaged above —
-// listed here too since this is the queue an admin actually reads it from.)
+//
+// Duplicate handling relies on packaged_foods.barcode already having a
+// UNIQUE constraint (confirmed in production — a second row for the same
+// barcode is rejected by Postgres regardless of status). Because of that,
+// /packaged/submit and /packaged/scan check for an existing row BEFORE
+// inserting: an approved/pending match blocks the new submission outright
+// (409, existing row returned as-is); a rejected match is overwritten in
+// place (reset to pending) rather than inserted as a second row.
 
 /** GET /packaged/pending (admin) — the review queue, oldest first (FIFO). */
 async function handlePackagedPending(request, url, db) {

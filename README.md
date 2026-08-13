@@ -351,8 +351,13 @@ Requires a `reason` string, stored in `rejection_reason` for the audit trail:
 alter table packaged_foods add column if not exists reviewed_at timestamptz;
 alter table packaged_foods add column if not exists reviewed_by text;
 alter table packaged_foods add column if not exists rejection_reason text;
-alter table packaged_foods add column if not exists duplicate_of bigint;
 ```
+
+> Duplicate detection assumes `packaged_foods.barcode` already has a
+> `UNIQUE` constraint. If yours doesn't, add one — otherwise two rows for
+> the same barcode can coexist and the "already exists" check below won't
+> reflect what the database actually allows:
+> `alter table packaged_foods add constraint packaged_foods_barcode_key unique (barcode);`
 
 `POST /packaged/submit` requires:
 
@@ -372,16 +377,21 @@ AI-read labels, so `packaged_foods` stays on one consistent basis regardless
 of submission path. `per` is a hint only and is never written to the DB.
 Omit `per` (or send `per: "100g"` / `"100ml"`) if values are already per-100.
 
-**Duplicate detection:** both `/packaged/submit` and `/packaged/scan` check
-for an existing row with the same barcode before inserting — preferring an
-already-`approved` match, otherwise the most recent `pending` one. A match
-doesn't block the submission (labels get re-photographed, corrections come
-in, etc.) but the new row is stored with `duplicate_of` set to the existing
-row's `id`, `needs_review: true` is returned, and the response includes a
-`duplicate_of` object (`id`, `status`, `product_name`) so the client can
-warn the submitter immediately. Reviewers see the same `duplicate_of` field
-on rows in `GET /packaged/pending`, to compare against the original before
-approving or rejecting.
+**Duplicate detection:** `packaged_foods.barcode` has a `UNIQUE` constraint
+in the database — a second row for the same barcode is rejected by Postgres
+outright, regardless of status. Both `/packaged/submit` and `/packaged/scan`
+check for an existing row with the same barcode *before* attempting an
+insert:
+
+- If a match is `approved` or still `pending`, the new submission is
+  **not** written — the response (`409`) includes `already_exists: true`
+  and the existing row under `data`, so the client can show it immediately
+  instead of silently failing on the DB constraint.
+- If a match was previously `rejected`, the submission is treated as a
+  resubmission: that same row is updated back to `status: "pending"` with
+  the new data (and its old `reviewed_at`/`reviewed_by`/`rejection_reason`
+  cleared), rather than trying to insert a second row. The response
+  includes `resubmission_of_rejected: <id>` in that case.
 
 **Macro/calorie check:** when `energy_kcal`, `protein_g`, `fat_g`, and
 `carbs_g` are all present, the API cross-checks them against the declared
