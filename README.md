@@ -310,13 +310,48 @@ Query params: `route`, `limit`, `offset`
 ### Packaged
 
 - `GET /packaged`
+- `GET /packaged/pending` *(admin)* — review queue
 - `POST /packaged/submit` *(public, rate-limited)*
 - `POST /packaged/scan` *(public, rate-limited)*
+- `POST /packaged/:id/approve` *(admin)*
+- `POST /packaged/:id/reject` *(admin)*
 - `PUT /packaged/:id` *(admin)*
 - `PATCH /packaged/:id` *(admin)*
 - `DELETE /packaged/:id` *(admin)*
 
 Query params for `GET /packaged`: `barcode`, `limit`, `offset`
+
+**`GET /packaged/pending`** — the admin review queue: rows with
+`status: "pending"` from either submission path, oldest first. Query params:
+`source` (`manual` | `ocr_ai`, matches the `source` column set by
+`/packaged/scan`), `limit`, `offset`.
+
+**`POST /packaged/:id/approve`** — moves a row to `status: "approved"`.
+Accepts an optional JSON body of field corrections (e.g. a mis-read
+`energy_kcal`) applied in the same update, so a reviewer doesn't need a
+separate `PATCH` call first. Also accepts an optional `reviewed_by` string
+(free text — there's currently one shared `ADMIN_API_KEY`, so this is the
+only way to record *who* reviewed a row until per-consumer API keys exist;
+defaults to `"admin"`).
+
+```json
+{ "reviewed_by": "Grace", "energy_kcal": 210 }
+```
+
+**`POST /packaged/:id/reject`** — moves a row to `status: "rejected"`.
+Requires a `reason` string, stored in `rejection_reason` for the audit trail:
+
+```json
+{ "reason": "Barcode doesn't match product name", "reviewed_by": "Grace" }
+```
+
+**Setup required** — run once against `packaged_foods`:
+
+```sql
+alter table packaged_foods add column if not exists reviewed_at timestamptz;
+alter table packaged_foods add column if not exists reviewed_by text;
+alter table packaged_foods add column if not exists rejection_reason text;
+```
 
 `POST /packaged/submit` requires:
 

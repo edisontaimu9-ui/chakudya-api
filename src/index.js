@@ -309,10 +309,13 @@ const MEMORY_RECALL_CACHE_TTL_SECONDS = 120; // 2 min — a session's facts can 
  * - rate: { limit, windowSeconds, scope: "ip" | "admin" }
  * Tune these numbers as real usage patterns emerge.
  */
-function routePolicy(resource, method, param) {
+function routePolicy(resource, method, param, action) {
   const isWrite = method !== "GET";
   const isPackagedSubmit = resource === "packaged" && param === "submit" && method === "POST";
   const isPackagedScan = resource === "packaged" && param === "scan" && method === "POST";
+  const isPackagedPending = resource === "packaged" && param === "pending" && method === "GET";
+  const isPackagedReview =
+    resource === "packaged" && (action === "approve" || action === "reject") && method === "POST";
   const isRagRetrieve = resource === "rag" && (param === "retrieve" || !param) && method === "POST";
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
   const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
@@ -336,6 +339,20 @@ function routePolicy(resource, method, param) {
   // harder than the manual submit form to control cost/abuse.
   if (isPackagedScan) {
     return { auth: "public", rate: { limit: 5, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Admin review queue — exposes unapproved community/OCR submissions,
+  // so it must never be public even though it's a GET.
+  if (isPackagedPending) {
+    return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // Approve/reject a pending submission — admin only, same as any other
+  // packaged write. Called out explicitly (rather than relying on the
+  // generic isWrite catch-all below) so its own rate budget can be tuned
+  // independently of bulk CRUD if review volume ever grows.
+  if (isPackagedReview) {
+    return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
   }
 
   // RAG retrieve costs a Cohere call per request — public but capped harder than plain reads.
@@ -2030,11 +2047,14 @@ function handleRoot(env) {
       ],
       packaged_foods: [
         "GET  /packaged",
-        "POST /packaged/submit  (public, rate-limited — community contribution, status=pending)",
-        "POST /packaged/scan    (public, rate-limited — photo of nutrition label -> OCR/AI -> status=pending)",
-        "PUT  /packaged/:id     (admin)",
-        "PATCH /packaged/:id    (admin)",
-        "DELETE /packaged/:id   (admin)",
+        "GET  /packaged/pending          (admin) → review queue (filters: source, limit, offset)",
+        "POST /packaged/submit           (public, rate-limited — community contribution, status=pending)",
+        "POST /packaged/scan             (public, rate-limited — photo of nutrition label -> OCR/AI -> status=pending)",
+        "POST /packaged/:id/approve      (admin) → status=approved (optional body = field corrections)",
+        "POST /packaged/:id/reject       (admin) → status=rejected (body requires 'reason')",
+        "PUT  /packaged/:id              (admin)",
+        "PATCH /packaged/:id             (admin)",
+        "DELETE /packaged/:id            (admin)",
       ],
       rag: [
         "POST /rag/retrieve     (public, rate-limited) → semantic search (query, context, top_k)",
@@ -2695,6 +2715,99 @@ async function handlePackaged(request, url, db, id, isSubmit) {
   return err("Method not allowed", 405);
 }
 
+// ── /packaged/pending, /packaged/:id/approve, /packaged/:id/reject ───────────
+// Admin review queue for community (POST /packaged/submit) and OCR
+// (POST /packaged/scan) submissions, both of which land as status="pending".
+// Closes the loop those two endpoints leave open: before this, moving a row
+// out of "pending" required editing Supabase directly.
+//
+// Requires these additional (nullable) columns on packaged_foods:
+//   alter table packaged_foods add column if not exists reviewed_at timestamptz;
+//   alter table packaged_foods add column if not exists reviewed_by text;
+//   alter table packaged_foods add column if not exists rejection_reason text;
+
+/** GET /packaged/pending (admin) — the review queue, oldest first (FIFO). */
+async function handlePackagedPending(request, url, db) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const limit = limitParam(url);
+  const offset = intParam(url, "offset", 0);
+  const source = url.searchParams.get("source") || ""; // "manual" | "ocr_ai"
+
+  const filters = { status: "eq.pending" };
+  if (source) filters["source"] = `eq.${source}`;
+
+  const { ok, status, body, total } = await db.select("packaged_foods", {
+    filters,
+    limit,
+    offset,
+    order: "submitted_at.asc",
+  });
+  if (!ok) return err(body?.message || "Query failed", status);
+  return listSuccess(body, { count: total, limit, offset });
+}
+
+/**
+ * POST /packaged/:id/approve (admin) — moves a row from "pending" to
+ * "approved". Accepts an optional JSON body of field corrections (e.g. a
+ * mis-read `energy_kcal`) applied in the same update, so a reviewer doesn't
+ * need a separate PATCH call first. `status`/`reviewed_at`/`reviewed_by`
+ * in the body, if present, are ignored — those are always server-set.
+ */
+async function handlePackagedApprove(request, db, id) {
+  if (!id) return err("ID required for this method");
+
+  const payload = (await parseBody(request)) || {};
+  const { status: _status, reviewed_at: _reviewedAt, reviewed_by: _reviewedBy, ...corrections } = payload;
+
+  const data = {
+    ...corrections,
+    status: "approved",
+    reviewed_at: new Date().toISOString(),
+    // There's currently one shared ADMIN_API_KEY, so there's no way to
+    // attribute *which* admin approved a row — `reviewed_by` is a free-text
+    // hint from the caller (e.g. a reviewer's name/initials) until
+    // per-consumer API keys exist. Defaults to "admin" if omitted.
+    reviewed_by: typeof payload.reviewed_by === "string" && payload.reviewed_by.trim()
+      ? payload.reviewed_by.trim()
+      : "admin",
+  };
+
+  const { ok, status, body } = await db.update("packaged_foods", id, data, "PATCH");
+  if (!ok) return err(body?.message || "Approve failed", status);
+  if (!body) return notFound("Packaged food");
+  return success(body, { message: `Packaged food ${id} approved` });
+}
+
+/**
+ * POST /packaged/:id/reject (admin) — moves a row from "pending" to
+ * "rejected". Requires a `reason` so there's an audit trail (and something
+ * to eventually show the submitter, if/when submissions get attributed to
+ * a user rather than just an IP).
+ */
+async function handlePackagedReject(request, db, id) {
+  if (!id) return err("ID required for this method");
+
+  const payload = await parseBody(request);
+  const reason = (payload?.reason || "").trim();
+  if (!reason) return err("'reason' is required to reject a submission");
+
+  const data = {
+    status: "rejected",
+    reviewed_at: new Date().toISOString(),
+    reviewed_by:
+      typeof payload.reviewed_by === "string" && payload.reviewed_by.trim()
+        ? payload.reviewed_by.trim()
+        : "admin",
+    rejection_reason: reason,
+  };
+
+  const { ok, status, body } = await db.update("packaged_foods", id, data, "PATCH");
+  if (!ok) return err(body?.message || "Reject failed", status);
+  if (!body) return notFound("Packaged food");
+  return success(body, { message: `Packaged food ${id} rejected` });
+}
+
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
 
 /**
@@ -2702,7 +2815,7 @@ async function handlePackaged(request, url, db, id, isSubmit) {
  * edge-cache wrapper can call it uniformly whether or not a cache policy
  * applies to the route.
  */
-async function dispatch(request, url, db, env, resource, param, ctx) {
+async function dispatch(request, url, db, env, resource, param, ctx, action) {
   switch (resource) {
     case "foods": {
       if (param === "lookup") {
@@ -2730,6 +2843,15 @@ async function dispatch(request, url, db, env, resource, param, ctx) {
     case "packaged": {
       if (param === "scan") {
         return await handlePackagedScan(request, env, db);
+      }
+      if (param === "pending") {
+        return await handlePackagedPending(request, url, db);
+      }
+      if (action === "approve") {
+        return await handlePackagedApprove(request, db, param);
+      }
+      if (action === "reject") {
+        return await handlePackagedReject(request, db, param);
       }
       const isSubmit = param === "submit";
       const id = isSubmit ? null : param || null;
@@ -2797,10 +2919,10 @@ async function router(request, env, ctx) {
     return handleRoot(env);
   }
 
-  const [resource, param] = segments;
+  const [resource, param, action] = segments;
 
   // ── Centralised auth + rate limit gate ─────────────────────────────────────
-  const policy = routePolicy(resource, request.method, param);
+  const policy = routePolicy(resource, request.method, param, action);
 
   if (policy.auth === "admin" && !isAdmin(request, env)) {
     return unauthorized();
@@ -2840,7 +2962,7 @@ async function router(request, env, ctx) {
   }
 
   try {
-    const response = await dispatch(request, url, db, env, resource, param, ctx);
+    const response = await dispatch(request, url, db, env, resource, param, ctx, action);
 
     if (cacheKey && response.status === 200) {
       const cacheable = new Response(response.body, response);
