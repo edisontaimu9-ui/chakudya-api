@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.12.0`
+- **Current CNR version:** `1.13.0`
 
 ---
 
@@ -177,12 +177,28 @@ access without breaking everyone else's. Now there are two kinds of valid
 admin credential:
 
 - **Root key** — `env.ADMIN_API_KEY` (the `wrangler secret`). Works
-  exactly like before. Only the root key can manage other keys.
+  exactly like before. Only the root key can manage other keys, and it
+  always has full access regardless of role checks.
 - **Per-consumer keys** — minted via `POST /admin/keys`, each with its own
-  `label`. Used for everything a root key can do *except* managing other
-  keys. The label is what shows up automatically as `reviewed_by` on
-  `/packaged/:id/approve|reject`, so approvals/rejections are attributable
-  to a specific reviewer without them having to type their name every time.
+  `label` and `role`. The label is what shows up automatically as
+  `reviewed_by` on `/packaged/:id/approve|reject`, so approvals/rejections
+  are attributable to a specific reviewer without them having to type
+  their name every time.
+
+**Roles** — every per-consumer key has one:
+
+- `admin` *(default)* — same access as the root key, everything except
+  managing other keys.
+- `reviewer` — can only reach the packaged review queue
+  (`GET /packaged/pending`, `POST /packaged/:id/approve`,
+  `POST /packaged/:id/reject`) plus all public/`GET` routes. Blocked from
+  everything else admin-gated — editing foods, deleting products, bulk
+  inserts, RAG ingest, memory consolidation, key management, etc. A
+  reviewer key that leaks can't do much beyond what a reviewer is
+  supposed to do in the first place.
+
+There's currently no "change a key's role" endpoint — revoke the key and
+mint a new one with the role you want.
 
 Raw keys are never stored — only a SHA-256 hash, in a new `api_keys`
 table. Run this once in the Supabase SQL editor:
@@ -192,10 +208,18 @@ create table if not exists api_keys (
   id bigint generated always as identity primary key,
   key_hash text not null unique,
   label text not null,
+  role text not null default 'admin',
   created_at timestamptz not null default now(),
   last_used_at timestamptz,
   revoked_at timestamptz
 );
+```
+
+If you already have an `api_keys` table from before roles existed, migrate
+it instead (existing keys default to `admin` — nobody's access shrinks):
+
+```sql
+alter table api_keys add column if not exists role text not null default 'admin';
 ```
 
 **Create a key** (root key only):
@@ -204,15 +228,18 @@ create table if not exists api_keys (
 curl -X POST https://your-worker-url/admin/keys \
   -H "Authorization: Bearer <ADMIN_API_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"label":"Grace - reviewer"}'
+  -d '{"label":"Grace - reviewer","role":"reviewer"}'
 ```
+
+`role` is optional — omit it (or send `"admin"`) for full access, same as
+before this feature existed.
 
 ```json
 {
   "status": "success",
   "message": "API key created — save this now, it will not be shown again",
   "key": "cnr_9f2a...c81b",
-  "data": { "id": 1, "label": "Grace - reviewer", "created_at": "...", "last_used_at": null, "revoked_at": null }
+  "data": { "id": 1, "label": "Grace - reviewer", "role": "reviewer", "created_at": "...", "last_used_at": null, "revoked_at": null }
 }
 ```
 

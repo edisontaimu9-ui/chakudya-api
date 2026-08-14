@@ -16,7 +16,7 @@ info:
     illustrative properties) rather than exhaustively modeling every
     column — see the README for the full, current column list per table,
     since that evolves independently of this spec.
-  version: "1.12.0"
+  version: "1.13.0"
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -121,6 +121,13 @@ paths:
               required: [label]
               properties:
                 label: { type: string, example: "Grace - reviewer" }
+                role:
+                  type: string
+                  enum: [admin, reviewer]
+                  default: admin
+                  description: >
+                    "admin" = full access (default). "reviewer" = packaged
+                    review queue (pending/approve/reject) + reads only.
       responses:
         "200":
           description: Key created
@@ -1222,6 +1229,7 @@ components:
       properties:
         id: { type: integer }
         label: { type: string }
+        role: { type: string, enum: [admin, reviewer], default: admin }
         created_at: { type: string, format: date-time }
         last_used_at: { type: string, format: date-time, nullable: true }
         revoked_at: { type: string, format: date-time, nullable: true }

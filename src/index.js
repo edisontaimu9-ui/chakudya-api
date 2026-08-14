@@ -69,6 +69,15 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.13.0 changes:
+ *  - Added scoped roles for per-consumer API keys. POST /admin/keys now
+ *    accepts an optional `role` ("admin", the default/full-access, or
+ *    "reviewer", limited to the packaged review queue + reads). Existing
+ *    keys default to "admin" via the new column's DB default, so nobody's
+ *    access silently shrinks. See ROLE_RANK, isAdmin(), and the role gate
+ *    in router(). Requires: alter table api_keys add column if not exists
+ *    role text not null default 'admin';
+ *
  * v1.12.0 changes:
  *  - Added POST /:resource/bulk (admin) for foods, exchange, renal,
  *    formulas, manufacturers, and products — accepts {items:[...]} (max
@@ -159,7 +168,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.12.0";
+const CNR_VERSION = "1.13.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -227,6 +236,18 @@ function serverErr(e, requestId) {
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
+/**
+ * Role hierarchy for per-consumer API keys (see /admin/keys and isAdmin()).
+ * "reviewer" is a subset of "admin" — can only reach routes that
+ * explicitly opt in via routePolicy's requiredRole: "reviewer" (currently
+ * just the packaged review queue: GET /packaged/pending, POST
+ * /packaged/:id/approve|reject). Every other admin route implicitly
+ * requires "admin" (the strictest/default), so a route added later that
+ * forgets to set requiredRole fails closed rather than open.
+ */
+const ROLE_RANK = { reviewer: 1, admin: 2 };
+const VALID_ROLES = Object.keys(ROLE_RANK);
+
 function getBearerToken(request) {
   const auth = request.headers.get("Authorization") || "";
   const match = auth.match(/^Bearer\s+(.+)$/i);
@@ -244,17 +265,22 @@ function getBearerToken(request) {
  *  - The "root" key — env.ADMIN_API_KEY, matched directly (legacy behavior,
  *    always works even if the api_keys table doesn't exist yet or is
  *    empty). Only the root key can manage other keys (POST/GET/DELETE
- *    /admin/keys) — a leaked per-consumer key can't mint or revoke others.
+ *    /admin/keys), and root always has full access regardless of role
+ *    checks elsewhere — it has no `role` column entry to read.
  *  - A per-consumer key — looked up by SHA-256 hash in `api_keys` (the raw
  *    key is never stored, only its hash, so a DB leak doesn't leak usable
  *    credentials). Must not be revoked. `last_used_at` is bumped on every
  *    successful use (fire-and-forget via ctx.waitUntil — doesn't block or
  *    fail the request if that write is slow/fails).
  *
- * Returns { valid: false } or { valid: true, label, isRoot, keyId }.
+ * Returns { valid: false } or { valid: true, label, isRoot, keyId, role }.
  * `label` is what gets used as the default reviewed_by/actor identity on
- * writes that record one (see handlePackagedApprove/Reject) — the whole
- * point of this over the old single shared key.
+ * writes that record one (see handlePackagedApprove/Reject). `role` is
+ * either "admin" (full access, the default — same as before roles
+ * existed) or "reviewer" (packaged-review + reads only, see routePolicy's
+ * requiredRole checks and the role gate in router()). Falls back to
+ * "admin" if the row predates the `role` column (safe default — an
+ * existing key's access doesn't silently shrink when this feature ships).
  */
 async function isAdmin(request, env, db, ctx) {
   const token = getBearerToken(request);
@@ -267,7 +293,7 @@ async function isAdmin(request, env, db, ctx) {
   }
 
   if (token === env.ADMIN_API_KEY) {
-    return { valid: true, label: "root", isRoot: true, keyId: null };
+    return { valid: true, label: "root", isRoot: true, keyId: null, role: "admin" };
   }
 
   if (!db) return { valid: false };
@@ -285,7 +311,7 @@ async function isAdmin(request, env, db, ctx) {
     .catch(() => {});
   if (ctx?.waitUntil) ctx.waitUntil(bump);
 
-  return { valid: true, label: row.label, isRoot: false, keyId: row.id };
+  return { valid: true, label: row.label, isRoot: false, keyId: row.id, role: row.role || "admin" };
 }
 
 // ─── EDGE CACHING (Cloudflare Cache API) ────────────────────────────────────
@@ -471,17 +497,19 @@ function routePolicy(resource, method, param, action) {
   }
 
   // Admin review queue — exposes unapproved community/OCR submissions,
-  // so it must never be public even though it's a GET.
+  // so it must never be public even though it's a GET. Reviewer-role keys
+  // can access this (it's the whole point of the reviewer role).
   if (isPackagedPending) {
-    return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
+    return { auth: "admin", requiredRole: "reviewer", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
   }
 
   // Approve/reject a pending submission — admin only, same as any other
   // packaged write. Called out explicitly (rather than relying on the
   // generic isWrite catch-all below) so its own rate budget can be tuned
-  // independently of bulk CRUD if review volume ever grows.
+  // independently of bulk CRUD if review volume ever grows. Reviewer-role
+  // keys can access this too — see requiredRole in router()'s role gate.
   if (isPackagedReview) {
-    return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
+    return { auth: "admin", requiredRole: "reviewer", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
   }
 
   // RAG retrieve costs a Cohere call per request — public but capped harder than plain reads.
@@ -2391,7 +2419,7 @@ function handleRoot(env) {
       ],
       admin_keys: [
         "GET    /admin/keys       (root key only) → list keys (never returns the raw key or its hash)",
-        "POST   /admin/keys       (root key only) → body {label}; returns the raw key ONCE, store it now",
+        "POST   /admin/keys       (root key only) → body {label, role?}; role: admin (default, full access) | reviewer (packaged review + reads only); returns the raw key ONCE, store it now",
         "DELETE /admin/keys/:id   (root key only) → revoke (soft — sets revoked_at, doesn't delete the row)",
       ],
       foods: [
@@ -3228,17 +3256,25 @@ async function handlePackagedReject(request, db, id, admin) {
 // Per-consumer admin API keys, so different integrations/reviewers don't
 // all share env.ADMIN_API_KEY (the "root" key). Root-only to manage (see
 // the isRoot check in router()) — a leaked per-consumer key can read/write
-// everything else it's scoped to, but can't mint or revoke other keys.
+// only what its role permits, and can never mint or revoke other keys.
+//
+// Each key has a role — "admin" (full access, the default) or "reviewer"
+// (packaged review queue + reads only — see ROLE_RANK and the requiredRole
+// checks in routePolicy()/router()).
 //
 // Requires this table (raw keys are never stored — only their hash):
 //   create table if not exists api_keys (
 //     id bigint generated always as identity primary key,
 //     key_hash text not null unique,
 //     label text not null,
+//     role text not null default 'admin',
 //     created_at timestamptz not null default now(),
 //     last_used_at timestamptz,
 //     revoked_at timestamptz
 //   );
+//
+// If api_keys already exists from before roles were added, migrate with:
+//   alter table api_keys add column if not exists role text not null default 'admin';
 
 /** Generates a random, high-entropy raw API key (256 bits, hex-encoded). */
 function generateApiKey() {
@@ -3267,10 +3303,15 @@ async function handleAdminKeys(request, db, idOrAction) {
     const label = (payload?.label || "").trim();
     if (!label) return err("'label' is required (e.g. a reviewer's name or integration name)");
 
+    const role = payload?.role ? String(payload.role).trim() : "admin";
+    if (!VALID_ROLES.includes(role)) {
+      return err(`'role' must be one of: ${VALID_ROLES.join(", ")} (got "${role}")`);
+    }
+
     const rawKey = generateApiKey();
     const hash = await sha256Hex(rawKey);
 
-    const { ok, status, body } = await db.insert("api_keys", { key_hash: hash, label });
+    const { ok, status, body } = await db.insert("api_keys", { key_hash: hash, label, role });
     if (!ok) return err(body?.message || "Key creation failed", status);
 
     const { key_hash: _hash, ...safeRow } = body || {};
@@ -3458,6 +3499,19 @@ async function router(request, env, ctx, requestId) {
     // mint or revoke keys, so a single leaked non-root key can't escalate.
     if (resource === "admin" && param === "keys" && !admin.isRoot) {
       return unauthorized("Only the root admin key can manage API keys");
+    }
+
+    // Scoped roles — "reviewer" keys can only reach routes that opted into
+    // requiredRole: "reviewer" (the packaged review queue); everything
+    // else needs the default "admin" role. Root always passes regardless
+    // of role, same as it bypasses the key-management check above.
+    // Unknown/corrupt role values rank as 0 (fail closed — denied by
+    // default) rather than comparing against `undefined`, which JS would
+    // silently treat as passing (undefined < N is always false).
+    const requiredRole = policy.requiredRole || "admin";
+    const currentRank = ROLE_RANK[admin.role] || 0;
+    if (!admin.isRoot && currentRank < ROLE_RANK[requiredRole]) {
+      return unauthorized(`This action requires the '${requiredRole}' role (this key has '${admin.role}')`);
     }
   }
 
