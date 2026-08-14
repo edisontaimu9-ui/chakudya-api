@@ -220,14 +220,9 @@ function getBearerToken(request) {
   return match ? match[1].trim() : null;
 }
 
-/** SHA-256 hex digest via Web Crypto (available in the Workers runtime). */
-async function sha256Hex(input) {
-  const bytes = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
+// sha256Hex() is defined further down (used first by the query-cache
+// helpers) — reused here for API key hashing too. Function declarations
+// are hoisted, so the call below is safe regardless of file order.
 
 /**
  * Resolves the bearer token on a request to an admin identity.
