@@ -69,6 +69,15 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.10.0 changes:
+ *  - Added structured request logging + X-Request-Id. Every request gets a
+ *    UUID, echoed back as the X-Request-Id response header and included in
+ *    one structured JSON log line per request (via console.log/error, so
+ *    it shows up in `wrangler tail` / Workers Logs). 500 responses also
+ *    carry request_id in the JSON body. Set env.DISABLE_REQUEST_LOGGING =
+ *    "true" to silence the per-request info log if volume becomes a
+ *    concern (errors still always log). See the WORKER ENTRY section.
+ *
  * v1.9.0 changes:
  *  - Added cursor-based (keyset) pagination as an opt-in alternative to
  *    offset/limit on GET /foods, /exchange, /renal, /formulas,
@@ -128,7 +137,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.9.0";
+const CNR_VERSION = "1.10.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -183,9 +192,15 @@ function rateLimited(retryAfter = 60) {
   );
 }
 
-function serverErr(e) {
-  console.error(e);
-  return err("Internal server error", 500);
+function serverErr(e, requestId) {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      request_id: requestId || null,
+      message: e?.message || String(e),
+    })
+  );
+  return json({ status: "error", message: "Internal server error", request_id: requestId || undefined }, 500);
 }
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
@@ -3144,7 +3159,7 @@ async function purgeResourceCache(origin, resource, param, ctx) {
   );
 }
 
-async function router(request, env, ctx) {
+async function router(request, env, ctx, requestId) {
   const url = new URL(request.url);
   const pathname = url.pathname.replace(/\/$/, "") || "/";
   const segments = pathname.split("/").filter(Boolean);
@@ -3226,7 +3241,7 @@ async function router(request, env, ctx) {
 
     return response;
   } catch (e) {
-    return serverErr(e);
+    return serverErr(e, requestId);
   }
 }
 
@@ -3255,13 +3270,55 @@ async function runScheduledConsolidation(env) {
   }
 }
 
+// ─── STRUCTURED LOGGING / REQUEST IDS ───────────────────────────────────────
+//
+// Every request gets a UUID (crypto.randomUUID(), available in the Workers
+// runtime) that's:
+//   - echoed back as the X-Request-Id response header, so a client (or you,
+//     manually) can quote it back when reporting an issue
+//   - included in the one structured JSON log line emitted per request via
+//     console.log/console.error — filterable/greppable in `wrangler tail`
+//     or the Cloudflare dashboard's Workers Logs, unlike the previous
+//     unstructured console.error(e) calls scattered through the codebase
+//   - included in the JSON body of 500 responses specifically (request_id
+//     field), since that's the case most worth a support conversation
+//
+// Set env.DISABLE_REQUEST_LOGGING = "true" to skip the per-request info log
+// (errors still always log) if request volume ever makes the log volume
+// itself a cost/noise concern — off by default.
+
 export default {
   async fetch(request, env, ctx) {
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+
+    let response;
     try {
-      return await router(request, env, ctx);
+      response = await router(request, env, ctx, requestId);
     } catch (e) {
-      return serverErr(e);
+      response = serverErr(e, requestId);
     }
+
+    const tagged = new Response(response.body, response);
+    tagged.headers.set("X-Request-Id", requestId);
+
+    if (env.DISABLE_REQUEST_LOGGING !== "true" || tagged.status >= 500) {
+      const logFn = tagged.status >= 500 ? console.error : console.log;
+      logFn(
+        JSON.stringify({
+          level: tagged.status >= 500 ? "error" : "info",
+          request_id: requestId,
+          method: request.method,
+          path: url.pathname,
+          status: tagged.status,
+          duration_ms: Date.now() - startedAt,
+          cache: tagged.headers.get("X-Cache") || undefined,
+        })
+      );
+    }
+
+    return tagged;
   },
 
   async scheduled(event, env, ctx) {

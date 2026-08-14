@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.9.0`
+- **Current CNR version:** `1.10.0`
 
 ---
 
@@ -290,6 +290,32 @@ Response:
 Returns `200` when `status: "healthy"`, `503` when `status: "degraded"`
 (i.e. Supabase, Cohere, or Groq — the required upstreams — failed to
 respond).
+
+## Request IDs & logging
+
+Every request gets a UUID, returned as the `X-Request-Id` response header
+on every response (success, error, rate-limited, cached — all of them).
+Quote it back when reporting an issue; it's also in the corresponding log
+line.
+
+Each request also emits one structured JSON log line (via
+`console.log`/`console.error`), visible in `wrangler tail` or the
+Cloudflare dashboard's Workers Logs:
+
+```json
+{"level":"info","request_id":"5e2f...","method":"GET","path":"/foods","status":200,"duration_ms":42,"cache":"HIT"}
+```
+
+500 responses additionally carry `request_id` in the JSON body, since
+that's the case most worth being able to search logs for afterward:
+
+```json
+{ "status": "error", "message": "Internal server error", "request_id": "5e2f..." }
+```
+
+Set `DISABLE_REQUEST_LOGGING = "true"` in `wrangler.toml`'s `[vars]` (or a
+secret) to silence the per-request info log if volume ever becomes a
+cost/noise concern — errors always log regardless of this setting.
 
 ## Pagination
 
