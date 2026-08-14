@@ -69,6 +69,13 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.9.0 changes:
+ *  - Added cursor-based (keyset) pagination as an opt-in alternative to
+ *    offset/limit on GET /foods, /exchange, /renal, /formulas,
+ *    /manufacturers, /products, and /packaged. Triggered by the presence
+ *    of a `cursor` query param; offset/limit remains the default when it's
+ *    absent, so existing integrations are unaffected. See paginatedList().
+ *
  * v1.8.0 changes:
  *  - Added POST /packaged/:id/approve and POST /packaged/:id/reject — admin
  *    review queue for community/OCR submissions (paired with the new
@@ -121,7 +128,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.8.0";
+const CNR_VERSION = "1.9.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -557,6 +564,72 @@ function intParam(url, key, fallback) {
 /** Same as intParam but capped to prevent absurdly large queries (e.g. ?limit=999999). */
 function limitParam(url, fallback = 50, max = 100) {
   return Math.min(intParam(url, "limit", fallback), max);
+}
+
+/**
+ * Shared list-pagination helper used by /foods, /exchange, /renal,
+ * /formulas, /manufacturers, and /products.
+ *
+ * Two modes, selected by whether `?cursor=` is present at all:
+ *
+ *  - No `cursor` param → legacy offset/limit pagination (unchanged default
+ *    behavior — existing integrations aren't affected). Ordered by
+ *    `order`, or whatever PostgREST's default is if omitted.
+ *
+ *  - `cursor` param present → keyset pagination. `cursor=` (empty) starts
+ *    from the beginning; `cursor=<id>` resumes after that id. Always
+ *    ordered by `id.asc` for deterministic keyset semantics — note this
+ *    can differ from the offset mode's default sort (e.g. /foods sorts
+ *    offset pages by `food_name.asc`, but cursor pages always go by id).
+ *    Response shape differs from listSuccess: `has_more` / `next_cursor`
+ *    instead of `count` / `offset`, since a total count isn't cheap to
+ *    keep accurate under keyset pagination.
+ *
+ * Offset pagination degrades on large, actively-changing tables (rows
+ * shift between pages as data is inserted/deleted); cursor pagination
+ * doesn't have that problem, which is the whole reason to offer it.
+ */
+async function paginatedList(db, table, url, { filters = {}, order } = {}) {
+  const limit = limitParam(url);
+  const cursorParam = url.searchParams.get("cursor");
+
+  if (cursorParam !== null) {
+    const cursorFilters = { ...filters };
+    if (cursorParam !== "") {
+      const cursorId = Number(cursorParam);
+      if (!Number.isFinite(cursorId)) {
+        return err("Invalid 'cursor' — must be a numeric id, taken from a previous response's next_cursor");
+      }
+      cursorFilters.id = `gt.${cursorId}`;
+    }
+
+    // Fetch one extra row to detect whether another page exists, without a
+    // separate count query.
+    const { ok, status, body } = await db.select(table, {
+      filters: cursorFilters,
+      limit: limit + 1,
+      offset: 0,
+      order: "id.asc",
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+
+    const rows = Array.isArray(body) ? body : [];
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+
+    return json({
+      status: "success",
+      limit,
+      has_more: hasMore,
+      next_cursor: hasMore && page.length ? page[page.length - 1].id : null,
+      data: page,
+    });
+  }
+
+  const offset = intParam(url, "offset", 0);
+  const { ok, status, body, total } = await db.select(table, { filters, limit, offset, order });
+  if (!ok) return err(body?.message || "Query failed", status);
+  return listSuccess(body, { count: total, limit, offset });
 }
 
 /**
@@ -2259,8 +2332,6 @@ async function handleFoods(request, url, db, id) {
       return success(body);
     }
 
-    const limit = limitParam(url);
-    const offset = intParam(url, "offset", 0);
     const search = url.searchParams.get("search") || "";
     const category = url.searchParams.get("category") || "";
 
@@ -2268,14 +2339,7 @@ async function handleFoods(request, url, db, id) {
     if (category) filters["category"] = `eq.${category}`;
     if (search) filters["food_name"] = `ilike.*${escapeLikePattern(search)}*`;
 
-    const { ok, status, body, total } = await db.select("foods", {
-      filters,
-      limit,
-      offset,
-      order: "food_name.asc",
-    });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return listSuccess(body, { count: total, limit, offset });
+    return await paginatedList(db, "foods", url, { filters, order: "food_name.asc" });
   }
 
   if (method === "POST") {
@@ -2319,19 +2383,11 @@ async function handleExchange(request, url, db, id) {
   const method = request.method;
 
   if (method === "GET") {
-    const limit = limitParam(url);
-    const offset = intParam(url, "offset", 0);
     const type = url.searchParams.get("type") || "";
     const filters = {};
     if (type) filters["exchange_type"] = `eq.${type}`;
 
-    const { ok, status, body, total } = await db.select("exchange_lists", {
-      filters,
-      limit,
-      offset,
-    });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return listSuccess(body, { count: total, limit, offset });
+    return await paginatedList(db, "exchange_lists", url, { filters });
   }
 
   if (method === "POST") {
@@ -2375,11 +2431,7 @@ async function handleRenal(request, url, db, id) {
   const method = request.method;
 
   if (method === "GET") {
-    const limit = limitParam(url);
-    const offset = intParam(url, "offset", 0);
-    const { ok, status, body, total } = await db.select("renal_foods", { limit, offset });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return listSuccess(body, { count: total, limit, offset });
+    return await paginatedList(db, "renal_foods", url);
   }
 
   if (method === "POST") {
@@ -2423,19 +2475,11 @@ async function handleFormulas(request, url, db, id) {
   const method = request.method;
 
   if (method === "GET") {
-    const limit = limitParam(url);
-    const offset = intParam(url, "offset", 0);
     const route = url.searchParams.get("route") || "";
     const filters = {};
     if (route) filters["route"] = `eq.${route}`;
 
-    const { ok, status, body, total } = await db.select("enteral_formulas", {
-      filters,
-      limit,
-      offset,
-    });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return listSuccess(body, { count: total, limit, offset });
+    return await paginatedList(db, "enteral_formulas", url, { filters });
   }
 
   if (method === "POST") {
@@ -2479,15 +2523,7 @@ async function handleManufacturers(request, url, db, id) {
   const method = request.method;
 
   if (method === "GET") {
-    const limit = limitParam(url);
-    const offset = intParam(url, "offset", 0);
-    const { ok, status, body, total } = await db.select("manufacturers", {
-      filters: {},
-      limit,
-      offset,
-    });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return listSuccess(body, { count: total, limit, offset });
+    return await paginatedList(db, "manufacturers", url);
   }
 
   if (method === "POST") {
@@ -2528,8 +2564,6 @@ async function handleProducts(request, url, db, id) {
   const method = request.method;
 
   if (method === "GET") {
-    const limit = limitParam(url);
-    const offset = intParam(url, "offset", 0);
     const category = url.searchParams.get("category") || "";
     const route = url.searchParams.get("route") || "";
     const manufacturerId = url.searchParams.get("manufacturer_id") || "";
@@ -2553,13 +2587,7 @@ async function handleProducts(request, url, db, id) {
       return success(body[0]);
     }
 
-    const { ok, status, body, total } = await db.select("products", {
-      filters,
-      limit,
-      offset,
-    });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return listSuccess(body, { count: total, limit, offset });
+    return await paginatedList(db, "products", url, { filters });
   }
 
   if (method === "POST") {
@@ -2802,19 +2830,11 @@ async function handlePackaged(request, url, db, id, isSubmit) {
   const method = request.method;
 
   if (method === "GET") {
-    const limit = limitParam(url);
-    const offset = intParam(url, "offset", 0);
     const barcode = url.searchParams.get("barcode") || "";
     const filters = {};
     if (barcode) filters["barcode"] = `eq.${barcode}`;
 
-    const { ok, status, body, total } = await db.select("packaged_foods", {
-      filters,
-      limit,
-      offset,
-    });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return listSuccess(body, { count: total, limit, offset });
+    return await paginatedList(db, "packaged_foods", url, { filters });
   }
 
   // POST /packaged/submit — public community contribution

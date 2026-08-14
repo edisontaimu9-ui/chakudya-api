@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.8.0`
+- **Current CNR version:** `1.9.0`
 
 ---
 
@@ -291,6 +291,35 @@ Returns `200` when `status: "healthy"`, `503` when `status: "degraded"`
 (i.e. Supabase, Cohere, or Groq — the required upstreams — failed to
 respond).
 
+## Pagination
+
+`GET /foods`, `/exchange`, `/renal`, `/formulas`, `/manufacturers`,
+`/products`, and `/packaged` all support two pagination modes, chosen by
+whether a `cursor` param is present at all:
+
+- **Offset/limit (default)** — `?limit=50&offset=100`, unchanged from
+  before. Response includes `count` (total matching rows) and `offset`.
+  Simple, but on a large table that's actively changing, rows can shift
+  between pages as data is inserted or deleted.
+- **Cursor (keyset)** — add `?cursor=` to switch modes. Start with
+  `cursor=` (empty) or omit `offset`/leave `cursor` blank for the first
+  page; each response includes `next_cursor` — pass that value as the next
+  request's `cursor` to get the following page. Stops when `has_more` is
+  `false` (`next_cursor` will be `null`). Not affected by rows shifting
+  mid-pagination, which is the point of using it on a big or fast-moving
+  table. **Note:** cursor pages are always ordered by `id.asc`, even where
+  the offset mode's default order is something else (e.g. `/foods` sorts
+  offset pages by `food_name.asc`).
+
+```json
+{ "status": "success", "limit": 50, "has_more": true, "next_cursor": 187, "data": [ /* ... */ ] }
+```
+
+```bash
+curl ".../foods?category=fruit&cursor="              # first page
+curl ".../foods?category=fruit&cursor=187"            # next page (from next_cursor above)
+```
+
 ### Foods
 
 - `GET /foods`
@@ -305,6 +334,7 @@ Query params for `GET /foods`:
 - `search` → maps to `food_name ilike`
 - `category`
 - `limit` (default `50`, capped at `100`)
+- `offset` or `cursor` — see [Pagination](#pagination)
 
 **`GET /foods/lookup`** — external cascade for foods not in the local database. Order: local cache → USDA FDC (name search) → Open Food Facts (barcode) → FatSecret (name search, OAuth 1.0). First external hit is cached into `external_foods_cache` so subsequent lookups skip the upstream calls. Public, rate-limited to 20 req/min per IP.
 
@@ -320,7 +350,7 @@ Query params for `GET /foods`:
 - `PATCH /exchange/:id` *(admin)*
 - `DELETE /exchange/:id` *(admin)*
 
-Query params: `type`, `limit`, `offset`
+Query params: `type`, `limit`, `offset`/`cursor`
 
 ### Renal
 
@@ -330,7 +360,7 @@ Query params: `type`, `limit`, `offset`
 - `PATCH /renal/:id` *(admin)*
 - `DELETE /renal/:id` *(admin)*
 
-Query params: `limit`, `offset`
+Query params: `limit`, `offset`/`cursor`
 
 ### Formulas
 
@@ -340,7 +370,7 @@ Query params: `limit`, `offset`
 - `PATCH /formulas/:id` *(admin)*
 - `DELETE /formulas/:id` *(admin)*
 
-Query params: `route`, `limit`, `offset`
+Query params: `route`, `limit`, `offset`/`cursor`
 
 ### Packaged
 
@@ -354,7 +384,7 @@ Query params: `route`, `limit`, `offset`
 - `PATCH /packaged/:id` *(admin)*
 - `DELETE /packaged/:id` *(admin)*
 
-Query params for `GET /packaged`: `barcode`, `limit`, `offset`
+Query params for `GET /packaged`: `barcode`, `limit`, `offset`/`cursor`
 
 **`GET /packaged/pending`** — the admin review queue: rows with
 `status: "pending"` from either submission path, oldest first. Query params:
@@ -488,14 +518,14 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 
 ### Manufacturers
 
-- `GET /manufacturers`
+- `GET /manufacturers` — supports `limit`, `offset`/`cursor` (see [Pagination](#pagination))
 - `POST /manufacturers` *(admin)*
 - `PATCH /manufacturers/:id` *(admin)*
 - `DELETE /manufacturers/:id` *(admin)*
 
 ### Products
 
-- `GET /products` — filters: `category`, `route`, `manufacturer_id`, `search`, `include_inactive`
+- `GET /products` — filters: `category`, `route`, `manufacturer_id`, `search`, `include_inactive`; supports `limit`, `offset`/`cursor`
 - `GET /products/:id`
 - `POST /products` *(admin)*
 - `PUT /products/:id` *(admin)*
