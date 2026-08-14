@@ -69,6 +69,15 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.11.0 changes:
+ *  - Added per-consumer admin API keys (POST/GET/DELETE /admin/keys,
+ *    root-key-only to manage). isAdmin() now checks the raw root key
+ *    first, then looks up a SHA-256 hash against the new api_keys table.
+ *    Resolves the long-standing "reviewed_by is just free text" limitation
+ *    on /packaged/:id/approve|reject — a per-consumer key's label is now
+ *    used automatically as the actor identity, no override needed. See
+ *    the comment above handleAdminKeys for the required table schema.
+ *
  * v1.10.0 changes:
  *  - Added structured request logging + X-Request-Id. Every request gets a
  *    UUID, echoed back as the X-Request-Id response header and included in
@@ -137,7 +146,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.10.0";
+const CNR_VERSION = "1.11.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -211,15 +220,64 @@ function getBearerToken(request) {
   return match ? match[1].trim() : null;
 }
 
-/** True if the request carries a valid admin key. */
-function isAdmin(request, env) {
+/** SHA-256 hex digest via Web Crypto (available in the Workers runtime). */
+async function sha256Hex(input) {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Resolves the bearer token on a request to an admin identity.
+ *
+ * Two kinds of valid admin credential:
+ *  - The "root" key — env.ADMIN_API_KEY, matched directly (legacy behavior,
+ *    always works even if the api_keys table doesn't exist yet or is
+ *    empty). Only the root key can manage other keys (POST/GET/DELETE
+ *    /admin/keys) — a leaked per-consumer key can't mint or revoke others.
+ *  - A per-consumer key — looked up by SHA-256 hash in `api_keys` (the raw
+ *    key is never stored, only its hash, so a DB leak doesn't leak usable
+ *    credentials). Must not be revoked. `last_used_at` is bumped on every
+ *    successful use (fire-and-forget via ctx.waitUntil — doesn't block or
+ *    fail the request if that write is slow/fails).
+ *
+ * Returns { valid: false } or { valid: true, label, isRoot, keyId }.
+ * `label` is what gets used as the default reviewed_by/actor identity on
+ * writes that record one (see handlePackagedApprove/Reject) — the whole
+ * point of this over the old single shared key.
+ */
+async function isAdmin(request, env, db, ctx) {
   const token = getBearerToken(request);
+  if (!token) return { valid: false };
+
   if (!env.ADMIN_API_KEY) {
-    // Misconfiguration safety: if no admin key is set, fail closed (deny writes)
-    // rather than silently allowing unauthenticated writes.
-    return false;
+    // Misconfiguration safety: if no root key is set, fail closed (deny
+    // writes) rather than silently allowing unauthenticated writes.
+    return { valid: false };
   }
-  return !!token && token === env.ADMIN_API_KEY;
+
+  if (token === env.ADMIN_API_KEY) {
+    return { valid: true, label: "root", isRoot: true, keyId: null };
+  }
+
+  if (!db) return { valid: false };
+
+  const hash = await sha256Hex(token);
+  const { ok, body } = await db.select("api_keys", {
+    filters: { key_hash: `eq.${hash}`, revoked_at: "is.null" },
+    limit: 1,
+  });
+  if (!ok || !Array.isArray(body) || !body.length) return { valid: false };
+
+  const row = body[0];
+  const bump = db
+    .update("api_keys", row.id, { last_used_at: new Date().toISOString() }, "PATCH")
+    .catch(() => {});
+  if (ctx?.waitUntil) ctx.waitUntil(bump);
+
+  return { valid: true, label: row.label, isRoot: false, keyId: row.id };
 }
 
 // ─── EDGE CACHING (Cloudflare Cache API) ────────────────────────────────────
@@ -361,6 +419,15 @@ function routePolicy(resource, method, param, action) {
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
+  const isAdminKeys = resource === "admin" && param === "keys";
+
+  // API key management — admin-gated regardless of method (including GET,
+  // which would otherwise fall through to the public-reads default below).
+  // Root-only enforcement (as opposed to any admin key) happens in
+  // router(), since routePolicy() only resolves auth *level*, not identity.
+  if (isAdminKeys) {
+    return { auth: "admin", rate: { limit: 30, windowSeconds: 60, scope: "admin" } };
+  }
 
   // Health check — public, moderate cap. Each hit fans out 2-3 upstream
   // pings, so it shouldn't be as generously limited as a plain local read.
@@ -2239,6 +2306,11 @@ function handleRoot(env) {
       health: [
         "GET  /health           (public, rate-limited) → pings Supabase/Cohere/Groq in parallel, reports per-service status + overall healthy/degraded",
       ],
+      admin_keys: [
+        "GET    /admin/keys       (root key only) → list keys (never returns the raw key or its hash)",
+        "POST   /admin/keys       (root key only) → body {label}; returns the raw key ONCE, store it now",
+        "DELETE /admin/keys/:id   (root key only) → revoke (soft — sets revoked_at, doesn't delete the row)",
+      ],
       foods: [
         "GET  /foods",
         "GET  /foods/:id",
@@ -3007,7 +3079,7 @@ async function handlePackagedPending(request, url, db) {
  * need a separate PATCH call first. `status`/`reviewed_at`/`reviewed_by`
  * in the body, if present, are ignored — those are always server-set.
  */
-async function handlePackagedApprove(request, db, id) {
+async function handlePackagedApprove(request, db, id, admin) {
   if (!id) return err("ID required for this method");
 
   const payload = (await parseBody(request)) || {};
@@ -3017,13 +3089,14 @@ async function handlePackagedApprove(request, db, id) {
     ...corrections,
     status: "approved",
     reviewed_at: new Date().toISOString(),
-    // There's currently one shared ADMIN_API_KEY, so there's no way to
-    // attribute *which* admin approved a row — `reviewed_by` is a free-text
-    // hint from the caller (e.g. a reviewer's name/initials) until
-    // per-consumer API keys exist. Defaults to "admin" if omitted.
-    reviewed_by: typeof payload.reviewed_by === "string" && payload.reviewed_by.trim()
-      ? payload.reviewed_by.trim()
-      : "admin",
+    // Per-consumer API keys (see /admin/keys) resolve to a label that's
+    // used here automatically — reviewed_by only falls back to an
+    // explicit body override or "admin" when the request used the shared
+    // root key, which has no per-caller identity of its own.
+    reviewed_by:
+      typeof payload.reviewed_by === "string" && payload.reviewed_by.trim()
+        ? payload.reviewed_by.trim()
+        : admin?.label || "admin",
   };
 
   const { ok, status, body } = await db.update("packaged_foods", id, data, "PATCH");
@@ -3038,7 +3111,7 @@ async function handlePackagedApprove(request, db, id) {
  * to eventually show the submitter, if/when submissions get attributed to
  * a user rather than just an IP).
  */
-async function handlePackagedReject(request, db, id) {
+async function handlePackagedReject(request, db, id, admin) {
   if (!id) return err("ID required for this method");
 
   const payload = await parseBody(request);
@@ -3051,7 +3124,7 @@ async function handlePackagedReject(request, db, id) {
     reviewed_by:
       typeof payload.reviewed_by === "string" && payload.reviewed_by.trim()
         ? payload.reviewed_by.trim()
-        : "admin",
+        : admin?.label || "admin",
     rejection_reason: reason,
   };
 
@@ -3061,6 +3134,81 @@ async function handlePackagedReject(request, db, id) {
   return success(body, { message: `Packaged food ${id} rejected` });
 }
 
+// ─── /admin/keys ─────────────────────────────────────────────────────────────
+//
+// Per-consumer admin API keys, so different integrations/reviewers don't
+// all share env.ADMIN_API_KEY (the "root" key). Root-only to manage (see
+// the isRoot check in router()) — a leaked per-consumer key can read/write
+// everything else it's scoped to, but can't mint or revoke other keys.
+//
+// Requires this table (raw keys are never stored — only their hash):
+//   create table if not exists api_keys (
+//     id bigint generated always as identity primary key,
+//     key_hash text not null unique,
+//     label text not null,
+//     created_at timestamptz not null default now(),
+//     last_used_at timestamptz,
+//     revoked_at timestamptz
+//   );
+
+/** Generates a random, high-entropy raw API key (256 bits, hex-encoded). */
+function generateApiKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `cnr_${hex}`;
+}
+
+async function handleAdminKeys(request, db, idOrAction) {
+  const method = request.method;
+
+  if (method === "GET") {
+    // Never returns key_hash — only what's needed to identify/audit a key.
+    const { ok, status, body } = await db.select("api_keys", {
+      filters: {},
+      order: "created_at.desc",
+      limit: 200,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const rows = (Array.isArray(body) ? body : []).map(({ key_hash, ...rest }) => rest);
+    return success(rows);
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    const label = (payload?.label || "").trim();
+    if (!label) return err("'label' is required (e.g. a reviewer's name or integration name)");
+
+    const rawKey = generateApiKey();
+    const hash = await sha256Hex(rawKey);
+
+    const { ok, status, body } = await db.insert("api_keys", { key_hash: hash, label });
+    if (!ok) return err(body?.message || "Key creation failed", status);
+
+    const { key_hash: _hash, ...safeRow } = body || {};
+
+    return success(safeRow, {
+      message: "API key created — save this now, it will not be shown again",
+      key: rawKey,
+    });
+  }
+
+  if (method === "DELETE") {
+    if (!idOrAction) return err("Key id required, e.g. DELETE /admin/keys/5");
+    const { ok, status, body } = await db.update(
+      "api_keys",
+      idOrAction,
+      { revoked_at: new Date().toISOString() },
+      "PATCH"
+    );
+    if (!ok) return err(body?.message || "Revoke failed", status);
+    if (!body) return notFound("API key");
+    const { key_hash: _hash, ...safeRow } = body;
+    return success(safeRow, { message: `API key ${idOrAction} revoked` });
+  }
+
+  return err("Method not allowed", 405);
+}
+
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
 
 /**
@@ -3068,10 +3216,17 @@ async function handlePackagedReject(request, db, id) {
  * edge-cache wrapper can call it uniformly whether or not a cache policy
  * applies to the route.
  */
-async function dispatch(request, url, db, env, resource, param, ctx, action) {
+async function dispatch(request, url, db, env, resource, param, ctx, action, admin) {
   switch (resource) {
     case "health": {
       return await handleHealth(request, env);
+    }
+
+    case "admin": {
+      if (param === "keys") {
+        return await handleAdminKeys(request, db, action || null);
+      }
+      return notFound();
     }
 
     case "foods": {
@@ -3105,10 +3260,10 @@ async function dispatch(request, url, db, env, resource, param, ctx, action) {
         return await handlePackagedPending(request, url, db);
       }
       if (action === "approve") {
-        return await handlePackagedApprove(request, db, param);
+        return await handlePackagedApprove(request, db, param, admin);
       }
       if (action === "reject") {
-        return await handlePackagedReject(request, db, param);
+        return await handlePackagedReject(request, db, param, admin);
       }
       const isSubmit = param === "submit";
       const id = isSubmit ? null : param || null;
@@ -3181,8 +3336,16 @@ async function router(request, env, ctx, requestId) {
   // ── Centralised auth + rate limit gate ─────────────────────────────────────
   const policy = routePolicy(resource, request.method, param, action);
 
-  if (policy.auth === "admin" && !isAdmin(request, env)) {
-    return unauthorized();
+  let admin = null;
+  if (policy.auth === "admin") {
+    admin = await isAdmin(request, env, db, ctx);
+    if (!admin.valid) return unauthorized();
+
+    // Managing other API keys is root-only — a per-consumer key can't
+    // mint or revoke keys, so a single leaked non-root key can't escalate.
+    if (resource === "admin" && param === "keys" && !admin.isRoot) {
+      return unauthorized("Only the root admin key can manage API keys");
+    }
   }
 
   const rateBucketKey =
@@ -3219,7 +3382,7 @@ async function router(request, env, ctx, requestId) {
   }
 
   try {
-    const response = await dispatch(request, url, db, env, resource, param, ctx, action);
+    const response = await dispatch(request, url, db, env, resource, param, ctx, action, admin);
 
     if (cacheKey && response.status === 200) {
       const cacheable = new Response(response.body, response);

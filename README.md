@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.10.0`
+- **Current CNR version:** `1.11.0`
 
 ---
 
@@ -140,7 +140,7 @@ Runs the full MISS→HIT / rate-limit / cascade verification pass in one command
 
 ## Authentication Model
 
-`Authorization: Bearer <ADMIN_API_KEY>` is required for:
+`Authorization: Bearer <key>` is required for:
 
 - All write routes (`POST`, `PUT`, `PATCH`, `DELETE`) on:
   - `/foods`
@@ -148,16 +148,89 @@ Runs the full MISS→HIT / rate-limit / cascade verification pass in one command
   - `/renal`
   - `/formulas`
   - `/packaged/:id`
+- `GET /packaged/pending`, `POST /packaged/:id/approve`, `POST /packaged/:id/reject`
+- `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/:id` — **root key only**, see [API keys](#api-keys)
 - `POST /rag/ingest`
 - `POST /memory/consolidate` (also runs automatically via hourly cron, bypassing HTTP auth)
 
+The `<key>` can be either the root `ADMIN_API_KEY` or a per-consumer key
+minted via `POST /admin/keys` — see [API keys](#api-keys) for the
+difference.
+
 Public exceptions:
 
-- `POST /packaged/submit` (public, rate-limited)
-- `POST /rag/retrieve` (public, rate-limited)
+- `GET /health` (public, rate-limited)
+- `POST /packaged/submit`, `POST /packaged/scan` (public, rate-limited)
+- `POST /rag/retrieve`, `POST /rag/ask` (public, rate-limited)
 - `POST /memory/write` (public, rate-limited)
 - `GET /memory/recall` (public, rate-limited)
-- All `GET` endpoints
+- `GET /foods/lookup` (public, rate-limited)
+- All other `GET` endpoints
+
+---
+
+## API keys
+
+Before this feature existed, every admin action used the same
+`ADMIN_API_KEY` — no way to tell who did what, or revoke one client's
+access without breaking everyone else's. Now there are two kinds of valid
+admin credential:
+
+- **Root key** — `env.ADMIN_API_KEY` (the `wrangler secret`). Works
+  exactly like before. Only the root key can manage other keys.
+- **Per-consumer keys** — minted via `POST /admin/keys`, each with its own
+  `label`. Used for everything a root key can do *except* managing other
+  keys. The label is what shows up automatically as `reviewed_by` on
+  `/packaged/:id/approve|reject`, so approvals/rejections are attributable
+  to a specific reviewer without them having to type their name every time.
+
+Raw keys are never stored — only a SHA-256 hash, in a new `api_keys`
+table. Run this once in the Supabase SQL editor:
+
+```sql
+create table if not exists api_keys (
+  id bigint generated always as identity primary key,
+  key_hash text not null unique,
+  label text not null,
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz,
+  revoked_at timestamptz
+);
+```
+
+**Create a key** (root key only):
+
+```bash
+curl -X POST https://your-worker-url/admin/keys \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"Grace - reviewer"}'
+```
+
+```json
+{
+  "status": "success",
+  "message": "API key created — save this now, it will not be shown again",
+  "key": "cnr_9f2a...c81b",
+  "data": { "id": 1, "label": "Grace - reviewer", "created_at": "...", "last_used_at": null, "revoked_at": null }
+}
+```
+
+The raw `key` value is shown exactly once — there's no way to retrieve it
+again afterward (only its hash exists in the DB). If it's lost, revoke it
+and mint a new one.
+
+**List keys** (never returns raw keys or hashes):
+
+```bash
+curl https://your-worker-url/admin/keys -H "Authorization: Bearer <ADMIN_API_KEY>"
+```
+
+**Revoke a key** (soft-delete — sets `revoked_at`, keeps the row for audit history):
+
+```bash
+curl -X DELETE https://your-worker-url/admin/keys/1 -H "Authorization: Bearer <ADMIN_API_KEY>"
+```
 
 ---
 
@@ -420,10 +493,10 @@ Query params for `GET /packaged`: `barcode`, `limit`, `offset`/`cursor`
 **`POST /packaged/:id/approve`** — moves a row to `status: "approved"`.
 Accepts an optional JSON body of field corrections (e.g. a mis-read
 `energy_kcal`) applied in the same update, so a reviewer doesn't need a
-separate `PATCH` call first. Also accepts an optional `reviewed_by` string
-(free text — there's currently one shared `ADMIN_API_KEY`, so this is the
-only way to record *who* reviewed a row until per-consumer API keys exist;
-defaults to `"admin"`).
+separate `PATCH` call first. `reviewed_by` defaults to the calling API
+key's label (see [API keys](#api-keys)) — pass an explicit `reviewed_by`
+string to override it (e.g. when using the shared root key, which has no
+per-caller identity of its own).
 
 ```json
 { "reviewed_by": "Grace", "energy_kcal": 210 }
