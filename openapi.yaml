@@ -1,0 +1,1263 @@
+openapi: 3.0.3
+info:
+  title: Chakudya API (CNR — Central Nutrition Repository)
+  description: >
+    Malawi-focused nutrition data API: local food composition tables
+    (foods, exchange lists, renal foods, enteral formulas), packaged/branded
+    products with a community + OCR submission and admin review pipeline,
+    an external lookup cascade (USDA FDC / Open Food Facts / FatSecret), a
+    RAG knowledge base with a search orchestrator (POST /rag/ask), and a
+    per-session clinical memory system (write → consolidate → recall).
+
+    This file is generated from the README and source (`src/index.js`) and
+    covers every route the Worker actually serves. Row shapes for the
+    nutrition tables (foods, packaged_foods, exchange_lists, etc.) are
+    intentionally loose (`additionalProperties: true` with a few
+    illustrative properties) rather than exhaustively modeling every
+    column — see the README for the full, current column list per table,
+    since that evolves independently of this spec.
+  version: "1.12.0"
+  contact:
+    name: Edison Taimu
+    x-location: Blantyre, Malawi
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://chakudya-api.edisontaimu9.workers.dev
+    description: Production (Cloudflare Workers)
+
+security:
+  - {}
+  - bearerAuth: []
+
+tags:
+  - name: Meta
+  - name: Health
+  - name: API Keys
+  - name: Foods
+  - name: Exchange
+  - name: Renal
+  - name: Formulas
+  - name: Packaged
+  - name: Manufacturers
+  - name: Products
+  - name: Nutrition
+  - name: RAG
+  - name: Memory
+
+paths:
+  /:
+    get:
+      tags: [Meta]
+      summary: API metadata
+      description: Returns CNR metadata, version, auth summary, and a full endpoint map.
+      security: []
+      responses:
+        "200":
+          description: Metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Upstream service health check
+      description: >
+        Pings Supabase, Cohere, and Groq in parallel. Reports per-service
+        status plus an overall healthy/degraded verdict. Optional
+        integrations (USDA FDC, FatSecret, the rate-limit/query-cache KV)
+        are reported as configured/bound without a network call and don't
+        affect the overall verdict.
+      security: []
+      responses:
+        "200":
+          description: All required upstreams reachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+        "503":
+          description: One or more required upstreams (Supabase/Cohere/Groq) failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+
+  /admin/keys:
+    get:
+      tags: [API Keys]
+      summary: List API keys (root key only)
+      description: Never returns the raw key or its hash — id/label/timestamps only.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: List of keys
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [API Keys]
+      summary: Create a new API key (root key only)
+      description: >
+        The raw key is returned exactly once in the response — only its
+        SHA-256 hash is stored. If lost, revoke it and mint a new one.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string, example: "Grace - reviewer" }
+      responses:
+        "200":
+          description: Key created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      key:
+                        type: string
+                        description: Raw key — shown once only.
+                        example: "cnr_9f2a1b...c81b"
+                      data: { $ref: "#/components/schemas/ApiKey" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /admin/keys/{id}:
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key (root key only)
+      description: Soft-revoke — sets `revoked_at`, the row is kept for audit history.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Key revoked
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /foods:
+    get:
+      tags: [Foods]
+      summary: List foods
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Search"
+        - name: category
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+    post:
+      tags: [Foods]
+      summary: Create a food (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Food" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /foods/bulk:
+    post:
+      tags: [Foods]
+      summary: Bulk-create foods (admin)
+      description: >
+        Batch insert, max 500 items per request, all-or-nothing (one
+        PostgREST request — a constraint violation on any row rejects the
+        whole batch).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /foods/lookup:
+    get:
+      tags: [Foods]
+      summary: External food lookup cascade (public, rate-limited)
+      description: >
+        Local cache → USDA FDC (name search) → Open Food Facts (barcode) →
+        FatSecret (name search). First external hit is cached into
+        `external_foods_cache` so subsequent lookups skip upstream calls.
+      security: []
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Name search (tries USDA, then FatSecret).
+        - name: barcode
+          in: query
+          schema: { type: string }
+          description: Barcode lookup (Open Food Facts).
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /foods/{id}:
+    get:
+      tags: [Foods]
+      summary: Get a food by id
+      security: []
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Foods]
+      summary: Replace a food (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Food" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Foods]
+      summary: Partially update a food (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Food" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Foods]
+      summary: Delete a food (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /exchange:
+    get:
+      tags: [Exchange]
+      summary: List diabetes/renal exchange list entries
+      security: []
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+    post:
+      tags: [Exchange]
+      summary: Create an exchange list entry (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /exchange/bulk:
+    post:
+      tags: [Exchange]
+      summary: Bulk-create exchange list entries (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /exchange/{id}:
+    put:
+      tags: [Exchange]
+      summary: Replace an exchange list entry (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Exchange]
+      summary: Partially update an exchange list entry (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [Exchange]
+      summary: Delete an exchange list entry (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /renal:
+    get:
+      tags: [Renal]
+      summary: List renal foods
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+    post:
+      tags: [Renal]
+      summary: Create a renal food entry (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /renal/bulk:
+    post:
+      tags: [Renal]
+      summary: Bulk-create renal food entries (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /renal/{id}:
+    put:
+      tags: [Renal]
+      summary: Replace a renal food entry (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Renal]
+      summary: Partially update a renal food entry (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [Renal]
+      summary: Delete a renal food entry (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /formulas:
+    get:
+      tags: [Formulas]
+      summary: List enteral formulas
+      security: []
+      parameters:
+        - name: route
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+    post:
+      tags: [Formulas]
+      summary: Create an enteral formula (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /formulas/bulk:
+    post:
+      tags: [Formulas]
+      summary: Bulk-create enteral formulas (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /formulas/{id}:
+    put:
+      tags: [Formulas]
+      summary: Replace an enteral formula (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Formulas]
+      summary: Partially update an enteral formula (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [Formulas]
+      summary: Delete an enteral formula (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /packaged:
+    get:
+      tags: [Packaged]
+      summary: List packaged/branded foods
+      security: []
+      parameters:
+        - name: barcode
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /packaged/pending:
+    get:
+      tags: [Packaged]
+      summary: Admin review queue (admin)
+      description: Rows with status "pending" from either submission path, oldest first.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: source
+          in: query
+          schema: { type: string, enum: [manual, ocr_ai] }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /packaged/submit:
+    post:
+      tags: [Packaged]
+      summary: Submit a packaged food (public, rate-limited)
+      description: >
+        Requires barcode + product_name. Auto-tagged status=pending. See
+        the README for normalization (`per`/`serving_size`), duplicate
+        detection (409 if an approved/pending row already has this
+        barcode; overwritten in place if the existing row was rejected),
+        and the macro/calorie cross-check (`needs_review`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [barcode, product_name]
+              properties:
+                barcode: { type: string }
+                product_name: { type: string }
+                per: { type: string, enum: ["100g", "100ml", serving] }
+                serving_size: { type: string, example: "30g" }
+              additionalProperties: true
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Barcode already has an approved/pending entry — not inserted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: success }
+                  message: { type: string }
+                  already_exists: { type: boolean, example: true }
+                  data: { $ref: "#/components/schemas/PackagedFood" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /packaged/scan:
+    post:
+      tags: [Packaged]
+      summary: Submit a packaged food via photo (public, rate-limited)
+      description: >
+        Sends 1-5 photos to a Groq vision model, combines what it reads
+        across all of them, and inserts a pending row with source=ocr_ai.
+        Returns 422 (status=needs_retry) without writing if no photo shows
+        a legible nutrition label. Same duplicate-detection and
+        macro/calorie-check behavior as /packaged/submit.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [images]
+              properties:
+                images:
+                  type: array
+                  minItems: 1
+                  maxItems: 5
+                  items:
+                    type: string
+                    description: data:image/...;base64,... URL or bare base64 (assumed JPEG).
+                barcode:
+                  type: string
+                  description: Optional — takes priority over anything the model reads.
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "422":
+          description: No photo showed a legible nutrition label — nothing written.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: needs_retry }
+                  message: { type: string }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /packaged/{id}/approve:
+    post:
+      tags: [Packaged]
+      summary: Approve a pending packaged food (admin)
+      description: >
+        Moves status to "approved". Body may include field corrections
+        applied in the same update. reviewed_by defaults to the calling API
+        key's label; pass an explicit reviewed_by to override.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reviewed_by: { type: string }
+              additionalProperties: true
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /packaged/{id}/reject:
+    post:
+      tags: [Packaged]
+      summary: Reject a pending packaged food (admin)
+      description: Moves status to "rejected". Requires a reason string.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+                reviewed_by: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /packaged/{id}:
+    put:
+      tags: [Packaged]
+      summary: Replace a packaged food (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PackagedFood" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Packaged]
+      summary: Partially update a packaged food (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PackagedFood" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Packaged]
+      summary: Delete a packaged food (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /manufacturers:
+    get:
+      tags: [Manufacturers]
+      summary: List manufacturers
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+    post:
+      tags: [Manufacturers]
+      summary: Create a manufacturer (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /manufacturers/bulk:
+    post:
+      tags: [Manufacturers]
+      summary: Bulk-create manufacturers (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /manufacturers/{id}:
+    patch:
+      tags: [Manufacturers]
+      summary: Partially update a manufacturer (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [Manufacturers]
+      summary: Delete a manufacturer (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /products:
+    get:
+      tags: [Products]
+      summary: List products
+      security: []
+      parameters:
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: route
+          in: query
+          schema: { type: string }
+        - name: manufacturer_id
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Search"
+        - name: include_inactive
+          in: query
+          schema: { type: boolean, default: false }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+    post:
+      tags: [Products]
+      summary: Create a product (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /products/bulk:
+    post:
+      tags: [Products]
+      summary: Bulk-create products (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /products/{id}:
+    get:
+      tags: [Products]
+      summary: Get a product by id
+      security: []
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Products]
+      summary: Replace a product (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Products]
+      summary: Partially update a product (admin)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [Products]
+      summary: Soft-delete a product (admin)
+      description: Sets is_active=false rather than removing the row.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /nutrition:
+    get:
+      tags: [Nutrition]
+      summary: Get nutrition facts for a product
+      security: []
+      parameters:
+        - name: product_id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /rag/retrieve:
+    post:
+      tags: [RAG]
+      summary: Raw semantic retrieval (public, rate-limited)
+      description: Returns matching rag_knowledge_base chunks without generating an answer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                context: { type: string, enum: [both, oasis, thanzi], default: both }
+                top_k: { type: integer, default: 5 }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /rag/ingest:
+    post:
+      tags: [RAG]
+      summary: Ingest a document into the RAG knowledge base (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, source]
+              properties:
+                content: { type: string }
+                source: { type: string }
+                context: { type: string, enum: [clinical, general, both], default: both }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /rag/ask:
+    post:
+      tags: [RAG]
+      summary: RAG Search Orchestrator (public, rate-limited)
+      description: >
+        Full pipeline: intent detection (Groq) → fan-out search across
+        semantic KB, Malawi FCT, packaged/OCR foods, exchange/renal/formula
+        DBs, barcode lookup, and USDA/OFF/FatSecret fallback → rerank
+        (Cohere) → grounded LLM answer with [n] citations. Whole answers
+        are cached 5 minutes (skipped when session_id is passed).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                context: { type: string, enum: [clinical, general, both], default: both }
+                top_k: { type: integer, default: 6 }
+                session_id: { type: string, description: "Optional — enables memory-personalized answers." }
+      responses:
+        "200":
+          description: Grounded answer with citations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          answer: { type: string }
+                          intent:
+                            type: string
+                            enum: [food_search, barcode_search, nutrition_question, exchange_list, enteral_formula, general_chat]
+                          barcode_detected: { type: string, nullable: true }
+                          sources:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                id: { type: integer }
+                                source: { type: string }
+                                title: { type: string }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /memory/write:
+    post:
+      tags: [Memory]
+      summary: Write a raw memory fact (public, rate-limited)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id, content]
+              properties:
+                session_id: { type: string }
+                content: { type: string }
+                kind: { type: string, default: fact }
+                patient_label: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /memory/recall:
+    post:
+      tags: [Memory]
+      summary: Recall top-K relevant memory rows for a session (public, rate-limited, preferred)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id, query]
+              properties:
+                session_id: { type: string }
+                query: { type: string }
+                top_k: { type: integer, default: 5 }
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [Memory]
+      summary: Recall (deprecated — use POST, same params as query string)
+      description: >
+        Deprecated: puts session_id and query text in the URL, exposed to
+        access logs/browser history. Prefer POST /memory/recall.
+      deprecated: true
+      security: []
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: query
+          in: query
+          required: true
+          schema: { type: string }
+        - name: top_k
+          in: query
+          schema: { type: integer, default: 5 }
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /memory/consolidate:
+    post:
+      tags: [Memory]
+      summary: Manually trigger consolidation for one session (admin)
+      description: >
+        Also runs automatically every hour via cron. Sessions with fewer
+        than 6 unconsolidated facts are skipped (status="skipped").
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id]
+              properties:
+                session_id: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Either the root ADMIN_API_KEY or a per-consumer key minted via
+        POST /admin/keys. Only the root key can manage other keys.
+
+  parameters:
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    Search:
+      name: search
+      in: query
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 50, maximum: 100 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, default: 0 }
+    Cursor:
+      name: cursor
+      in: query
+      description: >
+        Switches to keyset pagination when present (even empty). See
+        README § Pagination. Response then has has_more/next_cursor
+        instead of count/offset, and is always ordered by id.asc.
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing/invalid API key
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MutationSuccess:
+      description: Success
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Success" }
+    BulkSuccess:
+      description: Bulk insert success
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Success"
+              - type: object
+                properties:
+                  count: { type: integer }
+                  data:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+    ListOrCursor:
+      description: Offset/limit list (default) or cursor page (when ?cursor= is present)
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/ListSuccess"
+              - $ref: "#/components/schemas/CursorSuccess"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        status: { type: string, example: error }
+        message: { type: string }
+        request_id: { type: string, description: "Present on 500 responses." }
+
+    Success:
+      type: object
+      properties:
+        status: { type: string, example: success }
+        message: { type: string }
+        data:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: array
+              items: { type: object, additionalProperties: true }
+
+    ListSuccess:
+      type: object
+      properties:
+        status: { type: string, example: success }
+        count: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        data:
+          type: array
+          items: { type: object, additionalProperties: true }
+
+    CursorSuccess:
+      type: object
+      properties:
+        status: { type: string, example: success }
+        limit: { type: integer }
+        has_more: { type: boolean }
+        next_cursor: { type: integer, nullable: true }
+        data:
+          type: array
+          items: { type: object, additionalProperties: true }
+
+    BulkRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: object, additionalProperties: true }
+
+    HealthStatus:
+      type: object
+      properties:
+        status: { type: string, enum: [healthy, degraded] }
+        version: { type: string }
+        checked_at: { type: string, format: date-time }
+        services:
+          type: object
+          properties:
+            supabase: { $ref: "#/components/schemas/ServiceCheck" }
+            cohere: { $ref: "#/components/schemas/ServiceCheck" }
+            groq: { $ref: "#/components/schemas/ServiceCheck" }
+            usda_fdc: { $ref: "#/components/schemas/ServiceCheck" }
+            fatsecret: { $ref: "#/components/schemas/ServiceCheck" }
+            rate_limit_kv: { $ref: "#/components/schemas/ServiceCheck" }
+
+    ServiceCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error, configured, not_configured, bound, not_bound]
+        detail: { type: string }
+
+    ApiKey:
+      type: object
+      properties:
+        id: { type: integer }
+        label: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+
+    Food:
+      type: object
+      required: [food_name]
+      properties:
+        id: { type: integer, readOnly: true }
+        food_name: { type: string, example: "Nsima (thick, maize)" }
+        category: { type: string, example: Staples }
+        measure: { type: string, example: "1 cup / chikombe (240g)" }
+        weight_g: { type: number }
+        kcal: { type: number }
+        kj: { type: number }
+        protein_g: { type: number }
+        carbs_g: { type: number }
+        fat_g: { type: number }
+      additionalProperties: true
+
+    PackagedFood:
+      type: object
+      properties:
+        id: { type: integer, readOnly: true }
+        product_name: { type: string }
+        brand: { type: string, nullable: true }
+        barcode: { type: string }
+        status: { type: string, enum: [pending, approved, rejected] }
+        source: { type: string, enum: [manual, ocr_ai], nullable: true }
+        ai_confidence: { type: number, nullable: true }
+        submitted_at: { type: string, format: date-time }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        reviewed_by: { type: string, nullable: true }
+        rejection_reason: { type: string, nullable: true }
+        energy_kcal: { type: number, nullable: true }
+        protein_g: { type: number, nullable: true }
+        fat_g: { type: number, nullable: true }
+        carbs_g: { type: number, nullable: true }
+      additionalProperties: true

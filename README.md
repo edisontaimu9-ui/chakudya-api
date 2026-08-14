@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.11.0`
+- **Current CNR version:** `1.12.0`
 
 ---
 
@@ -325,6 +325,12 @@ Takes about 90 seconds (most of that is a deliberate 60s pause to let the rate-l
 
 ## Endpoints
 
+The full list below is also available as a machine-readable
+[OpenAPI 3.0.3 spec](./openapi.yaml) — import it into Swagger UI, Postman,
+or an SDK generator. It's a static file (not served by the Worker) kept in
+sync by hand alongside this section; if they ever disagree, this README
+and `src/index.js` are the source of truth.
+
 ### Root
 
 - `GET /` — returns CNR metadata, version, auth summary, and endpoint map
@@ -419,11 +425,47 @@ curl ".../foods?category=fruit&cursor="              # first page
 curl ".../foods?category=fruit&cursor=187"            # next page (from next_cursor above)
 ```
 
+## Bulk insert
+
+`POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
+`/manufacturers/bulk`, and `/products/bulk` *(all admin)* accept a batch
+of rows in one request instead of one `POST` per row — useful for loading
+data from a spreadsheet or migration script.
+
+```bash
+curl -X POST https://your-worker-url/foods/bulk \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+      { "food_name": "Cassava (boiled)", "category": "Staples", "kcal": 160, "protein_g": 1.4, "carbs_g": 38, "fat_g": 0.3 },
+      { "food_name": "Groundnuts (roasted)", "category": "Legumes/Nuts", "kcal": 567, "protein_g": 26, "carbs_g": 16, "fat_g": 49 }
+    ]
+  }'
+```
+
+```json
+{ "status": "success", "message": "2 foods created", "count": 2, "data": [ /* the 2 inserted rows */ ] }
+```
+
+- Max **500 items** per request — split larger loads into multiple calls.
+- `food_name` is required on every item for `/foods/bulk` (mirrors the
+  single-row `POST /foods` validation); the other five resources have no
+  required-field check beyond a non-empty array, matching their single-row
+  endpoints today.
+- **All-or-nothing:** this is one PostgREST batch insert, not N sequential
+  inserts. If any row in the batch violates a constraint (e.g. a duplicate
+  unique key), the *entire* batch is rejected and nothing is inserted —
+  intentional, so a bad row doesn't leave you guessing which rows silently
+  didn't make it in. Fix the offending row (the error message from
+  Postgres usually names the constraint) and resubmit.
+
 ### Foods
 
 - `GET /foods`
 - `GET /foods/:id`
 - `POST /foods` *(admin)*
+- `POST /foods/bulk` *(admin)* — see [Bulk insert](#bulk-insert)
 - `PUT /foods/:id` *(admin)*
 - `PATCH /foods/:id` *(admin)*
 - `DELETE /foods/:id` *(admin)*
@@ -445,6 +487,7 @@ Query params for `GET /foods`:
 
 - `GET /exchange`
 - `POST /exchange` *(admin)*
+- `POST /exchange/bulk` *(admin)*
 - `PUT /exchange/:id` *(admin)*
 - `PATCH /exchange/:id` *(admin)*
 - `DELETE /exchange/:id` *(admin)*
@@ -455,6 +498,7 @@ Query params: `type`, `limit`, `offset`/`cursor`
 
 - `GET /renal`
 - `POST /renal` *(admin)*
+- `POST /renal/bulk` *(admin)*
 - `PUT /renal/:id` *(admin)*
 - `PATCH /renal/:id` *(admin)*
 - `DELETE /renal/:id` *(admin)*
@@ -465,6 +509,7 @@ Query params: `limit`, `offset`/`cursor`
 
 - `GET /formulas`
 - `POST /formulas` *(admin)*
+- `POST /formulas/bulk` *(admin)*
 - `PUT /formulas/:id` *(admin)*
 - `PATCH /formulas/:id` *(admin)*
 - `DELETE /formulas/:id` *(admin)*
@@ -619,6 +664,7 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 
 - `GET /manufacturers` — supports `limit`, `offset`/`cursor` (see [Pagination](#pagination))
 - `POST /manufacturers` *(admin)*
+- `POST /manufacturers/bulk` *(admin)*
 - `PATCH /manufacturers/:id` *(admin)*
 - `DELETE /manufacturers/:id` *(admin)*
 
@@ -627,6 +673,7 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 - `GET /products` — filters: `category`, `route`, `manufacturer_id`, `search`, `include_inactive`; supports `limit`, `offset`/`cursor`
 - `GET /products/:id`
 - `POST /products` *(admin)*
+- `POST /products/bulk` *(admin)*
 - `PUT /products/:id` *(admin)*
 - `PATCH /products/:id` *(admin)*
 - `DELETE /products/:id` *(admin — soft delete, sets `is_active: false`)*

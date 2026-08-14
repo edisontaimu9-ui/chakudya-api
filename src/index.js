@@ -69,6 +69,19 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.12.0 changes:
+ *  - Added POST /:resource/bulk (admin) for foods, exchange, renal,
+ *    formulas, manufacturers, and products — accepts {items:[...]} (max
+ *    500) and inserts them all in a single PostgREST batch request instead
+ *    of one row at a time. See handleBulkInsert() and db.insertMany().
+ *    Note: PostgREST batch insert is all-or-nothing — one bad row rejects
+ *    the whole batch, nothing is partially inserted.
+ *  - Added openapi.yaml at the repo root — a full OpenAPI 3.0.3 spec
+ *    covering every route this file serves, generated from this changelog
+ *    + the README. Not served by the Worker itself (static file only, for
+ *    import into Swagger UI/Postman or SDK generation) — keep it in sync
+ *    by hand alongside README changes when adding/changing routes.
+ *
  * v1.11.0 changes:
  *  - Added per-consumer admin API keys (POST/GET/DELETE /admin/keys,
  *    root-key-only to manage). isAdmin() now checks the raw root key
@@ -146,7 +159,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.11.0";
+const CNR_VERSION = "1.12.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -415,6 +428,10 @@ function routePolicy(resource, method, param, action) {
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
+  const isBulkInsert =
+    ["foods", "exchange", "renal", "formulas", "manufacturers", "products"].includes(resource) &&
+    param === "bulk" &&
+    method === "POST";
 
   // API key management — admin-gated regardless of method (including GET,
   // which would otherwise fall through to the public-reads default below).
@@ -422,6 +439,12 @@ function routePolicy(resource, method, param, action) {
   // router(), since routePolicy() only resolves auth *level*, not identity.
   if (isAdminKeys) {
     return { auth: "admin", rate: { limit: 30, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // Bulk insert — admin only, tighter cap than plain writes since each
+  // request can carry up to BULK_MAX_ITEMS rows and does more DB work.
+  if (isBulkInsert) {
+    return { auth: "admin", rate: { limit: 10, windowSeconds: 60, scope: "admin" } };
   }
 
   // Health check — public, moderate cap. Each hit fans out 2-3 upstream
@@ -577,6 +600,22 @@ function supabase(env) {
     },
 
     /**
+     * Same as insert(), but for a whole array of rows in one PostgREST
+     * request (a single POST with a JSON array body, which PostgREST
+     * natively supports as a batch insert) — used by the /:resource/bulk
+     * endpoints. Unlike insert(), does NOT unwrap to a single row; body is
+     * the full array of inserted rows (or a PostgREST error object).
+     */
+    async insertMany(table, payloadArray) {
+      const url = `${base}/${table}`;
+      const { ok, status, body } = await query(url, {
+        method: "POST",
+        body: JSON.stringify(payloadArray),
+      });
+      return { ok, status, body };
+    },
+
+    /**
      * Upsert on a unique constraint — if a row with the same conflict-target
      * columns already exists, it's updated instead of duplicated. Used for
      * external_foods_cache, which has a UNIQUE (source, external_id) constraint.
@@ -707,6 +746,55 @@ async function paginatedList(db, table, url, { filters = {}, order } = {}) {
   const { ok, status, body, total } = await db.select(table, { filters, limit, offset, order });
   if (!ok) return err(body?.message || "Query failed", status);
   return listSuccess(body, { count: total, limit, offset });
+}
+
+/** Max rows accepted in a single /:resource/bulk request — keeps a single
+ * PostgREST call (and the request/response body) bounded. Callers with
+ * more rows than this should split into multiple requests. */
+const BULK_MAX_ITEMS = 500;
+
+/**
+ * Shared handler for POST /:resource/bulk — admin-only batch insert used
+ * by /foods/bulk, /exchange/bulk, /renal/bulk, /formulas/bulk,
+ * /manufacturers/bulk, and /products/bulk. Accepts `{ "items": [...] }`
+ * and inserts them all in a single PostgREST request (a batch insert,
+ * not N sequential single-row inserts), so loading e.g. a spreadsheet of
+ * 200 foods is one request instead of 200.
+ *
+ * `requiredField`, if given, is validated on every item up front (mirrors
+ * whatever the single-row POST for that resource already requires) so a
+ * bad row is caught before hitting the DB, with an index the caller can
+ * fix, rather than PostgREST rejecting the whole batch on a constraint
+ * error partway through.
+ *
+ * Note: PostgREST's batch insert is all-or-nothing — if any row violates
+ * a constraint (e.g. a duplicate unique key), the entire batch is rejected
+ * and nothing is inserted. That's intentional here (silently skipping bad
+ * rows in a 200-row admin load would be worse), but worth knowing before
+ * bulk-loading data with duplicates in it.
+ */
+async function handleBulkInsert(request, db, table, { requiredField, label } = {}) {
+  const payload = await parseBody(request);
+  const items = payload?.items;
+
+  if (!Array.isArray(items) || !items.length) {
+    return err("'items' must be a non-empty array");
+  }
+  if (items.length > BULK_MAX_ITEMS) {
+    return err(`Too many items — max ${BULK_MAX_ITEMS} per request, got ${items.length}`);
+  }
+  if (requiredField) {
+    const badIndex = items.findIndex((item) => !item || !item[requiredField]);
+    if (badIndex !== -1) {
+      return err(`Item at index ${badIndex} is missing required field '${requiredField}'`);
+    }
+  }
+
+  const { ok, status, body } = await db.insertMany(table, items);
+  if (!ok) return err(body?.message || "Bulk insert failed", status);
+
+  const rows = Array.isArray(body) ? body : [];
+  return success(rows, { message: `${rows.length} ${label} created`, count: rows.length });
 }
 
 /**
@@ -2310,6 +2398,7 @@ function handleRoot(env) {
         "GET  /foods",
         "GET  /foods/:id",
         "POST /foods            (admin)",
+        "POST /foods/bulk       (admin) → body {items:[...]}, max 500, batch insert in one request",
         "PUT  /foods/:id        (admin)",
         "PATCH /foods/:id       (admin)",
         "DELETE /foods/:id      (admin)",
@@ -2317,6 +2406,7 @@ function handleRoot(env) {
       exchange_lists: [
         "GET  /exchange",
         "POST /exchange         (admin)",
+        "POST /exchange/bulk    (admin) → body {items:[...]}, max 500",
         "PUT  /exchange/:id     (admin)",
         "PATCH /exchange/:id    (admin)",
         "DELETE /exchange/:id   (admin)",
@@ -2324,6 +2414,7 @@ function handleRoot(env) {
       renal: [
         "GET  /renal",
         "POST /renal            (admin)",
+        "POST /renal/bulk       (admin) → body {items:[...]}, max 500",
         "PUT  /renal/:id        (admin)",
         "PATCH /renal/:id       (admin)",
         "DELETE /renal/:id      (admin)",
@@ -2331,6 +2422,7 @@ function handleRoot(env) {
       enteral_formulas: [
         "GET  /formulas",
         "POST /formulas         (admin)",
+        "POST /formulas/bulk    (admin) → body {items:[...]}, max 500",
         "PUT  /formulas/:id     (admin)",
         "PATCH /formulas/:id    (admin)",
         "DELETE /formulas/:id   (admin)",
@@ -2359,6 +2451,7 @@ function handleRoot(env) {
       manufacturers: [
         "GET  /manufacturers",
         "POST /manufacturers        (admin)",
+        "POST /manufacturers/bulk   (admin) → body {items:[...]}, max 500",
         "PATCH /manufacturers/:id   (admin)",
         "DELETE /manufacturers/:id  (admin)",
       ],
@@ -2366,6 +2459,7 @@ function handleRoot(env) {
         "GET  /products             — filters: category, route, manufacturer_id, search, include_inactive",
         "GET  /products/:id",
         "POST /products             (admin)",
+        "POST /products/bulk        (admin) → body {items:[...]}, max 500",
         "PUT  /products/:id         (admin)",
         "PATCH /products/:id        (admin)",
         "DELETE /products/:id       (admin — soft delete, sets is_active=false)",
@@ -3228,21 +3322,37 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "lookup") {
         return await handleFoodsLookup(request, url, db, env);
       }
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "foods", { requiredField: "food_name", label: "foods" });
+      }
       const id = param || null;
       return await handleFoods(request, url, db, id);
     }
 
     case "exchange": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "exchange_lists", { label: "exchange entries" });
+      }
       const id = param || null;
       return await handleExchange(request, url, db, id);
     }
 
     case "renal": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "renal_foods", { label: "renal entries" });
+      }
       const id = param || null;
       return await handleRenal(request, url, db, id);
     }
 
     case "formulas": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "enteral_formulas", { label: "formulas" });
+      }
       const id = param || null;
       return await handleFormulas(request, url, db, id);
     }
@@ -3274,11 +3384,19 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
     }
 
     case "manufacturers": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "manufacturers", { label: "manufacturers" });
+      }
       const id = param || null;
       return await handleManufacturers(request, url, db, id);
     }
 
     case "products": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "products", { label: "products" });
+      }
       const id = param || null;
       return await handleProducts(request, url, db, id);
     }
