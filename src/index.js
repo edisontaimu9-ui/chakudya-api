@@ -69,6 +69,16 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.15.0 changes:
+ *  - Removed /manufacturers entirely (GET/POST/PATCH/DELETE, plus
+ *    /manufacturers/bulk) — the table was unused (empty). Handler,
+ *    routePolicy/dispatch/cachePolicy/bulk-allowlist entries, and the
+ *    endpoint map in GET / are all gone. The manufacturers Supabase table
+ *    itself is a separate, manual DROP TABLE — this file doesn't touch
+ *    the schema. products.manufacturer_id (column + GET /products filter)
+ *    is untouched and still works — it's just no longer FK-enforced
+ *    against anything once the manufacturers table is dropped.
+ *
  * v1.14.0 changes:
  *  - Added favorites (GET/POST/DELETE /favorites) and recently-viewed
  *    history (GET/POST /history). No user-account system — same
@@ -178,7 +188,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.14.0";
+const CNR_VERSION = "1.15.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -347,9 +357,6 @@ function cachePolicy(resource, param) {
     // /nutrition are left uncached since they're low-traffic detail views.
     return { ttl: 900 }; // 15 min
   }
-  if (resource === "manufacturers") {
-    return { ttl: 86400 }; // changes only when you add a manufacturer
-  }
   if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data
   }
@@ -465,7 +472,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "manufacturers", "products"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "products"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -747,7 +754,7 @@ function limitParam(url, fallback = 50, max = 100) {
 
 /**
  * Shared list-pagination helper used by /foods, /exchange, /renal,
- * /formulas, /manufacturers, and /products.
+ * /formulas, and /products.
  *
  * Two modes, selected by whether `?cursor=` is present at all:
  *
@@ -818,8 +825,8 @@ const BULK_MAX_ITEMS = 500;
 
 /**
  * Shared handler for POST /:resource/bulk — admin-only batch insert used
- * by /foods/bulk, /exchange/bulk, /renal/bulk, /formulas/bulk,
- * /manufacturers/bulk, and /products/bulk. Accepts `{ "items": [...] }`
+ * by /foods/bulk, /exchange/bulk, /renal/bulk, /formulas/bulk, and
+ * /products/bulk. Accepts `{ "items": [...] }`
  * and inserts them all in a single PostgREST request (a batch insert,
  * not N sequential single-row inserts), so loading e.g. a spreadsheet of
  * 200 foods is one request instead of 200.
@@ -2663,13 +2670,6 @@ function handleRoot(env) {
         "POST /memory/recall       (public, rate-limited) → top-K relevant memory for a session (session_id, query, top_k) — preferred; GET with the same params still works but is deprecated since it puts clinical text in the URL/logs",
         "POST /memory/consolidate  (admin) → summarize a session's facts (session_id) — also run hourly by cron",
       ],
-      manufacturers: [
-        "GET  /manufacturers",
-        "POST /manufacturers        (admin)",
-        "POST /manufacturers/bulk   (admin) → body {items:[...]}, max 500",
-        "PATCH /manufacturers/:id   (admin)",
-        "DELETE /manufacturers/:id  (admin)",
-      ],
       products: [
         "GET  /products             — filters: category, route, manufacturer_id, search, include_inactive",
         "GET  /products/:id",
@@ -2912,42 +2912,6 @@ async function handleFormulas(request, url, db, id) {
     const { ok, status } = await db.remove("enteral_formulas", id);
     if (!ok) return err("Delete failed", status);
     return success(null, { message: `Formula ${id} deleted` });
-  }
-
-  return err("Method not allowed", 405);
-}
-
-// ── /manufacturers ───────────────────────────────────────────────────────────
-
-async function handleManufacturers(request, url, db, id) {
-  const method = request.method;
-
-  if (method === "GET") {
-    return await paginatedList(db, "manufacturers", url);
-  }
-
-  if (method === "POST") {
-    const payload = await parseBody(request);
-    if (!payload) return err("Request body required");
-    const { ok, status, body } = await db.insert("manufacturers", payload);
-    if (!ok) return err(body?.message || "Insert failed", status);
-    return success(body, { message: "Manufacturer created" });
-  }
-
-  if (!id) return err("ID required for this method");
-
-  if (method === "PATCH") {
-    const payload = await parseBody(request);
-    if (!payload) return err("Request body required");
-    const { ok, status, body } = await db.update("manufacturers", id, payload, "PATCH");
-    if (!ok) return err(body?.message || "Update failed", status);
-    return success(body, { message: "Manufacturer updated" });
-  }
-
-  if (method === "DELETE") {
-    const { ok, status } = await db.remove("manufacturers", id);
-    if (!ok) return err("Delete failed", status);
-    return success(null, { message: `Manufacturer ${id} deleted` });
   }
 
   return err("Method not allowed", 405);
@@ -3618,15 +3582,6 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "memory": {
       return await handleMemory(request, url, db, env, param || null, ctx);
-    }
-
-    case "manufacturers": {
-      if (param === "bulk") {
-        if (request.method !== "POST") return err("Method not allowed", 405);
-        return await handleBulkInsert(request, db, "manufacturers", { label: "manufacturers" });
-      }
-      const id = param || null;
-      return await handleManufacturers(request, url, db, id);
     }
 
     case "products": {

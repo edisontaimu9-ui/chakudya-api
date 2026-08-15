@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.14.0`
+- **Current CNR version:** `1.15.0`
 
 ---
 
@@ -286,7 +286,6 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 |---|---|---|
 | `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
-| `GET /manufacturers` | ✅ | 24 hours |
 | `GET /products` (list) | ✅ | 15 min |
 | `GET /packaged*`, `/products/:id`, `/nutrition` | ❌ | — (change often or are low-traffic detail views) |
 | `POST /rag/retrieve`, `POST`/`GET /memory/recall` | ❌ (edge cache) — ✅ (separate KV query cache, see below) | — |
@@ -425,7 +424,7 @@ cost/noise concern — errors always log regardless of this setting.
 
 ## Pagination
 
-`GET /foods`, `/exchange`, `/renal`, `/formulas`, `/manufacturers`,
+`GET /foods`, `/exchange`, `/renal`, `/formulas`,
 `/products`, and `/packaged` all support two pagination modes, chosen by
 whether a `cursor` param is present at all:
 
@@ -455,7 +454,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/manufacturers/bulk`, and `/products/bulk` *(all admin)* accept a batch
+and `/products/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
 
@@ -687,14 +686,6 @@ alter table packaged_foods add column if not exists ai_confidence numeric;
 alter table packaged_foods add column if not exists ocr_raw jsonb;
 ```
 
-### Manufacturers
-
-- `GET /manufacturers` — supports `limit`, `offset`/`cursor` (see [Pagination](#pagination))
-- `POST /manufacturers` *(admin)*
-- `POST /manufacturers/bulk` *(admin)*
-- `PATCH /manufacturers/:id` *(admin)*
-- `DELETE /manufacturers/:id` *(admin)*
-
 ### Products
 
 - `GET /products` — filters: `category`, `route`, `manufacturer_id`, `search`, `include_inactive`; supports `limit`, `offset`/`cursor`
@@ -704,6 +695,11 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 - `PUT /products/:id` *(admin)*
 - `PATCH /products/:id` *(admin)*
 - `DELETE /products/:id` *(admin — soft delete, sets `is_active: false`)*
+
+> `manufacturer_id` on `products` is a plain column, not backed by an
+> endpoint or (as of `manufacturers` being dropped) a foreign key — it
+> still filters `GET /products?manufacturer_id=...` correctly, it just
+> doesn't resolve to anything else in the API anymore.
 
 ### Nutrition
 
@@ -981,7 +977,7 @@ The zero-dependency JS client for this API now lives in its own repo:
 
 It ships browser (`<script>` tag / UMD), ESM, and CommonJS builds, plus
 TypeScript types, and wraps every route in this file — `foods`, `exchange`,
-`renal`, `formulas`, `manufacturers`, `products`, `packaged`, `nutrition`,
+`renal`, `formulas`, `products`, `packaged`, `nutrition`,
 `rag`, and `memory`. See that repo's README for install and usage examples.
 
 ---

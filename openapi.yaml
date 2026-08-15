@@ -16,7 +16,7 @@ info:
     illustrative properties) rather than exhaustively modeling every
     column — see the README for the full, current column list per table,
     since that evolves independently of this spec.
-  version: "1.14.0"
+  version: "1.15.0"
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -40,7 +40,6 @@ tags:
   - name: Renal
   - name: Formulas
   - name: Packaged
-  - name: Manufacturers
   - name: Products
   - name: Nutrition
   - name: Favorites
@@ -713,67 +712,6 @@ paths:
         "200": { $ref: "#/components/responses/MutationSuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
-
-  /manufacturers:
-    get:
-      tags: [Manufacturers]
-      summary: List manufacturers
-      security: []
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Offset"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200": { $ref: "#/components/responses/ListOrCursor" }
-    post:
-      tags: [Manufacturers]
-      summary: Create a manufacturer (admin)
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { type: object, additionalProperties: true }
-      responses:
-        "200": { $ref: "#/components/responses/MutationSuccess" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-
-  /manufacturers/bulk:
-    post:
-      tags: [Manufacturers]
-      summary: Bulk-create manufacturers (admin)
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/BulkRequest" }
-      responses:
-        "200": { $ref: "#/components/responses/BulkSuccess" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-
-  /manufacturers/{id}:
-    patch:
-      tags: [Manufacturers]
-      summary: Partially update a manufacturer (admin)
-      security: [{ bearerAuth: [] }]
-      parameters: [{ $ref: "#/components/parameters/PathId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { type: object, additionalProperties: true }
-      responses:
-        "200": { $ref: "#/components/responses/MutationSuccess" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-    delete:
-      tags: [Manufacturers]
-      summary: Delete a manufacturer (admin)
-      security: [{ bearerAuth: [] }]
-      parameters: [{ $ref: "#/components/parameters/PathId" }]
-      responses:
-        "200": { $ref: "#/components/responses/MutationSuccess" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /products:
     get:
