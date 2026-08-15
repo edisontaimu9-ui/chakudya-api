@@ -69,6 +69,19 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.16.0 changes:
+ *  - Removed /products entirely (GET/GET-by-id/POST/PUT/PATCH/DELETE,
+ *    plus /products/bulk) and /nutrition (which only ever queried
+ *    product_nutrition filtered by product_id — dead weight without
+ *    products to attach it to). Handlers, routePolicy/dispatch/
+ *    cachePolicy/bulk-allowlist entries, and both entries in the GET /
+ *    endpoint map are gone. "product" was also removed from
+ *    FAVORITABLE_RESOURCE_TYPES — a favorite/history row pointing at a
+ *    resource type with no backing endpoint isn't useful. The products
+ *    and product_nutrition Supabase tables are a separate, manual DROP
+ *    TABLE (product_nutrition first, or use CASCADE) — this file doesn't
+ *    touch the schema.
+ *
  * v1.15.0 changes:
  *  - Removed /manufacturers entirely (GET/POST/PATCH/DELETE, plus
  *    /manufacturers/bulk) — the table was unused (empty). Handler,
@@ -188,7 +201,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.15.0";
+const CNR_VERSION = "1.16.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -351,12 +364,6 @@ async function isAdmin(request, env, db, ctx) {
  *  - rag/memory are session- and query-specific — never cached.
  */
 function cachePolicy(resource, param) {
-  if (resource === "products" && !param) {
-    // Product list changes fairly often — short TTL, not the 1hr
-    // reference-data TTL below. Single-product GETs (/products/:id) and
-    // /nutrition are left uncached since they're low-traffic detail views.
-    return { ttl: 900 }; // 15 min
-  }
   if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data
   }
@@ -472,7 +479,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "products"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -902,7 +909,7 @@ async function handleBulkInsert(request, db, table, { requiredField, label } = {
 //   );
 //   create index if not exists view_history_user_id_idx on view_history(user_id, viewed_at desc);
 
-const FAVORITABLE_RESOURCE_TYPES = ["food", "packaged", "product"];
+const FAVORITABLE_RESOURCE_TYPES = ["food", "packaged"];
 
 function validateFavoritePayload(payload) {
   const userId = (payload?.user_id || "").trim();
@@ -2670,16 +2677,6 @@ function handleRoot(env) {
         "POST /memory/recall       (public, rate-limited) → top-K relevant memory for a session (session_id, query, top_k) — preferred; GET with the same params still works but is deprecated since it puts clinical text in the URL/logs",
         "POST /memory/consolidate  (admin) → summarize a session's facts (session_id) — also run hourly by cron",
       ],
-      products: [
-        "GET  /products             — filters: category, route, manufacturer_id, search, include_inactive",
-        "GET  /products/:id",
-        "POST /products             (admin)",
-        "POST /products/bulk        (admin) → body {items:[...]}, max 500",
-        "PUT  /products/:id         (admin)",
-        "PATCH /products/:id        (admin)",
-        "DELETE /products/:id       (admin — soft delete, sets is_active=false)",
-      ],
-      nutrition: ["GET /nutrition?product_id=123"],
       favorites: [
         "GET    /favorites?user_id=...&resource_type=...   (public, rate-limited)",
         "POST   /favorites   (public, rate-limited) → body {user_id, resource_type, resource_id}, idempotent",
@@ -2915,102 +2912,6 @@ async function handleFormulas(request, url, db, id) {
   }
 
   return err("Method not allowed", 405);
-}
-
-// ── /products ─────────────────────────────────────────────────────────────────
-//
-// A normalized product catalog table. This handler is the full CRUD surface
-// for it (site/app reads plus admin edits/corrections) — nothing external
-// writes to this table on your behalf, so any data here comes in through
-// these routes.
-
-async function handleProducts(request, url, db, id) {
-  const method = request.method;
-
-  if (method === "GET") {
-    const category = url.searchParams.get("category") || "";
-    const route = url.searchParams.get("route") || "";
-    const manufacturerId = url.searchParams.get("manufacturer_id") || "";
-    const search = url.searchParams.get("search") || "";
-    const activeOnly = url.searchParams.get("include_inactive") !== "true";
-
-    const filters = {};
-    if (category) filters["category"] = `eq.${category}`;
-    if (route) filters["route"] = `eq.${route}`;
-    if (manufacturerId) filters["manufacturer_id"] = `eq.${manufacturerId}`;
-    if (search) filters["product_name"] = `ilike.*${escapeLikePattern(search)}*`;
-    if (activeOnly) filters["is_active"] = `eq.true`;
-
-    if (id) {
-      const { ok, status, body } = await db.select("products", {
-        filters: { id: `eq.${id}` },
-        limit: 1,
-      });
-      if (!ok) return err(body?.message || "Query failed", status);
-      if (!body || !body.length) return notFound("Product");
-      return success(body[0]);
-    }
-
-    return await paginatedList(db, "products", url, { filters });
-  }
-
-  if (method === "POST") {
-    const payload = await parseBody(request);
-    if (!payload) return err("Request body required");
-    const { ok, status, body } = await db.insert("products", payload);
-    if (!ok) return err(body?.message || "Insert failed", status);
-    return success(body, { message: "Product created" });
-  }
-
-  if (!id) return err("ID required for this method");
-
-  if (method === "PUT") {
-    const payload = await parseBody(request);
-    if (!payload) return err("Request body required");
-    const { ok, status, body } = await db.update("products", id, payload, "PUT");
-    if (!ok) return err(body?.message || "Update failed", status);
-    return success(body, { message: "Product replaced" });
-  }
-
-  if (method === "PATCH") {
-    const payload = await parseBody(request);
-    if (!payload) return err("Request body required");
-    const { ok, status, body } = await db.update("products", id, payload, "PATCH");
-    if (!ok) return err(body?.message || "Update failed", status);
-    return success(body, { message: "Product updated" });
-  }
-
-  if (method === "DELETE") {
-    // Soft delete by default — a catalog like this should almost never hard-delete;
-    // a product missing from a manufacturer's site today may reappear.
-    const { ok, status, body } = await db.update(
-      "products",
-      id,
-      { is_active: false },
-      "PATCH"
-    );
-    if (!ok) return err(body?.message || "Deactivate failed", status);
-    return success(body, { message: `Product ${id} deactivated` });
-  }
-
-  return err("Method not allowed", 405);
-}
-
-// ── /nutrition ────────────────────────────────────────────────────────────────
-// GET /nutrition?product_id=123
-
-async function handleNutrition(request, url, db) {
-  if (request.method !== "GET") return err("Only GET is supported", 405);
-
-  const productId = url.searchParams.get("product_id");
-  if (!productId) return err("product_id query param required");
-
-  const { ok, status, body } = await db.select("product_nutrition", {
-    filters: { product_id: `eq.${productId}` },
-    limit: 200,
-  });
-  if (!ok) return err(body?.message || "Query failed", status);
-  return success(body);
 }
 
 // ── /packaged/scan ────────────────────────────────────────────────────────────
@@ -3582,19 +3483,6 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "memory": {
       return await handleMemory(request, url, db, env, param || null, ctx);
-    }
-
-    case "products": {
-      if (param === "bulk") {
-        if (request.method !== "POST") return err("Method not allowed", 405);
-        return await handleBulkInsert(request, db, "products", { label: "products" });
-      }
-      const id = param || null;
-      return await handleProducts(request, url, db, id);
-    }
-
-    case "nutrition": {
-      return await handleNutrition(request, url, db);
     }
 
     case "favorites": {

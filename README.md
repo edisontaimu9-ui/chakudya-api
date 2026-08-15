@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.15.0`
+- **Current CNR version:** `1.16.0`
 
 ---
 
@@ -192,7 +192,7 @@ admin credential:
 - `reviewer` — can only reach the packaged review queue
   (`GET /packaged/pending`, `POST /packaged/:id/approve`,
   `POST /packaged/:id/reject`) plus all public/`GET` routes. Blocked from
-  everything else admin-gated — editing foods, deleting products, bulk
+  everything else admin-gated — editing foods, deleting packaged foods, bulk
   inserts, RAG ingest, memory consolidation, key management, etc. A
   reviewer key that leaks can't do much beyond what a reviewer is
   supposed to do in the first place.
@@ -286,8 +286,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 |---|---|---|
 | `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
-| `GET /products` (list) | ✅ | 15 min |
-| `GET /packaged*`, `/products/:id`, `/nutrition` | ❌ | — (change often or are low-traffic detail views) |
+| `GET /packaged*` | ❌ | — (changes often — community/OCR submissions) |
 | `POST /rag/retrieve`, `POST`/`GET /memory/recall` | ❌ (edge cache) — ✅ (separate KV query cache, see below) | — |
 | `POST /rag/ingest`, `POST /memory/write` | ❌ | — (writes; never cached) |
 
@@ -425,7 +424,7 @@ cost/noise concern — errors always log regardless of this setting.
 ## Pagination
 
 `GET /foods`, `/exchange`, `/renal`, `/formulas`,
-`/products`, and `/packaged` all support two pagination modes, chosen by
+and `/packaged` all support two pagination modes, chosen by
 whether a `cursor` param is present at all:
 
 - **Offset/limit (default)** — `?limit=50&offset=100`, unchanged from
@@ -453,8 +452,8 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 
 ## Bulk insert
 
-`POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-and `/products/bulk` *(all admin)* accept a batch
+`POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, and `/formulas/bulk`
+*(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
 
@@ -686,25 +685,6 @@ alter table packaged_foods add column if not exists ai_confidence numeric;
 alter table packaged_foods add column if not exists ocr_raw jsonb;
 ```
 
-### Products
-
-- `GET /products` — filters: `category`, `route`, `manufacturer_id`, `search`, `include_inactive`; supports `limit`, `offset`/`cursor`
-- `GET /products/:id`
-- `POST /products` *(admin)*
-- `POST /products/bulk` *(admin)*
-- `PUT /products/:id` *(admin)*
-- `PATCH /products/:id` *(admin)*
-- `DELETE /products/:id` *(admin — soft delete, sets `is_active: false`)*
-
-> `manufacturer_id` on `products` is a plain column, not backed by an
-> endpoint or (as of `manufacturers` being dropped) a foreign key — it
-> still filters `GET /products?manufacturer_id=...` correctly, it just
-> doesn't resolve to anything else in the API anymore.
-
-### Nutrition
-
-- `GET /nutrition?product_id=123`
-
 ### Favorites & History
 
 No user-account system exists in this API — same model as the memory
@@ -713,11 +693,10 @@ system's `session_id`: the client generates and keeps its own identifier
 on every call. These endpoints are public and rate-limited, not
 admin-gated, since there's no server-side account to authenticate against.
 
-Rows are **not** hydrated with the underlying food/product data — just the
+Rows are **not** hydrated with the underlying food data — just the
 `(user_id, resource_type, resource_id)` linkage plus a timestamp. Look up
-full details separately via the existing `GET /foods/:id`,
-`GET /packaged/:id`, or `GET /products/:id`. `resource_type` must be one
-of `food`, `packaged`, or `product`.
+full details separately via the existing `GET /foods/:id` or
+`GET /packaged/:id`. `resource_type` must be one of `food` or `packaged`.
 
 **`GET /favorites?user_id=...&resource_type=...`** *(optional filter)* —
 list a user's saved items, newest first. Supports `limit`/`offset`.
@@ -977,7 +956,7 @@ The zero-dependency JS client for this API now lives in its own repo:
 
 It ships browser (`<script>` tag / UMD), ESM, and CommonJS builds, plus
 TypeScript types, and wraps every route in this file — `foods`, `exchange`,
-`renal`, `formulas`, `products`, `packaged`, `nutrition`,
+`renal`, `formulas`, `packaged`,
 `rag`, and `memory`. See that repo's README for install and usage examples.
 
 ---
