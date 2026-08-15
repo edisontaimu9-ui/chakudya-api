@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.13.0`
+- **Current CNR version:** `1.14.0`
 
 ---
 
@@ -709,6 +709,67 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 
 - `GET /nutrition?product_id=123`
 
+### Favorites & History
+
+No user-account system exists in this API — same model as the memory
+system's `session_id`: the client generates and keeps its own identifier
+(a device id, an app-level user id, whatever) and passes it as `user_id`
+on every call. These endpoints are public and rate-limited, not
+admin-gated, since there's no server-side account to authenticate against.
+
+Rows are **not** hydrated with the underlying food/product data — just the
+`(user_id, resource_type, resource_id)` linkage plus a timestamp. Look up
+full details separately via the existing `GET /foods/:id`,
+`GET /packaged/:id`, or `GET /products/:id`. `resource_type` must be one
+of `food`, `packaged`, or `product`.
+
+**`GET /favorites?user_id=...&resource_type=...`** *(optional filter)* —
+list a user's saved items, newest first. Supports `limit`/`offset`.
+
+**`POST /favorites`** — idempotent; favoriting something already favorited
+just returns the existing row instead of erroring.
+
+```json
+{ "user_id": "device-abc123", "resource_type": "food", "resource_id": 7 }
+```
+
+**`DELETE /favorites`** — same body shape as `POST`; removes the matching
+row if it exists (no error if it doesn't — `removed: false` in the
+response instead).
+
+**`GET /history?user_id=...&resource_type=...`** — recently viewed, most
+recent first. Supports `limit`/`offset`.
+
+**`POST /history`** — logs a view. Upserts on
+`(user_id, resource_type, resource_id)`, so repeat views of the same item
+update its `viewed_at` in place rather than piling up duplicate rows — the
+list is already de-duplicated and correctly ordered with no client-side
+work. This is opt-in (the client calls it explicitly when it wants
+something logged) — nothing is tracked automatically.
+
+Requires these tables:
+
+```sql
+create table if not exists favorites (
+  id bigint generated always as identity primary key,
+  user_id text not null,
+  resource_type text not null,
+  resource_id bigint not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, resource_type, resource_id)
+);
+create index if not exists favorites_user_id_idx on favorites(user_id);
+
+create table if not exists view_history (
+  id bigint generated always as identity primary key,
+  user_id text not null,
+  resource_type text not null,
+  resource_id bigint not null,
+  viewed_at timestamptz not null default now(),
+  unique (user_id, resource_type, resource_id)
+);
+create index if not exists view_history_user_id_idx on view_history(user_id, viewed_at desc);
+```
 
 ### RAG
 

@@ -69,6 +69,16 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.14.0 changes:
+ *  - Added favorites (GET/POST/DELETE /favorites) and recently-viewed
+ *    history (GET/POST /history). No user-account system — same
+ *    client-supplied-identifier model as memory's session_id, here called
+ *    user_id. Public, rate-limited, not admin-gated. Rows are NOT
+ *    hydrated with the underlying food/product data — just the
+ *    (user_id, resource_type, resource_id) linkage; look up details via
+ *    the existing GET /foods|packaged|products/:id endpoints. Requires
+ *    two new tables — see the comment above FAVORITABLE_RESOURCE_TYPES.
+ *
  * v1.13.0 changes:
  *  - Added scoped roles for per-consumer API keys. POST /admin/keys now
  *    accepts an optional `role` ("admin", the default/full-access, or
@@ -168,7 +178,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.13.0";
+const CNR_VERSION = "1.14.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -458,6 +468,18 @@ function routePolicy(resource, method, param, action) {
     ["foods", "exchange", "renal", "formulas", "manufacturers", "products"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
+  const isFavorites = resource === "favorites";
+  const isHistory = resource === "history";
+
+  // Favorites/history — no admin gate (same public, self-declared-identity
+  // model as memory/write and memory/recall: the client supplies its own
+  // user_id, there's no server-side account system). Writes capped tighter
+  // than reads.
+  if (isFavorites || isHistory) {
+    return isWrite
+      ? { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
+      : { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
 
   // API key management — admin-gated regardless of method (including GET,
   // which would otherwise fall through to the public-reads default below).
@@ -675,6 +697,19 @@ function supabase(env) {
       return { ok: res.ok, status: res.status };
     },
 
+    /**
+     * Delete by arbitrary filter columns instead of a single primary key —
+     * used by favorites/history, which are identified by a
+     * (user_id, resource_type, resource_id) composite, not a numeric id
+     * the client would otherwise have to look up first.
+     */
+    async removeWhere(table, filters) {
+      const url = buildUrl(table, { filters });
+      const res = await fetch(url, { method: "DELETE", headers: { ...headers, Prefer: "return=representation" } });
+      const body = await res.json().catch(() => null);
+      return { ok: res.ok, status: res.status, body };
+    },
+
     async rpc(fnName, params = {}) {
       const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/rpc/${fnName}`;
       const res = await fetch(url, {
@@ -823,6 +858,158 @@ async function handleBulkInsert(request, db, table, { requiredField, label } = {
 
   const rows = Array.isArray(body) ? body : [];
   return success(rows, { message: `${rows.length} ${label} created`, count: rows.length });
+}
+
+// ─── FAVORITES / RECENTLY VIEWED ─────────────────────────────────────────────
+//
+// No user-account system exists in this API (same trust model as the
+// memory system's session_id: the client generates and keeps its own
+// identifier — a device id, an app-level user id, whatever — and passes
+// it on every call). `user_id` here plays exactly that role.
+//
+// Two tables, deliberately NOT hydrated with the underlying food/product
+// row — these endpoints return just the (user_id, resource_type,
+// resource_id) linkage plus a timestamp. The client already has
+// GET /foods/:id, /packaged/:id, /products/:id to look up full details;
+// duplicating that data here would just be another place for it to go
+// stale.
+//
+// Requires these tables:
+//   create table if not exists favorites (
+//     id bigint generated always as identity primary key,
+//     user_id text not null,
+//     resource_type text not null,
+//     resource_id bigint not null,
+//     created_at timestamptz not null default now(),
+//     unique (user_id, resource_type, resource_id)
+//   );
+//   create index if not exists favorites_user_id_idx on favorites(user_id);
+//
+//   create table if not exists view_history (
+//     id bigint generated always as identity primary key,
+//     user_id text not null,
+//     resource_type text not null,
+//     resource_id bigint not null,
+//     viewed_at timestamptz not null default now(),
+//     unique (user_id, resource_type, resource_id)
+//   );
+//   create index if not exists view_history_user_id_idx on view_history(user_id, viewed_at desc);
+
+const FAVORITABLE_RESOURCE_TYPES = ["food", "packaged", "product"];
+
+function validateFavoritePayload(payload) {
+  const userId = (payload?.user_id || "").trim();
+  const resourceType = (payload?.resource_type || "").trim();
+  const resourceId = payload?.resource_id;
+
+  if (!userId) return { error: "'user_id' is required" };
+  if (!FAVORITABLE_RESOURCE_TYPES.includes(resourceType)) {
+    return { error: `'resource_type' must be one of: ${FAVORITABLE_RESOURCE_TYPES.join(", ")}` };
+  }
+  if (resourceId === undefined || resourceId === null || resourceId === "") {
+    return { error: "'resource_id' is required" };
+  }
+  return { userId, resourceType, resourceId };
+}
+
+/** GET/POST /favorites, DELETE /favorites — save/list/remove a food-like resource for a user_id. */
+async function handleFavorites(request, url, db) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const userId = url.searchParams.get("user_id");
+    if (!userId) return err("'user_id' query param is required");
+    const resourceType = url.searchParams.get("resource_type") || "";
+
+    const filters = { user_id: `eq.${userId}` };
+    if (resourceType) filters["resource_type"] = `eq.${resourceType}`;
+
+    return await paginatedList(db, "favorites", url, { filters, order: "created_at.desc" });
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    const parsed = validateFavoritePayload(payload);
+    if (parsed.error) return err(parsed.error);
+
+    // Idempotent: favoriting something already favorited isn't an error —
+    // upsert on the (user_id, resource_type, resource_id) unique
+    // constraint just returns the existing row unchanged.
+    const { ok, status, body } = await db.upsert(
+      "favorites",
+      { user_id: parsed.userId, resource_type: parsed.resourceType, resource_id: parsed.resourceId },
+      "user_id,resource_type,resource_id"
+    );
+    if (!ok) return err(body?.message || "Favorite failed", status);
+    return success(body, { message: "Saved to favorites" });
+  }
+
+  if (method === "DELETE") {
+    const payload = await parseBody(request);
+    const parsed = validateFavoritePayload(payload);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.removeWhere("favorites", {
+      user_id: `eq.${parsed.userId}`,
+      resource_type: `eq.${parsed.resourceType}`,
+      resource_id: `eq.${parsed.resourceId}`,
+    });
+    if (!ok) return err(body?.message || "Remove failed", status);
+    const removed = Array.isArray(body) ? body.length : 0;
+    return success(null, { message: removed ? "Removed from favorites" : "Not in favorites (nothing to remove)", removed: !!removed });
+  }
+
+  return err("Method not allowed", 405);
+}
+
+/** GET/POST /history — log or list "recently viewed" for a user_id (upserts viewed_at, no duplicate rows per resource). */
+async function handleHistory(request, url, db) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const userId = url.searchParams.get("user_id");
+    if (!userId) return err("'user_id' query param is required");
+    const resourceType = url.searchParams.get("resource_type") || "";
+
+    const filters = { user_id: `eq.${userId}` };
+    if (resourceType) filters["resource_type"] = `eq.${resourceType}`;
+
+    const limit = limitParam(url);
+    const offset = intParam(url, "offset", 0);
+    const { ok, status, body, total } = await db.select("view_history", {
+      filters,
+      limit,
+      offset,
+      order: "viewed_at.desc",
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return listSuccess(body, { count: total, limit, offset });
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    const parsed = validateFavoritePayload(payload);
+    if (parsed.error) return err(parsed.error);
+
+    // Upsert, not insert — repeat views of the same resource update
+    // viewed_at in place rather than piling up duplicate rows, so
+    // GET /history?user_id=... is already a clean "recently viewed" list
+    // sorted by viewed_at, no client-side de-duping needed.
+    const { ok, status, body } = await db.upsert(
+      "view_history",
+      {
+        user_id: parsed.userId,
+        resource_type: parsed.resourceType,
+        resource_id: parsed.resourceId,
+        viewed_at: new Date().toISOString(),
+      },
+      "user_id,resource_type,resource_id"
+    );
+    if (!ok) return err(body?.message || "History log failed", status);
+    return success(body, { message: "Logged" });
+  }
+
+  return err("Method not allowed", 405);
 }
 
 /**
@@ -2493,6 +2680,15 @@ function handleRoot(env) {
         "DELETE /products/:id       (admin — soft delete, sets is_active=false)",
       ],
       nutrition: ["GET /nutrition?product_id=123"],
+      favorites: [
+        "GET    /favorites?user_id=...&resource_type=...   (public, rate-limited)",
+        "POST   /favorites   (public, rate-limited) → body {user_id, resource_type, resource_id}, idempotent",
+        "DELETE /favorites   (public, rate-limited) → body {user_id, resource_type, resource_id}",
+      ],
+      history: [
+        "GET  /history?user_id=...&resource_type=...   (public, rate-limited) → recently viewed, viewed_at desc",
+        "POST /history   (public, rate-limited) → body {user_id, resource_type, resource_id}, upserts viewed_at",
+      ],
     },
   });
 }
@@ -3444,6 +3640,14 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "nutrition": {
       return await handleNutrition(request, url, db);
+    }
+
+    case "favorites": {
+      return await handleFavorites(request, url, db);
+    }
+
+    case "history": {
+      return await handleHistory(request, url, db);
     }
 
     default:

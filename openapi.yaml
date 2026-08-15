@@ -16,7 +16,7 @@ info:
     illustrative properties) rather than exhaustively modeling every
     column — see the README for the full, current column list per table,
     since that evolves independently of this spec.
-  version: "1.13.0"
+  version: "1.14.0"
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -43,6 +43,8 @@ tags:
   - name: Manufacturers
   - name: Products
   - name: Nutrition
+  - name: Favorites
+  - name: History
   - name: RAG
   - name: Memory
 
@@ -883,6 +885,81 @@ paths:
         "200": { $ref: "#/components/responses/MutationSuccess" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /favorites:
+    get:
+      tags: [Favorites]
+      summary: List a user's favorites (public, rate-limited)
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/ResourceType"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [Favorites]
+      summary: Save a favorite (public, rate-limited, idempotent)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FavoriteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      tags: [Favorites]
+      summary: Remove a favorite (public, rate-limited)
+      description: No error if the favorite doesn't exist — `removed:false` in the response instead.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FavoriteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /history:
+    get:
+      tags: [History]
+      summary: Recently viewed, most recent first (public, rate-limited)
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/ResourceType"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      tags: [History]
+      summary: Log a view (public, rate-limited, opt-in)
+      description: >
+        Upserts on (user_id, resource_type, resource_id) — repeat views
+        update viewed_at in place rather than creating duplicate rows.
+        Nothing is tracked automatically; the client calls this explicitly.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FavoriteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/MutationSuccess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /rag/retrieve:
     post:
       tags: [RAG]
@@ -1096,6 +1173,16 @@ components:
         README § Pagination. Response then has has_more/next_cursor
         instead of count/offset, and is always ordered by id.asc.
       schema: { type: string }
+    UserId:
+      name: user_id
+      in: query
+      required: true
+      description: Client-supplied identifier — no server-side account system exists.
+      schema: { type: string }
+    ResourceType:
+      name: resource_type
+      in: query
+      schema: { type: string, enum: [food, packaged, product] }
 
   responses:
     BadRequest:
@@ -1199,6 +1286,14 @@ components:
           minItems: 1
           maxItems: 500
           items: { type: object, additionalProperties: true }
+
+    FavoriteRequest:
+      type: object
+      required: [user_id, resource_type, resource_id]
+      properties:
+        user_id: { type: string, example: "device-abc123" }
+        resource_type: { type: string, enum: [food, packaged, product] }
+        resource_id: { type: integer }
 
     HealthStatus:
       type: object
