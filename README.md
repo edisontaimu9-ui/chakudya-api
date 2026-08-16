@@ -24,7 +24,7 @@ A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data,
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.16.0`
+- **Current CNR version:** `1.17.0`
 
 ---
 
@@ -362,28 +362,33 @@ and `src/index.js` are the source of truth.
 
 ### Health
 
-- `GET /health` *(public, rate-limited)* — pings Supabase, Cohere, and Groq
-  in parallel and reports per-service status plus an overall
-  `healthy`/`degraded` verdict. Useful for quickly narrowing down which
-  upstream is the cause when a route starts failing, instead of guessing
-  from a generic `500`.
+- `GET /health` *(public, rate-limited)* — pings Supabase, Cohere, Groq,
+  and Open Food Facts in parallel and reports per-service status plus an
+  overall `healthy`/`degraded` verdict. Useful for quickly narrowing down
+  which upstream is the cause when a route starts failing, instead of
+  guessing from a generic `500`.
 
-Optional integrations (USDA FDC, FatSecret, the rate-limit/query-cache KV)
-are reported as `configured`/`bound` or not, without a network call —
-they're not pinged and don't affect the overall verdict, since the rest of
-the API already degrades gracefully without them.
+`open_food_facts` is live-pinged too (it's free/keyless — no
+"configured" state to report, unlike the two below) since it's an
+actively-used dependency for barcode lookups in `GET /foods/lookup` and
+`POST /packaged/scan`. Optional integrations (USDA FDC, FatSecret, the
+rate-limit/query-cache KV) are reported as `configured`/`bound` or not,
+without a network call. None of these four affect the overall verdict —
+they're visibility-only, since the rest of the API already degrades
+gracefully without them.
 
 Response:
 
 ```json
 {
   "status": "healthy",
-  "version": "1.8.0",
+  "version": "1.17.0",
   "checked_at": "2026-08-13T22:40:00.000Z",
   "services": {
     "supabase": { "status": "ok" },
     "cohere": { "status": "ok" },
     "groq": { "status": "error", "detail": "HTTP 401" },
+    "open_food_facts": { "status": "ok" },
     "usda_fdc": { "status": "configured" },
     "fatsecret": { "status": "not_configured" },
     "rate_limit_kv": { "status": "bound" }

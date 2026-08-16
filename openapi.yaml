@@ -16,7 +16,7 @@ info:
     illustrative properties) rather than exhaustively modeling every
     column — see the README for the full, current column list per table,
     since that evolves independently of this spec.
-  version: "1.16.0"
+  version: "1.17.0"
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -66,11 +66,12 @@ paths:
       tags: [Health]
       summary: Upstream service health check
       description: >
-        Pings Supabase, Cohere, and Groq in parallel. Reports per-service
-        status plus an overall healthy/degraded verdict. Optional
-        integrations (USDA FDC, FatSecret, the rate-limit/query-cache KV)
-        are reported as configured/bound without a network call and don't
-        affect the overall verdict.
+        Pings Supabase, Cohere, Groq, and Open Food Facts in parallel.
+        Reports per-service status plus an overall healthy/degraded
+        verdict. Open Food Facts is live-pinged too (free/keyless) but,
+        like USDA FDC/FatSecret/the rate-limit KV (reported as
+        configured/bound without a network call), it's visibility-only
+        and doesn't affect the overall verdict.
       security: []
       responses:
         "200":
@@ -1133,6 +1134,7 @@ components:
             supabase: { $ref: "#/components/schemas/ServiceCheck" }
             cohere: { $ref: "#/components/schemas/ServiceCheck" }
             groq: { $ref: "#/components/schemas/ServiceCheck" }
+            open_food_facts: { $ref: "#/components/schemas/ServiceCheck" }
             usda_fdc: { $ref: "#/components/schemas/ServiceCheck" }
             fatsecret: { $ref: "#/components/schemas/ServiceCheck" }
             rate_limit_kv: { $ref: "#/components/schemas/ServiceCheck" }

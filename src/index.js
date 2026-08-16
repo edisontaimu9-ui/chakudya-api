@@ -69,6 +69,17 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.17.0 changes:
+ *  - GET /health now also pings Open Food Facts (used for barcode lookups
+ *    in /foods/lookup and /packaged/scan) — it was a real, actively-used
+ *    dependency that was missing from the health check entirely. Unlike
+ *    usda_fdc/fatsecret (which just report configured/not_configured,
+ *    since checking them properly needs a signed request or an API key
+ *    that may not be set), Open Food Facts is free/keyless, so it gets an
+ *    actual live ping instead. Visibility-only, like the other two
+ *    optional integrations — doesn't affect the overall healthy/degraded
+ *    verdict. See checkOpenFoodFacts().
+ *
  * v1.16.0 changes:
  *  - Removed /products entirely (GET/GET-by-id/POST/PUT/PATCH/DELETE,
  *    plus /products/bulk) and /nutrition (which only ever queried
@@ -201,7 +212,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.16.0";
+const CNR_VERSION = "1.17.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -2513,10 +2524,13 @@ async function handleMemory(request, url, db, env, param, ctx) {
 // Cohere, Groq) and reports each one's status plus an overall
 // healthy/degraded verdict. Meant to answer "which upstream broke?" in one
 // request instead of guessing from a generic 500 on whatever route failed.
-// Optional integrations (USDA FDC, FatSecret, the rate-limit/query-cache KV)
-// are reported as configured/bound or not, without a network call — they
-// don't affect the overall verdict since the rest of the API works without
-// them (see the "Optional" env var list in the README).
+// Open Food Facts is also live-pinged (used for barcode lookups) since it's
+// free/keyless and there's nothing to "configure" — but like the two below,
+// it's visibility-only and doesn't affect the overall verdict. USDA FDC,
+// FatSecret, and the rate-limit/query-cache KV are reported as
+// configured/bound or not, without a network call — none of the four
+// (Open Food Facts included) affect the overall verdict since the rest of
+// the API works without them (see the "Optional" env var list in the README).
 
 /** Fetch with a timeout, so one hung upstream can't hang the whole health check. */
 async function pingWithTimeout(url, options = {}, timeoutMs = 5000) {
@@ -2559,19 +2573,34 @@ async function checkGroq(env) {
   return res.ok ? { status: "ok" } : { status: "error", detail: res.error || `HTTP ${res.httpStatus}` };
 }
 
+async function checkOpenFoodFacts() {
+  // Open Food Facts is free and keyless (no env var/API key — see
+  // fetchFromOpenFoodFacts), so unlike usda_fdc/fatsecret below there's no
+  // "configured" flag to report; this is an actual live ping instead.
+  // A barcode that's very unlikely to exist still returns HTTP 200 with a
+  // "not found" body — that's enough to confirm the service itself is up,
+  // we don't need real product data for a liveness check.
+  const res = await pingWithTimeout("https://world.openfoodfacts.org/api/v2/product/0000000000000.json", {
+    headers: { "User-Agent": "ChakudyaAPI/1.0 (chakudya-api.edisontaimu9.workers.dev)" },
+  });
+  return res.ok ? { status: "ok" } : { status: "error", detail: res.error || `HTTP ${res.httpStatus}` };
+}
+
 async function handleHealth(request, env) {
   if (request.method !== "GET") return err("Method not allowed", 405);
 
-  const [supabase_, cohere_, groq_] = await Promise.all([
+  const [supabase_, cohere_, groq_, openFoodFacts_] = await Promise.all([
     checkSupabase(env),
     checkCohere(env),
     checkGroq(env),
+    checkOpenFoodFacts(),
   ]);
 
   const services = {
     supabase: supabase_,
     cohere: cohere_,
     groq: groq_,
+    open_food_facts: openFoodFacts_,
     // Optional integrations — configuration/binding presence only, no
     // network call (FatSecret in particular needs a signed OAuth request,
     // not a simple ping; not worth the complexity for a health check).
@@ -2582,9 +2611,12 @@ async function handleHealth(request, env) {
     rate_limit_kv: { status: env.RATE_LIMIT_KV ? "bound" : "not_bound" },
   };
 
-  // Only the three required upstreams affect the overall verdict — the
-  // optional ones are visibility-only, matching how the rest of the API
-  // already treats them (it degrades gracefully without them, see README).
+  // Open Food Facts is a free public dependency (used for barcode lookups
+  // in /foods/lookup and /packaged/scan's barcode field) but not one of
+  // this Worker's *required* upstreams — the barcode-lookup path degrades
+  // gracefully (falls through the cascade) without it, same as
+  // usda_fdc/fatsecret already do. So it's reported for visibility but,
+  // like those two, doesn't flip the overall healthy/degraded verdict.
   const degraded = [supabase_, cohere_, groq_].some((s) => s.status === "error");
 
   return json(
@@ -2616,7 +2648,7 @@ function handleRoot(env) {
     kv_bound: !!env?.RATE_LIMIT_KV,
     endpoints: {
       health: [
-        "GET  /health           (public, rate-limited) → pings Supabase/Cohere/Groq in parallel, reports per-service status + overall healthy/degraded",
+        "GET  /health           (public, rate-limited) → pings Supabase/Cohere/Groq/Open Food Facts in parallel, reports per-service status + overall healthy/degraded",
       ],
       admin_keys: [
         "GET    /admin/keys       (root key only) → list keys (never returns the raw key or its hash)",
