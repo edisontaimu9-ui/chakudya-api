@@ -69,6 +69,22 @@
  *  - Requires the `assistant_memory` table + `match_memory` /
  *    `sessions_needing_consolidation` RPC functions — see sql/memory_schema.sql
  *
+ * v1.18.0 changes:
+ *  - FatSecret Premier features. The consumer key was upgraded to Premier
+ *    Free tier, unlocking three previously-inaccessible methods:
+ *     - Barcode lookup (food.find_id_for_barcode.v2) — added as a
+ *       fallback in the /foods/lookup barcode cascade, after Open Food
+ *       Facts. See fetchFromFatSecretBarcode() and pickFatSecretServing().
+ *     - GET /foods/autocomplete?q=... (public, rate-limited) — wraps
+ *       foods.autocomplete.v2.
+ *     - GET /foods/categories (public, rate-limited, cached 24h) — wraps
+ *       food_categories.get.v2.
+ *    Both new endpoints return null (via their fetch helpers) rather than
+ *    an error when FATSECRET_CONSUMER_KEY/SECRET aren't set, surfaced as
+ *    a 503 — same "not configured, not broken" convention used elsewhere.
+ *    Also documented /foods/lookup in the GET / endpoint map, which had
+ *    been missing from it since it was added.
+ *
  * v1.17.0 changes:
  *  - GET /health now also pings Open Food Facts (used for barcode lookups
  *    in /foods/lookup and /packaged/scan) — it was a real, actively-used
@@ -212,7 +228,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.17.0";
+const CNR_VERSION = "1.18.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -375,6 +391,12 @@ async function isAdmin(request, env, db, ctx) {
  *  - rag/memory are session- and query-specific — never cached.
  */
 function cachePolicy(resource, param) {
+  if (resource === "foods" && param === "categories") {
+    return { ttl: 86400 }; // 24 hours — near-static reference data
+  }
+  if (resource === "foods" && param === "autocomplete") {
+    return { ttl: 3600 }; // 1 hour — repeat partial-query lookups are common while typing
+  }
   if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data
   }
@@ -485,6 +507,8 @@ function routePolicy(resource, method, param, action) {
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
   const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
+  const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
+  const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
@@ -530,6 +554,19 @@ function routePolicy(resource, method, param, action) {
   // but capped to protect those quotas, separate from plain local reads.
   if (isFoodsLookup) {
     return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Autocomplete — a type-ahead UX fires one request per keystroke pause,
+  // so this needs more headroom than a single lookup, but each hit still
+  // costs a FatSecret Premier call, hence not as generous as plain reads.
+  if (isFoodsAutocomplete) {
+    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Categories — near-static reference data, heavily cached at the edge
+  // (see cachePolicy), so the rate limit mostly just protects cache misses.
+  if (isFoodsCategories) {
+    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
 
   // Community submissions: public, but tightly rate-limited to deter spam.
@@ -1314,6 +1351,82 @@ async function signFatSecretRequest(params, consumerKey, consumerSecret) {
   return finalUrl.toString();
 }
 
+/**
+ * Picks which FatSecret `serving` element to use as the per-100g/ml basis.
+ * Prefers an exact "100 g"/"100 ml" serving if the response includes one
+ * (common — food.find_id_for_barcode.v2 often derives one); otherwise
+ * falls back to the flagged default serving (or the first one) and
+ * returns a scale factor to bring it to a per-100 basis.
+ */
+function pickFatSecretServing(servings) {
+  const list = Array.isArray(servings) ? servings : servings ? [servings] : [];
+  if (!list.length) return null;
+
+  const isGramsOrMl = (s) => s.metric_serving_unit === "g" || s.metric_serving_unit === "ml";
+
+  const per100 = list.find((s) => isGramsOrMl(s) && parseFloat(s.metric_serving_amount) === 100);
+  if (per100) return { serving: per100, scale: 1 };
+
+  const chosen = list.find((s) => String(s.is_default) === "1") || list[0];
+  const amount = parseFloat(chosen?.metric_serving_amount);
+  if (!chosen || !amount || !isGramsOrMl(chosen)) return null;
+  return { serving: chosen, scale: 100 / amount };
+}
+
+/**
+ * Barcode lookup via FatSecret's Premier-exclusive food.find_id_for_barcode.v2
+ * — returns the full food object (name, brand, servings with nutrition) in
+ * one call, no follow-up food.get needed. Requires the "barcode" scope,
+ * which comes with a Premier/Premier Free plan (see the README's FatSecret
+ * setup note) — a Basic/free-tier key gets error 14 "Missing scope" and
+ * this just returns null, same as any other lookup miss.
+ */
+async function fetchFromFatSecretBarcode(barcode, env) {
+  if (!barcode || !env.FATSECRET_CONSUMER_KEY || !env.FATSECRET_CONSUMER_SECRET) return null;
+
+  // FatSecret requires GTIN-13 — left-pad UPC-A (12 digits) / EAN-8 (8
+  // digits) with zeros. Strip anything non-digit first (defensive).
+  const gtin13 = barcode.replace(/\D/g, "").padStart(13, "0").slice(-13);
+
+  const signedUrl = await signFatSecretRequest(
+    { method: "food.find_id_for_barcode.v2", barcode: gtin13, flag_default_serving: "true", format: "json" },
+    env.FATSECRET_CONSUMER_KEY,
+    env.FATSECRET_CONSUMER_SECRET
+  );
+
+  const res = await fetch(signedUrl);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  // Error 211 = "No food item detected" for this barcode; missing scope
+  // (14) or any other error also just falls through to the next source.
+  const food = data?.food;
+  if (!food || data?.error) return null;
+
+  const picked = pickFatSecretServing(food.servings?.serving);
+  if (!picked) return null;
+  const { serving, scale } = picked;
+
+  const scaleVal = (n) => (n == null || n === "" ? null : Math.round(parseFloat(n) * scale * 100) / 100);
+
+  return normalizeFood("fatsecret", {
+    food_name: food.food_name,
+    energy_kcal: scaleVal(serving.calories),
+    protein_g: scaleVal(serving.protein),
+    fat_g: scaleVal(serving.fat),
+    carbs_g: scaleVal(serving.carbohydrate),
+    barcode,
+    external_id: food.food_id,
+    raw_data: {
+      food_id: food.food_id,
+      food_type: food.food_type ?? null,
+      brand_name: food.brand_name ?? null,
+      food_url: food.food_url ?? null,
+      serving_basis: `${serving.metric_serving_amount}${serving.metric_serving_unit}`,
+      scaled_to_100: scale !== 1,
+    },
+  });
+}
+
 async function fetchFromFatSecret(query, env) {
   // Uses OAuth 1.0 (2-legged, HMAC-SHA1) — no IP whitelist, no token
   // exchange round-trip. The request is signed and sent in one shot.
@@ -1388,6 +1501,87 @@ async function fetchFromFatSecret(query, env) {
       scaled_to_100: basis.amount !== 100,
     },
   });
+}
+
+/**
+ * FatSecret's Premier-exclusive foods.autocomplete.v2 — up to `maxResults`
+ * (max 10, FatSecret-enforced) suggested search expressions for a partial
+ * query, e.g. "chic" -> ["chicken", "chicken breast", ...]. Returns null
+ * (not []) when the credentials aren't configured, so callers can tell
+ * "not set up" apart from "no suggestions found".
+ */
+async function fetchFatSecretAutocomplete(expression, maxResults, env) {
+  if (!env.FATSECRET_CONSUMER_KEY || !env.FATSECRET_CONSUMER_SECRET) return null;
+
+  const signedUrl = await signFatSecretRequest(
+    { method: "foods.autocomplete.v2", expression, max_results: String(maxResults), format: "json" },
+    env.FATSECRET_CONSUMER_KEY,
+    env.FATSECRET_CONSUMER_SECRET
+  );
+
+  const res = await fetch(signedUrl);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => null);
+  // FatSecret's JSON quirk: a single result comes back as a bare string,
+  // not a 1-element array.
+  const raw = data?.suggestions?.suggestion;
+  if (raw == null) return [];
+  return Array.isArray(raw) ? raw : [raw];
+}
+
+/**
+ * FatSecret's Premier-exclusive food_categories.get.v2 — the full,
+ * near-static list of food categories (id/name/description). Same
+ * null-vs-empty-array convention as fetchFatSecretAutocomplete above.
+ */
+async function fetchFatSecretCategories(env) {
+  if (!env.FATSECRET_CONSUMER_KEY || !env.FATSECRET_CONSUMER_SECRET) return null;
+
+  const signedUrl = await signFatSecretRequest(
+    { method: "food_categories.get.v2", format: "json" },
+    env.FATSECRET_CONSUMER_KEY,
+    env.FATSECRET_CONSUMER_SECRET
+  );
+
+  const res = await fetch(signedUrl);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => null);
+  const raw = data?.food_categories?.food_category;
+  if (raw == null) return [];
+  const list = Array.isArray(raw) ? raw : [raw];
+
+  return list.map((c) => ({
+    id: c.food_category_id,
+    name: c.food_category_name,
+    description: c.food_category_description ?? null,
+  }));
+}
+
+// GET /foods/autocomplete?q=...&max_results=...
+async function handleFoodsAutocomplete(request, url, env) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const expression = (url.searchParams.get("q") || url.searchParams.get("expression") || "").trim();
+  if (!expression) return err("'q' query param is required");
+
+  const maxResults = Math.min(Math.max(intParam(url, "max_results", 4), 1), 10);
+
+  const suggestions = await fetchFatSecretAutocomplete(expression, maxResults, env);
+  if (suggestions === null) {
+    return err("Autocomplete isn't configured on this deployment (FatSecret credentials missing)", 503);
+  }
+  return success(suggestions);
+}
+
+// GET /foods/categories
+async function handleFoodsCategories(request, env) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const categories = await fetchFatSecretCategories(env);
+  if (categories === null) {
+    return err("Food categories aren't configured on this deployment (FatSecret credentials missing)", 503);
+  }
+  return success(categories);
 }
 
 // ─── GROQ VISION OCR (packaged food label extraction) ────────────────────────
@@ -1692,10 +1886,13 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
     return { food: cached.body[0], source: cached.body[0].source, cached: true };
   }
 
-  // 3. External APIs, in order. Barcode lookups go to Open Food Facts first
-  // since that's what it's built for; name searches go USDA -> FatSecret.
+  // 3. External APIs, in order. Barcode lookups try Open Food Facts first
+  // (better community/international coverage), then FatSecret's
+  // Premier-exclusive barcode lookup as a fallback; name searches go
+  // USDA -> FatSecret.
   let result = null;
   if (barcode) result = await fetchFromOpenFoodFacts(barcode, env);
+  if (!result && barcode) result = await fetchFromFatSecretBarcode(barcode, env);
   if (!result && query) result = await fetchFromUSDA(query, env);
   if (!result && query) result = await fetchFromFatSecret(query, env);
 
@@ -2658,6 +2855,9 @@ function handleRoot(env) {
       foods: [
         "GET  /foods",
         "GET  /foods/:id",
+        "GET  /foods/lookup?q=...|barcode=...   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret",
+        "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
+        "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "POST /foods            (admin)",
         "POST /foods/bulk       (admin) → body {items:[...]}, max 500, batch insert in one request",
         "PUT  /foods/:id        (admin)",
@@ -3455,6 +3655,12 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
     case "foods": {
       if (param === "lookup") {
         return await handleFoodsLookup(request, url, db, env);
+      }
+      if (param === "autocomplete") {
+        return await handleFoodsAutocomplete(request, url, env);
+      }
+      if (param === "categories") {
+        return await handleFoodsCategories(request, env);
       }
       if (param === "bulk") {
         if (request.method !== "POST") return err("Method not allowed", 405);

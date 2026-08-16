@@ -16,7 +16,7 @@ info:
     illustrative properties) rather than exhaustively modeling every
     column — see the README for the full, current column list per table,
     since that evolves independently of this spec.
-  version: "1.17.0"
+  version: "1.18.0"
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -222,22 +222,95 @@ paths:
       summary: External food lookup cascade (public, rate-limited)
       description: >
         Local cache → USDA FDC (name search) → Open Food Facts (barcode) →
-        FatSecret (name search). First external hit is cached into
-        `external_foods_cache` so subsequent lookups skip upstream calls.
+        FatSecret barcode lookup (Premier-exclusive) → FatSecret (name
+        search). First external hit is cached into external_foods_cache so
+        subsequent lookups skip upstream calls.
       security: []
       parameters:
-        - name: search
+        - name: q
           in: query
           schema: { type: string }
           description: Name search (tries USDA, then FatSecret).
         - name: barcode
           in: query
           schema: { type: string }
-          description: Barcode lookup (Open Food Facts).
+          description: Barcode lookup (Open Food Facts, then FatSecret).
         - $ref: "#/components/parameters/Offset"
       responses:
         "200": { $ref: "#/components/responses/ListOrCursor" }
         "429": { $ref: "#/components/responses/RateLimited" }
+
+  /foods/autocomplete:
+    get:
+      tags: [Foods]
+      summary: Search-as-you-type suggestions (public, rate-limited)
+      description: >
+        Wraps FatSecret's Premier-exclusive foods.autocomplete.v2. Requires
+        FATSECRET_CONSUMER_KEY/SECRET on a Premier or Premier Free plan —
+        returns 503 if not configured on this deployment.
+      security: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+          description: Partial search expression, e.g. "chic".
+        - name: max_results
+          in: query
+          schema: { type: integer, default: 4, maximum: 10 }
+      responses:
+        "200":
+          description: Suggested search expressions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: FatSecret credentials not configured on this deployment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /foods/categories:
+    get:
+      tags: [Foods]
+      summary: Food category list (public, rate-limited, cached 24h)
+      description: >
+        Wraps FatSecret's Premier-exclusive food_categories.get.v2 —
+        near-static reference data. Requires FATSECRET_CONSUMER_KEY/SECRET
+        on a Premier or Premier Free plan — returns 503 if not configured
+        on this deployment.
+      security: []
+      responses:
+        "200":
+          description: Food categories
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            name: { type: string }
+                            description: { type: string, nullable: true }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: FatSecret credentials not configured on this deployment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /foods/{id}:
     get:
