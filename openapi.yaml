@@ -2,20 +2,14 @@ openapi: 3.0.3
 info:
   title: Chakudya API (CNR — Central Nutrition Repository)
   description: >
-    Malawi-focused nutrition data API: local food composition tables
-    (foods, exchange lists, renal foods, enteral formulas), packaged/branded
-    products with a community + OCR submission and admin review pipeline,
-    an external lookup cascade (USDA FDC / Open Food Facts / FatSecret), a
-    RAG knowledge base with a search orchestrator (POST /rag/ask), and a
-    per-session clinical memory system (write → consolidate → recall).
-
-    This file is generated from the README and source (`src/index.js`) and
-    covers every route the Worker actually serves. Row shapes for the
-    nutrition tables (foods, packaged_foods, exchange_lists, etc.) are
-    intentionally loose (`additionalProperties: true` with a few
-    illustrative properties) rather than exhaustively modeling every
-    column — see the README for the full, current column list per table,
-    since that evolves independently of this spec.
+    Chakudya is a Malawi focused nutrition data and intelligence API. It
+    provides structured, searchable nutrition information for health
+    applications, researchers, students, dietitians, and developers
+    building tools for clinical or public health nutrition work. The API
+    combines local food composition data with international sources such
+    as USDA FoodData Central, Open Food Facts, and FatSecret, and adds
+    retrieval augmented question answering and session memory for AI
+    assisted applications.
   version: "1.18.0"
   contact:
     name: Edison Taimu

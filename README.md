@@ -1,20 +1,39 @@
 # Chakudya Nutrition Registry (CNR) 🌽
 
-**Malawi’s first open Food & Nutrition Database**
+**Malawi's first open Food & Nutrition Database**
 
-A Cloudflare Worker API backed by Supabase for Malawian food and nutrition data, including semantic RAG search support.
+Chakudya is a Malawi focused nutrition data and intelligence API. It
+provides structured, searchable nutrition information for health
+applications, researchers, students, dietitians, and developers building
+tools for clinical or public health nutrition work. It's a Cloudflare
+Worker backed by Supabase, and includes retrieval augmented (RAG) search
+for AI assisted nutrition tools.
 
 ---
 
-## What’s in CNR
+## What the API provides
 
-- Food composition data (`/foods`)
-- Exchange lists (`/exchange`)
-- Renal food entries (`/renal`)
-- Enteral formulas (`/formulas`)
-- Packaged foods + community submission flow (`/packaged`, `/packaged/submit`)
-- RAG semantic retrieval and ingestion (`/rag/retrieve`, `/rag/ingest`)
-- Session memory for Oasis AI — Write/Consolidate/Recall (`/memory/write`, `/memory/recall`, `/memory/consolidate`)
+- **Malawian food composition data** (`/foods`). Locally relevant foods and their nutrient values.
+- **Food exchange systems** (`/exchange`). Standard and therapeutic exchange lists.
+- **Renal nutrition data** (`/renal`). Foods and nutrition information relevant to renal dietary planning.
+- **Enteral formulas** (`/formulas`). Structured information for clinical nutrition applications.
+- **Packaged and branded foods** (`/packaged`). Barcode lookup, community product submission, OCR assisted data capture, and an admin review workflow.
+- **External food lookup** (`/foods/lookup`, `/foods/autocomplete`, `/foods/categories`). Additional food information from USDA FoodData Central, Open Food Facts, and FatSecret when a food isn't in the local database.
+- **RAG powered nutrition knowledge** (`/rag/ask`, `/rag/retrieve`). Retrieve relevant knowledge or ask a question directly.
+- **Session memory** (`/memory/write`, `/memory/recall`, `/memory/consolidate`). Store, consolidate, and recall contextual information for AI assisted applications like Oasis.
+
+## Who it's for
+
+Chakudya can be used to build:
+
+- Nutrition and dietetics applications
+- Clinical decision support tools
+- Meal planning systems
+- Fitness and health applications
+- Food and barcode scanners
+- Nutrition research tools
+- AI and RAG powered nutrition assistants
+- Educational applications
 
 ---
 
@@ -356,7 +375,11 @@ The full list below is also available as a machine-readable
 [OpenAPI 3.0.3 spec](./openapi.yaml) — import it into Swagger UI, Postman,
 or an SDK generator. It's a static file (not served by the Worker) kept in
 sync by hand alongside this section; if they ever disagree, this README
-and `src/index.js` are the source of truth.
+and `src/index.js` are the source of truth. Row shapes for the nutrition
+tables (`foods`, `packaged_foods`, `exchange_lists`, and so on) are kept
+intentionally loose in the spec (`additionalProperties: true` with a few
+illustrative properties) rather than exhaustively modeled, since the full
+column list per table lives here in the README and evolves on its own.
 
 ### Root
 
