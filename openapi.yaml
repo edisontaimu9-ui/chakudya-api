@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Chakudya API (CNR — Central Nutrition Repository)
+  title: Chakudya Nutrition Registry API (CNR)
   description: >
     Chakudya is a Malawi focused nutrition data and intelligence API. It
     provides structured, searchable nutrition information for health
