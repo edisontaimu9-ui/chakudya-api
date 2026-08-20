@@ -1,3 +1,5 @@
 thanzi/
 ingest_log.txt
 *.pdf
+Chakudya-docs/
+scripts/ingest_pdf_resume.py
