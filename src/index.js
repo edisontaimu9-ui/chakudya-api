@@ -213,7 +213,7 @@
  *  - env.GROQ_API_KEY              (required for POST /packaged/scan AND memory consolidation — get free at console.groq.com)
  *  - env.GROQ_VISION_MODEL         (optional override; see note near DEFAULT_GROQ_VISION_MODEL below —
  *                                    Groq's vision model names change/retire more often than the others)
- *  - env.GROQ_TEXT_MODEL           (optional override for memory-consolidation summaries; defaults to llama-3.3-70b-versatile)
+ *  - env.GROQ_TEXT_MODEL           (optional override for memory-consolidation summaries; defaults to openai/gpt-oss-120b)
  *
  * Session memory setup (NEW in v1.3.0):
  *  1. Run sql/memory_schema.sql in the Supabase SQL editor (creates
@@ -2139,7 +2139,7 @@ Respond with ONLY this JSON, no other text: {"intent": "<label>", "barcode": "<d
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
+        model: "openai/gpt-oss-20b",
         temperature: 0,
         max_completion_tokens: 60,
         messages: [{ role: "user", content: prompt }],
@@ -2320,7 +2320,7 @@ async function answerWithLLM(query, contextBlock, env) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile",
+        model: env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
         temperature: 0.2,
         max_completion_tokens: 500,
         messages: [
@@ -2562,7 +2562,7 @@ Write ONE paragraph (max ~120 words) capturing the key patient facts, clinical c
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: env.GROQ_TEXT_MODEL || "llama-3.3-70b-versatile",
+        model: env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
         temperature: 0.2,
         max_completion_tokens: 300,
         messages: [{ role: "user", content: prompt }],
