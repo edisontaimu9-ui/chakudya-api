@@ -2304,6 +2304,13 @@ async function rerankCandidates(query, candidates, env, topN) {
  * throws — degrades to a message pointing at the raw sources if
  * GROQ_API_KEY is missing or the call fails.
  */
+// Hard cap per Groq call. 500 was too tight — a multi-row meal-plan table
+// with citations can easily run past that and get cut off mid-row. If the
+// model still hits the cap, MAX_ANSWER_CONTINUATIONS below lets it pick up
+// where it left off rather than shipping a truncated answer.
+const ANSWER_MAX_COMPLETION_TOKENS = 2000;
+const MAX_ANSWER_CONTINUATIONS = 1;
+
 async function answerWithLLM(query, contextBlock, env) {
   if (!env.GROQ_API_KEY) {
     return "I found relevant information below, but I can't generate a written answer right now (GROQ_API_KEY not configured on the server) — see the numbered sources for the raw matches.";
@@ -2312,32 +2319,59 @@ async function answerWithLLM(query, contextBlock, env) {
   const systemPrompt = `You are Chakudya AI, a grounded nutrition assistant for Malawi's Chakudya Nutrition Registry. Answer ONLY using the numbered context snippets provided by the user. Cite the snippet number(s) you used inline in square brackets, e.g. [1] or [2][3] — that bracketed number is the only attribution you should ever give. Never write phrases like "based on the context", "according to the source/document/snippet", "the text states", "as shown in", or similar attribution wording in the body of the answer; state facts directly and naturally, as though they were your own knowledge, and let the bracketed citation do the attribution work. If the snippets don't contain enough information to answer confidently, say so plainly instead of guessing — do not invent nutrient values, brand details, or clinical guidance that isn't in the context. Keep answers concise and clinically accurate for a Malawian dietetics context.`;
   const userPrompt = `Context:\n${contextBlock}\n\nQuestion: ${query}`;
 
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  let fullAnswer = "";
+
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
-        temperature: 0.2,
-        max_completion_tokens: 500,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      return `(LLM answer unavailable: ${e.error?.message || res.status}) — see the numbered sources below.`;
+    for (let attempt = 0; attempt <= MAX_ANSWER_CONTINUATIONS; attempt++) {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
+          temperature: 0.2,
+          max_completion_tokens: ANSWER_MAX_COMPLETION_TOKENS,
+          messages,
+        }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        const msg = `(LLM answer unavailable: ${e.error?.message || res.status}) — see the numbered sources below.`;
+        return fullAnswer ? `${fullAnswer}\n\n${msg}` : msg;
+      }
+
+      const data = await res.json();
+      const choice = data?.choices?.[0];
+      const piece = choice?.message?.content?.trim() || "";
+      fullAnswer = fullAnswer ? `${fullAnswer}${piece}` : piece;
+
+      // Only Groq's own truncation signal continues the loop — anything
+      // else (a normal stop, or running out of continuation budget) ends it.
+      if (choice?.finish_reason !== "length" || attempt === MAX_ANSWER_CONTINUATIONS) {
+        break;
+      }
+
+      // Cut off mid-generation with budget left: ask the model to resume
+      // exactly where it stopped instead of restarting the whole answer.
+      messages.push({ role: "assistant", content: piece });
+      messages.push({
+        role: "user",
+        content: "Continue exactly where you left off. Do not repeat any text already written, and do not restart or summarize the answer.",
+      });
     }
-    const data = await res.json();
-    return data?.choices?.[0]?.message?.content?.trim() || "(Empty response from the LLM — see the numbered sources below.)";
   } catch (e) {
-    return `(LLM answer unavailable: ${e.message}) — see the numbered sources below.`;
+    const msg = `(LLM answer unavailable: ${e.message}) — see the numbered sources below.`;
+    return fullAnswer ? `${fullAnswer}\n\n${msg}` : msg;
   }
+
+  return fullAnswer || "(Empty response from the LLM — see the numbered sources below.)";
 }
 
 /**
