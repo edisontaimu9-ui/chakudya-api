@@ -2205,6 +2205,39 @@ async function scanTableByKeywords(db, table, keywords, limit = 150) {
   return scored.slice(0, 8);
 }
 
+/**
+ * searchFoodsExact/searchPackagedExact do an ilike substring match against
+ * food_name/product_name, so they only ever work when given something close
+ * to an actual food name — not a full natural-language question. /rag/ask
+ * used to pass the whole trimmed query straight through (e.g. "What
+ * nutrients are in nsima?"), which almost never matches any real food_name
+ * and silently starved these two sources on anything but a bare food name,
+ * leaving semantic search to carry food_search intent alone.
+ *
+ * Runs the exact-match search once per extracted keyword (in parallel,
+ * since a food name is usually just one of the keywords, not the full
+ * keyword string) and merges/dedupes the hits, capped at `limit`. Falls
+ * back to the raw query when there are no keywords to try (very short or
+ * stopword-only input), so a bare single-word query like "nsima" behaves
+ * exactly as before — one call, no behavior change.
+ */
+async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 5) {
+  const terms = keywords.length ? keywords : [rawQuery];
+  const resultsPerTerm = await Promise.all(terms.map((term) => searchFn(db, term, limit)));
+  const seen = new Set();
+  const merged = [];
+  for (const rows of resultsPerTerm) {
+    for (const row of rows) {
+      const key = row.id ?? JSON.stringify(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(row);
+      if (merged.length >= limit) return merged;
+    }
+  }
+  return merged;
+}
+
 /** Malawi FCT / curated foods table — exact ilike search on food_name. */
 async function searchFoodsExact(db, query, limit = 5) {
   if (!query) return [];
@@ -2411,8 +2444,8 @@ async function handleRagAsk(request, url, db, env, ctx, body) {
   // ── 2. Search Orchestrator — fan out across every source the intent plan calls for ──
   const tasks = {};
   if (plan.semantic) tasks.semantic = semanticSearchForAsk(trimmedQuery, context, cappedTopK, db, env, ctx);
-  if (plan.foods) tasks.foods = searchFoodsExact(db, trimmedQuery);
-  if (plan.packaged) tasks.packaged = searchPackagedExact(db, trimmedQuery);
+  if (plan.foods) tasks.foods = multiKeywordFoodSearch(searchFoodsExact, db, trimmedQuery, keywords);
+  if (plan.packaged) tasks.packaged = multiKeywordFoodSearch(searchPackagedExact, db, trimmedQuery, keywords);
   if (plan.exchange) tasks.exchange = scanTableByKeywords(db, "exchange_lists", keywords);
   if (plan.renal) tasks.renal = scanTableByKeywords(db, "renal_foods", keywords);
   if (plan.formulas) tasks.formulas = scanTableByKeywords(db, "enteral_formulas", keywords);
