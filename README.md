@@ -600,7 +600,8 @@ Query params: `route`, `limit`, `offset`/`cursor`
 - `PATCH /packaged/:id` *(admin)*
 - `DELETE /packaged/:id` *(admin)*
 
-Query params for `GET /packaged`: `barcode`, `limit`, `offset`/`cursor`
+Query params for `GET /packaged`: `barcode`, `search` (product_name
+substring match), `limit`, `offset`/`cursor`
 
 **`GET /packaged/pending`** — the admin review queue: rows with
 `status: "pending"` from either submission path, oldest first. Query params:

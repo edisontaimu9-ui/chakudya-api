@@ -590,6 +590,7 @@ paths:
         - name: barcode
           in: query
           schema: { type: string }
+        - $ref: "#/components/parameters/Search"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Offset"
         - $ref: "#/components/parameters/Cursor"

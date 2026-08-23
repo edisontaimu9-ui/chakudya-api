@@ -3362,8 +3362,10 @@ async function handlePackaged(request, url, db, id, isSubmit) {
 
   if (method === "GET") {
     const barcode = url.searchParams.get("barcode") || "";
+    const search = url.searchParams.get("search") || "";
     const filters = {};
     if (barcode) filters["barcode"] = `eq.${barcode}`;
+    if (search) filters["product_name"] = `ilike.*${escapeLikePattern(search)}*`;
 
     return await paginatedList(db, "packaged_foods", url, { filters });
   }
