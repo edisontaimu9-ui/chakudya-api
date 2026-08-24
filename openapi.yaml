@@ -1239,6 +1239,19 @@ components:
         protein_g: { type: number }
         carbs_g: { type: number }
         fat_g: { type: number }
+        fiber_g: { type: number, nullable: true }
+        vita_rae_mcg: { type: number, nullable: true, description: "Vitamin A, RAE" }
+        vitc_mg: { type: number, nullable: true }
+        vitd_mcg: { type: number, nullable: true }
+        vitb12_mcg: { type: number, nullable: true }
+        folate_mcg: { type: number, nullable: true }
+        calcium_mg: { type: number, nullable: true }
+        iron_mg: { type: number, nullable: true }
+        zinc_mg: { type: number, nullable: true }
+        magnesium_mg: { type: number, nullable: true }
+        potassium_mg: { type: number, nullable: true }
+        sodium_mg: { type: number, nullable: true }
+        iodine_mcg: { type: number, nullable: true }
       additionalProperties: true
 
     PackagedFood:
