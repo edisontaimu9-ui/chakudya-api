@@ -2,10 +2,19 @@
 """
 Ingest a PDF into the Chakudya RAG knowledge base (POST /rag/ingest).
 
-Extracts text page-by-page (pypdf — pure Python, no native compile step,
-which matters on Termux/ARM64), splits each page into ~150-220 word
-chunks along paragraph boundaries, and POSTs each chunk with page-level
-metadata so retrieval results can cite exactly where they came from.
+Default mode extracts text page-by-page (pypdf, layout-preserving mode --
+pure Python, no native compile step, which matters on Termux/ARM64), splits
+each page into ~150-220 word chunks along paragraph boundaries, and POSTs
+each chunk with page-level metadata so retrieval results can cite exactly
+where they came from.
+
+Table pages are detected automatically and kept as a single unsplit chunk
+(instead of running through paragraph-splitting, which can cut a table
+apart from its header row).
+
+Scanned/picture-only pages produce no extractable text in default mode and
+are flagged at the end -- re-run with --ocr to rasterize every page with
+pdftoppm and read it with Tesseract instead.
 
 Usage:
     export CHAKUDYA_ADMIN_KEY="your-admin-key"
@@ -14,13 +23,19 @@ Usage:
         --context both \
         --start-page 1131
 
+    # scanned/image-only PDF (or a PDF with scanned pages mixed in):
+    python3 ingest_pdf_to_rag.py <path-to.pdf> --source "..." --ocr
+
 Dry run first (no network calls, just shows what would be sent):
     python3 ingest_pdf_to_rag.py <path-to.pdf> --source "..." --dry-run
 """
 
 import argparse
 import os
+import subprocess
 import sys
+import tempfile
+import shutil
 import time
 
 try:
@@ -32,6 +47,12 @@ try:
     import requests
 except ImportError:
     sys.exit("Missing dependency. Run: pip install pypdf requests --break-system-packages")
+
+try:
+    import pytesseract
+    from PIL import Image
+except ImportError:
+    pytesseract = None  # only required when --ocr is passed
 
 DEFAULT_BASE_URL = "https://chakudya-api.edisontaimu9.workers.dev"
 MIN_CHUNK_WORDS = 60
@@ -88,6 +109,39 @@ def split_page_into_chunks(page_text):
     return chunks
 
 
+def ocr_extract_all_pages(pdf_path, dpi):
+    """
+    Rasterize every page of pdf_path with pdftoppm (poppler), then OCR each
+    page image with Tesseract. Returns a list of per-page text strings,
+    index-aligned with page number (0-based). Encrypted-but-no-real-password
+    PDFs are handled automatically -- pdftoppm tries an empty password same
+    as most viewers.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="ingest_ocr_")
+    try:
+        prefix = os.path.join(tmp_dir, "page")
+        result = subprocess.run(
+            ["pdftoppm", "-jpeg", "-r", str(dpi), pdf_path, prefix],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            sys.exit(f"pdftoppm failed: {result.stderr.strip()}")
+
+        image_files = sorted(f for f in os.listdir(tmp_dir) if f.endswith(".jpg"))
+        if not image_files:
+            sys.exit("pdftoppm produced no page images -- check the PDF isn't corrupt or password-protected with a real password.")
+
+        page_texts = []
+        for idx, fname in enumerate(image_files, 1):
+            img_path = os.path.join(tmp_dir, fname)
+            print(f"OCR page {idx}/{len(image_files)} ({fname}) ...")
+            text = pytesseract.image_to_string(Image.open(img_path))
+            page_texts.append(text)
+        return page_texts
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pdf_path", help="Path to the PDF file")
@@ -97,7 +151,13 @@ def main():
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
     ap.add_argument("--dry-run", action="store_true", help="Preview chunks without calling the API")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between ingest calls (politeness delay)")
+    ap.add_argument("--ocr", action="store_true", help="Rasterize each page with pdftoppm and OCR with Tesseract instead of extracting a text layer (use for scanned/image-only PDFs, e.g. flattened slide decks)")
+    ap.add_argument("--ocr-dpi", type=int, default=200, help="Rasterization DPI for --ocr mode (higher = better accuracy, slower)")
     args = ap.parse_args()
+
+    if args.ocr and pytesseract is None:
+        sys.exit("Missing OCR dependency. Run: pip install pytesseract pillow --break-system-packages\n"
+                  "Also make sure the tesseract binary is installed: pkg install tesseract poppler")
 
     admin_key = os.environ.get("CHAKUDYA_ADMIN_KEY")
     if not args.dry_run and not admin_key:
@@ -108,38 +168,56 @@ def main():
 
     print(f"Reading {args.pdf_path} ...")
     reader = PdfReader(args.pdf_path)
+    if reader.is_encrypted:
+        result = reader.decrypt("")
+        if result == 0:
+            sys.exit(
+                "This PDF requires a real password to open (empty password "
+                "did not work). Re-run with the correct password, or obtain "
+                "an unlocked copy of the file."
+            )
     total_pages = len(reader.pages)
     print(f"{total_pages} pages found. Real-world page numbers: {args.start_page}-{args.start_page + total_pages - 1}")
 
     all_chunks = []  # list of (real_page_number, chunk_text, is_table)
-    blank_pages = []  # likely scanned/picture-only pages — need OCR, not skippable silently
+    blank_pages = []  # non-OCR mode only: pages with zero extractable text
 
-    for i, page in enumerate(reader.pages):
+    ocr_texts = None
+    if args.ocr:
+        print(f"OCR mode: rasterizing at {args.ocr_dpi} DPI and running Tesseract on each page...")
+        ocr_texts = ocr_extract_all_pages(args.pdf_path, args.ocr_dpi)
+        if len(ocr_texts) != total_pages:
+            print(f"Warning: pdftoppm produced {len(ocr_texts)} images but pypdf reports {total_pages} pages -- using the shorter of the two.")
+
+    page_count_for_loop = len(ocr_texts) if ocr_texts is not None else total_pages
+    for i in range(page_count_for_loop):
         real_page = args.start_page + i
 
-        # "layout" mode preserves the PDF's visual column/row spacing instead
-        # of pypdf's default stream-order text, which is what scrambles
-        # tables into unreadable word soup. Falls back to default mode if a
-        # given PDF's structure makes layout mode choke.
-        try:
-            text = page.extract_text(extraction_mode="layout") or ""
-        except Exception:
-            text = page.extract_text() or ""
+        if ocr_texts is not None:
+            text = ocr_texts[i]
+        else:
+            # "layout" mode preserves the PDF's visual column/row spacing
+            # instead of pypdf's default stream-order text, which is what
+            # scrambles tables into unreadable word soup.
+            try:
+                text = reader.pages[i].extract_text(extraction_mode="layout") or ""
+            except Exception:
+                text = reader.pages[i].extract_text() or ""
 
         if not text.strip():
-            # No extractable text at all -> almost certainly a scanned page
-            # or a picture/diagram with no text layer. Silently skipping
-            # these (the old behavior) means that content never enters the
-            # RAG. Flag it instead so it can be OCR'd/handled separately.
-            blank_pages.append(real_page)
+            if ocr_texts is None:
+                # No text layer at all -> almost certainly a scanned page or
+                # a picture/diagram with no text layer. Flag it instead of
+                # silently dropping it -- re-run with --ocr to pick these up.
+                blank_pages.append(real_page)
             continue
 
         if looks_like_table(text):
-            # Don't run table pages through paragraph-based chunk splitting —
-            # that logic assumes prose and will happily cut a table apart
-            # from its header row or mid-row. Keep the whole page as one
-            # chunk so a query against "Table 29" retrieves the actual rows,
-            # not just the caption.
+            # Don't run table pages through paragraph-based chunk splitting
+            # -- that assumes prose and will cut a table apart from its
+            # header row or mid-row. Keep the whole page as one chunk so a
+            # query against "Table 29" retrieves the actual rows, not just
+            # the caption.
             all_chunks.append((real_page, text.strip(), True))
         else:
             for chunk in split_page_into_chunks(text):
@@ -149,12 +227,10 @@ def main():
     print(f"Built {len(all_chunks)} chunks.")
     if blank_pages:
         print(
-            f"⚠️  {len(blank_pages)} page(s) had NO extractable text — likely scanned "
-            f"images or picture-only pages, and are NOT included above: "
-            f"{blank_pages}\n"
-            f"    These need OCR before they can be ingested (e.g. run them through "
-            f"Groq vision the same way /packaged/scan reads label photos, then "
-            f"ingest the resulting text as its own chunk with --source noting it's OCR'd)."
+            f"⚠️  {len(blank_pages)} page(s) had NO extractable text and are NOT "
+            f"included above: {blank_pages}\n"
+            f"    Re-run with --ocr to rasterize and OCR these specific pages "
+            f"(or the whole PDF)."
         )
     print()
 
