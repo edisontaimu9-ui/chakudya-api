@@ -39,6 +39,23 @@ TARGET_CHUNK_WORDS = 180
 MAX_CHUNK_WORDS = 260
 
 
+def looks_like_table(page_text):
+    """Heuristic: tabular pages are dense with numbers/short tokens and have
+    many short lines (rows), unlike normal prose paragraphs. Layout-mode
+    extraction preserves column spacing with runs of whitespace, which is
+    itself a strong signal.
+    """
+    lines = [l for l in page_text.split("\n") if l.strip()]
+    if len(lines) < 4:
+        return False
+    short_lines = sum(1 for l in lines if len(l.split()) <= 12)
+    digit_lines = sum(1 for l in lines if sum(c.isdigit() for c in l) >= 2)
+    wide_gap_lines = sum(1 for l in lines if "   " in l)  # 3+ spaces = column gap
+    return (short_lines / len(lines) > 0.6) and (
+        digit_lines / len(lines) > 0.25 or wide_gap_lines / len(lines) > 0.4
+    )
+
+
 def split_page_into_chunks(page_text):
     """Greedily group paragraphs into ~TARGET_CHUNK_WORDS-sized chunks."""
     paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
@@ -94,23 +111,59 @@ def main():
     total_pages = len(reader.pages)
     print(f"{total_pages} pages found. Real-world page numbers: {args.start_page}-{args.start_page + total_pages - 1}")
 
-    all_chunks = []  # list of (real_page_number, chunk_text)
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        if not text.strip():
-            continue
-        real_page = args.start_page + i
-        for chunk in split_page_into_chunks(text):
-            if len(chunk.split()) >= MIN_CHUNK_WORDS // 2:  # skip near-empty scraps
-                all_chunks.append((real_page, chunk))
+    all_chunks = []  # list of (real_page_number, chunk_text, is_table)
+    blank_pages = []  # likely scanned/picture-only pages — need OCR, not skippable silently
 
-    print(f"Built {len(all_chunks)} chunks.\n")
+    for i, page in enumerate(reader.pages):
+        real_page = args.start_page + i
+
+        # "layout" mode preserves the PDF's visual column/row spacing instead
+        # of pypdf's default stream-order text, which is what scrambles
+        # tables into unreadable word soup. Falls back to default mode if a
+        # given PDF's structure makes layout mode choke.
+        try:
+            text = page.extract_text(extraction_mode="layout") or ""
+        except Exception:
+            text = page.extract_text() or ""
+
+        if not text.strip():
+            # No extractable text at all -> almost certainly a scanned page
+            # or a picture/diagram with no text layer. Silently skipping
+            # these (the old behavior) means that content never enters the
+            # RAG. Flag it instead so it can be OCR'd/handled separately.
+            blank_pages.append(real_page)
+            continue
+
+        if looks_like_table(text):
+            # Don't run table pages through paragraph-based chunk splitting —
+            # that logic assumes prose and will happily cut a table apart
+            # from its header row or mid-row. Keep the whole page as one
+            # chunk so a query against "Table 29" retrieves the actual rows,
+            # not just the caption.
+            all_chunks.append((real_page, text.strip(), True))
+        else:
+            for chunk in split_page_into_chunks(text):
+                if len(chunk.split()) >= MIN_CHUNK_WORDS // 2:  # skip near-empty scraps
+                    all_chunks.append((real_page, chunk, False))
+
+    print(f"Built {len(all_chunks)} chunks.")
+    if blank_pages:
+        print(
+            f"⚠️  {len(blank_pages)} page(s) had NO extractable text — likely scanned "
+            f"images or picture-only pages, and are NOT included above: "
+            f"{blank_pages}\n"
+            f"    These need OCR before they can be ingested (e.g. run them through "
+            f"Groq vision the same way /packaged/scan reads label photos, then "
+            f"ingest the resulting text as its own chunk with --source noting it's OCR'd)."
+        )
+    print()
 
     if args.dry_run:
         preview_n = min(3, len(all_chunks))
         print(f"--dry-run: showing first {preview_n} chunk(s), no API calls made.\n")
-        for page_num, chunk in all_chunks[:preview_n]:
-            print(f"--- page {page_num} ({len(chunk.split())} words) ---")
+        for page_num, chunk, is_table in all_chunks[:preview_n]:
+            tag = " [TABLE]" if is_table else ""
+            print(f"--- page {page_num}{tag} ({len(chunk.split())} words) ---")
             print(chunk[:300] + ("..." if len(chunk) > 300 else ""))
             print()
         print(f"Total chunks that WOULD be ingested: {len(all_chunks)}")
@@ -124,24 +177,28 @@ def main():
 
     ok_count = 0
     fail_count = 0
-    for idx, (page_num, chunk) in enumerate(all_chunks, 1):
+    for idx, (page_num, chunk, is_table) in enumerate(all_chunks, 1):
+        metadata = {"page": page_num}
+        if is_table:
+            metadata["type"] = "table"
         payload = {
             "content": chunk,
             "source": args.source,
             "context": args.context,
-            "metadata": {"page": page_num},
+            "metadata": metadata,
         }
+        tag = " [TABLE]" if is_table else ""
         try:
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=30)
             if resp.status_code == 200:
                 ok_count += 1
-                print(f"[{idx}/{len(all_chunks)}] page {page_num} -> OK")
+                print(f"[{idx}/{len(all_chunks)}] page {page_num}{tag} -> OK")
             else:
                 fail_count += 1
-                print(f"[{idx}/{len(all_chunks)}] page {page_num} -> FAILED ({resp.status_code}): {resp.text[:200]}")
+                print(f"[{idx}/{len(all_chunks)}] page {page_num}{tag} -> FAILED ({resp.status_code}): {resp.text[:200]}")
         except requests.RequestException as e:
             fail_count += 1
-            print(f"[{idx}/{len(all_chunks)}] page {page_num} -> ERROR: {e}")
+            print(f"[{idx}/{len(all_chunks)}] page {page_num}{tag} -> ERROR: {e}")
 
         time.sleep(args.sleep)
 
