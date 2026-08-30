@@ -505,6 +505,7 @@ function routePolicy(resource, method, param, action) {
     resource === "packaged" && (action === "approve" || action === "reject") && method === "POST";
   const isRagRetrieve = resource === "rag" && (param === "retrieve" || !param) && method === "POST";
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
+  const isRagDeleteSource = resource === "rag" && param === "source" && method === "DELETE";
   const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
@@ -604,6 +605,14 @@ function routePolicy(resource, method, param, action) {
   // RAG ingest writes to the knowledge base AND costs a Cohere call — admin only.
   if (isRagIngest) {
     return { auth: "admin", rate: { limit: 300, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // Bulk-delete all chunks for one document (by 'source' string) — admin
+  // only. Needed before re-ingesting a document whose chunks were extracted
+  // badly (e.g. table/scanned pages ingested before the extraction fix),
+  // since /rag/ingest only ever inserts and never overwrites.
+  if (isRagDeleteSource) {
+    return { auth: "admin", rate: { limit: 30, windowSeconds: 60, scope: "admin" } };
   }
 
   // RAG orchestrator (/rag/ask): intent classification (Groq) + embed
@@ -1919,6 +1928,30 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
 // POST /rag/retrieve  — semantic search
 // POST /rag/ingest    — add a document chunk to the knowledge base
 async function handleRAG(request, url, db, env, param, ctx) {
+  // ── DELETE /rag/source?source=... ──────────────────────────────────────────
+  // Bulk-removes every chunk with a matching 'source' string. /rag/ingest only
+  // ever inserts (never upserts/overwrites), so re-ingesting a fixed document
+  // leaves the old bad chunks sitting alongside the new ones unless they're
+  // cleared first. No request body — the citation string is the query param
+  // (it's the same string passed as --source to the ingest script).
+  if (param === "source" && request.method === "DELETE") {
+    const source = url.searchParams.get("source");
+    if (!source) {
+      return err("'source' query param is required, e.g. DELETE /rag/source?source=YourCitationString");
+    }
+
+    const { ok, status, body: rows } = await db.removeWhere("rag_knowledge_base", {
+      source: `eq.${source}`,
+    });
+    if (!ok) return err(rows?.message || "Delete failed", status);
+
+    const deletedCount = Array.isArray(rows) ? rows.length : 0;
+    return success(
+      { deleted: deletedCount, source },
+      { message: `Deleted ${deletedCount} chunk(s) for source "${source}"` }
+    );
+  }
+
   if (request.method !== "POST") return err("Method not allowed", 405);
 
   const body = await parseBody(request);
@@ -2969,6 +3002,7 @@ function handleRoot(env) {
       rag: [
         "POST /rag/retrieve     (public, rate-limited) → semantic search (query, context, top_k)",
         "POST /rag/ingest       (admin) → add document chunk (content, source, context)",
+        "DELETE /rag/source?source=... (admin) → bulk-delete all chunks for one document (use before re-ingesting a fixed document, since ingest never overwrites)",
         "POST /rag/ask          (public, rate-limited) → RAG Search Orchestrator: intent detection -> fan-out search (semantic + Malawi FCT + packaged/OCR foods + exchange/renal/formula DBs + barcode + USDA/OFF/FatSecret fallback) -> rerank -> grounded LLM answer with citations (query, context, top_k, session_id)",
       ],
       memory: [
