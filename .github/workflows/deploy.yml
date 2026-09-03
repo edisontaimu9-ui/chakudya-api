@@ -1,0 +1,38 @@
+name: Deploy Chakudya API to Cloudflare Workers
+
+# Runs on GitHub's servers (not Termux) — sidesteps both the Termux/Wrangler
+# incompatibility and Cloudflare's own "Workers Builds" Git integration,
+# which can hang at "Initializing build environment" (a known, recurring
+# issue on Cloudflare's side, unrelated to this repo's code).
+#
+# One-time setup required before this works:
+#   1. In the Cloudflare dashboard: My Profile -> API Tokens -> Create Token
+#      -> "Edit Cloudflare Workers" template -> scope it to this account.
+#      Copy the token (shown once).
+#   2. In this GitHub repo: Settings -> Secrets and variables -> Actions ->
+#      New repository secret -> name it CLOUDFLARE_API_TOKEN, paste the
+#      token from step 1.
+#   3. If Cloudflare's own Git integration (Workers Builds) is still
+#      connected to this repo, disconnect it in the dashboard under
+#      Workers & Pages -> chakudya-api -> Settings -> Build, so both
+#      systems don't race to deploy the same push.
+#
+# After that, every push to main deploys automatically — no Termux, no
+# dashboard build queue involved.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # lets you trigger a manual deploy from the Actions tab
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy with Wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
