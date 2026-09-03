@@ -3,7 +3,23 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.7.0
+ * Version: 1.19.0
+ *
+ * v1.19.0 changes:
+ *  - Added Serving-Size Intelligence: GET /foods/:id and GET /foods/lookup
+ *    now accept ?with_servings=true, which adds a `serving_sizes` array to
+ *    the response — realistic Malawian household measures (e.g. "1 cup /
+ *    chikombe (240g)", "1 chunk nsima (200g)", "1 sachet RUTF (92g)"), each
+ *    with every nutrient field pre-scaled from the existing per-100g/100ml
+ *    basis (that basis itself is unchanged — this is response-shaping only,
+ *    no new columns, no migration). Three tiers, most specific first: the
+ *    food's own FCT `measure`/`weight_g` if present, then a curated
+ *    keyword match (SERVING_SIZE_KEYWORDS), then a generic per-category
+ *    estimate (CATEGORY_SERVING_DEFAULTS) — the raw 100g/100ml basis is
+ *    always included too, labeled "reference". Fully local/rule-based, no
+ *    LLM call and no added latency; opt-in via the query param so existing
+ *    consumers are unaffected. See buildServingSizes() and the block
+ *    comment above it.
  *
  * v1.7.0 changes:
  *  - Added POST /rag/ask — a RAG Search Orchestrator layered on top of the
@@ -269,6 +285,11 @@ function err(message, status = 400) {
 
 function notFound(resource = "Route") {
   return err(`${resource} not found`, 404);
+}
+
+/** Query-param truthiness for opt-in boolean flags like ?with_servings=true. */
+function isTruthyParam(v) {
+  return v === "true" || v === "1" || v === "yes";
 }
 
 function unauthorized(message = "Valid API key required for this action") {
@@ -1156,6 +1177,141 @@ function classifyCategory(foodName) {
     if (keywords.some((kw) => name.includes(kw))) return category;
   }
   return null;
+}
+
+// ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
+//
+// All nutrient columns on `foods` (and the normalized shape used by
+// /foods/lookup) are per-100g/100ml, per Malawi FCT 2019 convention — see
+// sql/001_add_micronutrients_to_foods.sql. That's the right storage/API
+// basis, but "per 100g" isn't how anyone actually eats or counsels a
+// patient. This adds an opt-in `serving_sizes` array (see `with_servings`
+// below) of realistic Malawian household servings for a food, each with
+// nutrients pre-scaled from the 100g basis — so a clinician or app doesn't
+// have to do the arithmetic (or guess a plausible portion) themselves.
+//
+// Three tiers, most authoritative first, first match per tier wins:
+//   1. `fct`               — the food's own `measure`/`weight_g` columns,
+//                             when present (an actual Malawi FCT 2019
+//                             household-measure entry for THIS food).
+//   2. `local_intelligence` — a specific keyword match against food_name
+//                             against SERVING_SIZE_KEYWORDS below — hand-
+//                             curated Malawian household measures (chikombe/
+//                             cup, ladle, chunk, sachet, etc.) for foods
+//                             that come up constantly in local diets/clinical
+//                             work but may not carry their own FCT measure
+//                             (e.g. external/packaged/OCR-sourced foods).
+//   3. `category_estimate`  — a generic per-category fallback (e.g. "1 cup
+//                             cooked" for Grains) when nothing more specific
+//                             matches. Coarser, but still far more useful
+//                             than only ever seeing a 100g number.
+// The literal 100g/100ml reference basis is always included too, labeled
+// `reference`, so the raw per-100g numbers are never lost.
+//
+// This is deliberately local/rule-based (no LLM call, no added latency or
+// cost) — same philosophy as classifyCategory() above. Servings are
+// estimates for counselling/portioning purposes, not lab-measured weights.
+
+const SERVING_SIZE_KEYWORDS = [
+  [["nsima"], { label: "1 chunk / ndomondo (approx. 1 cup, 200g)", grams: 200 }],
+  [["likuni phala", "phala", "porridge", "csb", "corn soya blend"], { label: "1 cup cooked porridge / chikombe (250g)", grams: 250 }],
+  [["rutf", "plumpy"], { label: "1 sachet (92g)", grams: 92 }],
+  [["rice"], { label: "1 cup cooked rice (150g)", grams: 150 }],
+  [["bean", "soya", "soy", "lentil", "pea", "chickpea"], { label: "1 cup cooked (170g)", grams: 170 }],
+  [["groundnut", "peanut"], { label: "1 tablespoon / dzankho (15g)", grams: 15 }],
+  [["cassava", "sweet potato", "irish potato", "potato"], { label: "1 medium piece (150g)", grams: 150 }],
+  [["tea", "coffee"], { label: "1 cup (250ml)", grams: 250 }],
+  [["milk"], { label: "1 cup (250ml)", grams: 250 }],
+  [["cooking oil", " oil", "oil,", "margarine", "ghee", "lard"], { label: "1 tablespoon (15g)", grams: 15 }],
+  [["sugar"], { label: "1 tablespoon (12g)", grams: 12 }],
+  [["banana"], { label: "1 medium banana (120g)", grams: 120 }],
+  [["egg"], { label: "1 medium egg (50g)", grams: 50 }],
+  [["bread"], { label: "1 slice (35g)", grams: 35 }],
+  [["mango", "orange", "papaya", "guava", "apple"], { label: "1 medium piece (150g)", grams: 150 }],
+  [["fish", "sardine", "tilapia", "salmon", "tuna"], { label: "1 medium piece (80g)", grams: 80 }],
+  [["chicken", "beef", "pork", "goat", "turkey", "meat", "liver", "mince"], { label: "1 palm-sized portion (90g)", grams: 90 }],
+  [["rape", "mustard", "pumpkin leaves", "cabbage", "spinach", "kale"], { label: "1 cup cooked relish (95g)", grams: 95 }],
+  [["tomato"], { label: "1 medium tomato (90g)", grams: 90 }],
+  [["juice"], { label: "1 cup (250ml)", grams: 250 }],
+  [["soda", "cola"], { label: "1 can (330ml)", grams: 330 }],
+  [["biscuit", "cookie"], { label: "1 piece (10g)", grams: 10 }],
+];
+
+const CATEGORY_SERVING_DEFAULTS = {
+  Grains: { label: "1 cup cooked (150g)", grams: 150 },
+  Legumes: { label: "1 cup cooked (170g)", grams: 170 },
+  Vegetables: { label: "1 cup cooked (95g)", grams: 95 },
+  Fruits: { label: "1 medium piece (120g)", grams: 120 },
+  Protein: { label: "1 palm-sized portion (90g)", grams: 90 },
+  Dairy: { label: "1 cup (250ml)", grams: 250 },
+  "Fats & Oils": { label: "1 tablespoon (15g)", grams: 15 },
+  Beverages: { label: "1 cup (250ml)", grams: 250 },
+  "Sweets & Snacks": { label: "1 piece (20g)", grams: 20 },
+  "Nuts & Seeds": { label: "1 handful (30g)", grams: 30 },
+};
+
+// Fields scaled by serving weight — union of local `foods` columns and the
+// normalized external-lookup shape (see normalizeFood/withExternalShape),
+// so this works the same whether the food came from /foods/:id or
+// /foods/lookup. Missing fields on a given food are simply skipped.
+const SERVING_SCALE_FIELDS = [
+  "kcal", "energy_kcal", "kj", "protein_g", "carbs_g", "fat_g", "fiber_g",
+  "vita_rae_mcg", "vitc_mg", "vitd_mcg", "vitb12_mcg", "folate_mcg",
+  "calcium_mg", "iron_mg", "zinc_mg", "magnesium_mg", "potassium_mg",
+  "sodium_mg", "iodine_mcg",
+];
+
+function roundServingVal(n) {
+  return n == null || n === "" || isNaN(n) ? null : Math.round(Number(n) * 100) / 100;
+}
+
+/**
+ * Builds the `serving_sizes` array for a food object (per-100g/100ml basis).
+ * See the block comment above for the tier logic. Pure/local — no I/O.
+ */
+function buildServingSizes(food) {
+  if (!food) return [];
+  const name = (food.food_name || food.product_name || "").toLowerCase();
+  const category = food.category || classifyCategory(name);
+
+  const candidates = [];
+
+  // Tier 1 — this food's own Malawi FCT household-measure entry.
+  if (food.measure && food.weight_g != null && !isNaN(Number(food.weight_g))) {
+    candidates.push({ label: String(food.measure), grams: Number(food.weight_g), source: "fct" });
+  }
+
+  // Tier 2 — specific local-food keyword match (first/most-specific wins).
+  const keywordMatch = SERVING_SIZE_KEYWORDS.find(([keywords]) => keywords.some((kw) => name.includes(kw)));
+  if (keywordMatch) {
+    candidates.push({ ...keywordMatch[1], source: "local_intelligence" });
+  }
+
+  // Tier 3 — generic category fallback, only when nothing more specific matched.
+  if (!keywordMatch && category && CATEGORY_SERVING_DEFAULTS[category]) {
+    candidates.push({ ...CATEGORY_SERVING_DEFAULTS[category], source: "category_estimate" });
+  }
+
+  // Always keep the raw 100g/100ml reference basis.
+  candidates.push({ label: food.kj != null || food.kcal != null ? "100g" : "100g / 100ml", grams: 100, source: "reference" });
+
+  // Dedup near-identical gram amounts (e.g. an FCT measure of ~100g would
+  // otherwise duplicate the reference basis) — first (highest-priority) wins.
+  const deduped = [];
+  for (const c of candidates) {
+    if (!deduped.some((d) => Math.abs(d.grams - c.grams) < 5)) deduped.push(c);
+  }
+
+  return deduped.map(({ label, grams, source }) => {
+    const scale = grams / 100;
+    const nutrients = {};
+    for (const field of SERVING_SCALE_FIELDS) {
+      if (food[field] != null && food[field] !== "") {
+        nutrients[field] = roundServingVal(Number(food[field]) * scale);
+      }
+    }
+    return { label, grams, source, nutrients };
+  });
 }
 
 function normalizeFood(source, raw) {
@@ -2954,8 +3110,8 @@ function handleRoot(env) {
       ],
       foods: [
         "GET  /foods",
-        "GET  /foods/:id",
-        "GET  /foods/lookup?q=...|barcode=...   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret",
+        "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
+        "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above",
         "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "POST /foods            (admin)",
@@ -3044,6 +3200,9 @@ async function handleFoodsLookup(request, url, db, env) {
       404
     );
   }
+  if (isTruthyParam(url.searchParams.get("with_servings"))) {
+    result.food.serving_sizes = buildServingSizes(result.food);
+  }
   return success(result.food, {
     source: result.source,
     cached: result.cached,
@@ -3059,6 +3218,9 @@ async function handleFoods(request, url, db, id) {
       const { ok, status, body } = await db.selectOne("foods", id);
       if (status === 404) return notFound("Food");
       if (!ok) return err(body?.message || "Query failed", status);
+      if (isTruthyParam(url.searchParams.get("with_servings"))) {
+        body.serving_sizes = buildServingSizes(body);
+      }
       return success(body);
     }
 

@@ -43,7 +43,7 @@ Chakudya can be used to build:
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.18.0`
+- **Current CNR version:** `1.19.0`
 
 ---
 
@@ -535,11 +535,32 @@ Query params for `GET /foods`:
 - `limit` (default `50`, capped at `100`)
 - `offset` or `cursor` — see [Pagination](#pagination)
 
+**Serving-Size Intelligence** — add `?with_servings=true` to `GET /foods/:id` or `GET /foods/lookup` to get a `serving_sizes` array alongside the usual per-100g/100ml fields: realistic Malawian household measures (e.g. "1 cup / chikombe", "1 chunk nsima", "1 sachet RUTF"), each with every nutrient already scaled from the 100g basis so you don't have to do the arithmetic. Three tiers, most specific first — the food's own FCT `measure`/`weight_g` if it has one (`source: "fct"`), a curated keyword match for common Malawian foods (`source: "local_intelligence"`), or a generic per-category estimate (`source: "category_estimate"`) — plus the raw 100g/100ml basis, always included as `source: "reference"`. Fully local/rule-based (no LLM call, no added latency); off by default so existing integrations are unaffected.
+
+```json
+GET /foods/45?with_servings=true
+{
+  "status": "success",
+  "data": {
+    "id": 45,
+    "food_name": "Nsima (thick, maize)",
+    "kcal": 130, "protein_g": 2.8, "carbs_g": 28.6, "...": "...per 100g",
+    "serving_sizes": [
+      { "label": "1 chunk / ndomondo (approx. 1 cup, 200g)", "grams": 200, "source": "local_intelligence",
+        "nutrients": { "kcal": 260, "protein_g": 5.6, "carbs_g": 57.2 } },
+      { "label": "100g", "grams": 100, "source": "reference",
+        "nutrients": { "kcal": 130, "protein_g": 2.8, "carbs_g": 28.6 } }
+    ]
+  }
+}
+```
+
 **`GET /foods/lookup`** — external cascade for foods not in the local database. Order: local cache → USDA FDC (name search) → Open Food Facts (barcode) → FatSecret barcode lookup (Premier-exclusive) → FatSecret name search. First external hit is cached into `external_foods_cache` so subsequent lookups skip the upstream calls. Public, rate-limited to 20 req/min per IP.
 
 - `q` → name search (tries USDA, then FatSecret)
 - `barcode` → barcode lookup (Open Food Facts, then FatSecret)
 - `offset` (default `0`)
+- `with_servings` → `true` to add `serving_sizes` (see above)
 
 **`GET /foods/autocomplete?q=...&max_results=`** *(public, rate-limited, cached 1h)* — search-as-you-type suggestions via FatSecret's Premier-exclusive `foods.autocomplete.v2`. `max_results` defaults to `4`, capped at `10` (FatSecret's own limit). Returns a plain array of strings:
 
