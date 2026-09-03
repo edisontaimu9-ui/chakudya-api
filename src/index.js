@@ -253,7 +253,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.18.0";
+const CNR_VERSION = "1.19.1";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
