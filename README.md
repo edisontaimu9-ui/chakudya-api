@@ -43,7 +43,7 @@ Chakudya can be used to build:
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.19.0`
+- **Current CNR version:** `1.19.1`
 
 ---
 
@@ -534,6 +534,7 @@ Query params for `GET /foods`:
 - `category`
 - `limit` (default `50`, capped at `100`)
 - `offset` or `cursor` — see [Pagination](#pagination)
+- `with_servings` → `true` to add `serving_sizes` to every row (see below) — works for both pagination modes
 
 **Serving-Size Intelligence** — add `?with_servings=true` to `GET /foods/:id` or `GET /foods/lookup` to get a `serving_sizes` array alongside the usual per-100g/100ml fields: realistic Malawian household measures (e.g. "1 cup / chikombe", "1 chunk nsima", "1 sachet RUTF"), each with every nutrient already scaled from the 100g basis so you don't have to do the arithmetic. Three tiers, most specific first — the food's own FCT `measure`/`weight_g` if it has one (`source: "fct"`), a curated keyword match for common Malawian foods (`source: "local_intelligence"`), or a generic per-category estimate (`source: "category_estimate"`) — plus the raw 100g/100ml basis, always included as `source: "reference"`. Fully local/rule-based (no LLM call, no added latency); off by default so existing integrations are unaffected.
 

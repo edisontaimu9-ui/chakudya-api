@@ -3,7 +3,16 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.19.0
+ * Version: 1.19.1
+ *
+ * v1.19.1 changes:
+ *  - Extended Serving-Size Intelligence's ?with_servings=true to also work
+ *    on the GET /foods list endpoint (was previously only GET /foods/:id
+ *    and GET /foods/lookup), for both pagination modes (offset and
+ *    cursor). Each row in `data` gets its own serving_sizes array, same
+ *    tier logic as before. paginatedList() (shared with /exchange, /renal,
+ *    /formulas, /products) now takes an optional `enrichRow` callback —
+ *    undefined for every other caller, so nothing else changes.
  *
  * v1.19.0 changes:
  *  - Added Serving-Size Intelligence: GET /foods/:id and GET /foods/lookup
@@ -860,7 +869,7 @@ function limitParam(url, fallback = 50, max = 100) {
  * shift between pages as data is inserted/deleted); cursor pagination
  * doesn't have that problem, which is the whole reason to offer it.
  */
-async function paginatedList(db, table, url, { filters = {}, order } = {}) {
+async function paginatedList(db, table, url, { filters = {}, order, enrichRow } = {}) {
   const limit = limitParam(url);
   const cursorParam = url.searchParams.get("cursor");
 
@@ -893,14 +902,15 @@ async function paginatedList(db, table, url, { filters = {}, order } = {}) {
       limit,
       has_more: hasMore,
       next_cursor: hasMore && page.length ? page[page.length - 1].id : null,
-      data: page,
+      data: enrichRow ? page.map(enrichRow) : page,
     });
   }
 
   const offset = intParam(url, "offset", 0);
   const { ok, status, body, total } = await db.select(table, { filters, limit, offset, order });
   if (!ok) return err(body?.message || "Query failed", status);
-  return listSuccess(body, { count: total, limit, offset });
+  const rows = enrichRow && Array.isArray(body) ? body.map(enrichRow) : body;
+  return listSuccess(rows, { count: total, limit, offset });
 }
 
 /** Max rows accepted in a single /:resource/bulk request — keeps a single
@@ -3109,7 +3119,7 @@ function handleRoot(env) {
         "DELETE /admin/keys/:id   (root key only) → revoke (soft — sets revoked_at, doesn't delete the row)",
       ],
       foods: [
-        "GET  /foods",
+        "GET  /foods?with_servings=true",
         "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
         "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above",
         "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
@@ -3231,7 +3241,12 @@ async function handleFoods(request, url, db, id) {
     if (category) filters["category"] = `eq.${category}`;
     if (search) filters["food_name"] = `ilike.*${escapeLikePattern(search)}*`;
 
-    return await paginatedList(db, "foods", url, { filters, order: "food_name.asc" });
+    const withServings = isTruthyParam(url.searchParams.get("with_servings"));
+    return await paginatedList(db, "foods", url, {
+      filters,
+      order: "food_name.asc",
+      enrichRow: withServings ? (row) => ({ ...row, serving_sizes: buildServingSizes(row) }) : undefined,
+    });
   }
 
   if (method === "POST") {
