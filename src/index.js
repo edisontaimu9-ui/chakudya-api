@@ -360,7 +360,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.21.1";
+const CNR_VERSION = "1.22.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -657,6 +657,7 @@ function routePolicy(resource, method, param, action) {
     method === "POST";
   const isFavorites = resource === "favorites";
   const isHistory = resource === "history";
+  const isLog = resource === "log";
   const isRecipesCalculate = resource === "recipes" && param === "calculate" && method === "POST";
   const isMealsAnalyze = resource === "meals" && param === "analyze" && method === "POST";
 
@@ -665,6 +666,15 @@ function routePolicy(resource, method, param, action) {
   // user_id, there's no server-side account system). Writes capped tighter
   // than reads.
   if (isFavorites || isHistory) {
+    return isWrite
+      ? { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
+      : { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Food log (nutrition diary) — same public, self-declared-identity model
+  // as favorites/history above. Writes (log a meal, delete an entry) capped
+  // tighter than reads; /log/summary is a read.
+  if (isLog) {
     return isWrite
       ? { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
       : { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
@@ -1229,6 +1239,221 @@ async function handleHistory(request, url, db) {
   }
 
   return err("Method not allowed", 405);
+}
+
+// ─── FOOD LOG (NUTRITION DIARY) ──────────────────────────────────────────────
+//
+// Same public, self-declared-identity model as favorites/history: no
+// server-side account system, the client generates and keeps its own
+// user_id and passes it on every call.
+//
+// Each row is one logged item under one of the four meal slots
+// (breakfast/lunch/snack/dinner) with its calorie count for a given day.
+// GET /log/summary aggregates those rows into a daily or weekly total —
+// callers don't need to fetch every row and sum client-side.
+//
+// Requires this table:
+//   create table if not exists food_log_entries (
+//     id bigint generated always as identity primary key,
+//     user_id text not null,
+//     entry_date date not null default current_date,
+//     meal_type text not null check (meal_type in ('breakfast','lunch','snack','dinner')),
+//     food_name text,
+//     calories numeric not null check (calories >= 0),
+//     created_at timestamptz not null default now()
+//   );
+//   create index if not exists food_log_entries_user_date_idx on food_log_entries(user_id, entry_date);
+
+const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function emptyMealTotals() {
+  return { breakfast: 0, lunch: 0, snack: 0, dinner: 0 };
+}
+
+function toDateOnly(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function validateLogPayload(payload) {
+  const userId = (payload?.user_id || "").trim();
+  const mealType = (payload?.meal_type || "").trim().toLowerCase();
+  const caloriesRaw = payload?.calories;
+
+  if (!userId) return { error: "'user_id' is required" };
+  if (!MEAL_TYPES.includes(mealType)) {
+    return { error: `'meal_type' must be one of: ${MEAL_TYPES.join(", ")}` };
+  }
+  const calories = Number(caloriesRaw);
+  if (caloriesRaw === undefined || caloriesRaw === null || caloriesRaw === "" || !Number.isFinite(calories) || calories < 0) {
+    return { error: "'calories' is required and must be a non-negative number" };
+  }
+  const entryDate = payload?.entry_date ? String(payload.entry_date).trim() : null;
+  if (entryDate && !DATE_RE.test(entryDate)) {
+    return { error: "'entry_date' must be in YYYY-MM-DD format" };
+  }
+  const foodName = payload?.food_name ? String(payload.food_name).trim() : null;
+
+  return { userId, mealType, calories, entryDate, foodName };
+}
+
+/** GET/POST/DELETE /log — nutrition diary entries (breakfast/lunch/snack/dinner) for a user_id. */
+async function handleFoodLog(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    if (id) {
+      const { ok, body } = await db.selectOne("food_log_entries", id);
+      if (!ok) return notFound("Log entry");
+      return success(body);
+    }
+
+    const userId = url.searchParams.get("user_id");
+    if (!userId) return err("'user_id' query param is required");
+    const date = url.searchParams.get("date") || "";
+    if (date && !DATE_RE.test(date)) return err("'date' must be in YYYY-MM-DD format");
+
+    const filters = { user_id: `eq.${userId}` };
+    if (date) filters["entry_date"] = `eq.${date}`;
+
+    return await paginatedList(db, "food_log_entries", url, {
+      filters,
+      order: "entry_date.desc,created_at.desc",
+    });
+  }
+
+  if (method === "POST") {
+    if (id) return err("POST /log does not take an id in the path — omit it to create a new entry");
+    const payload = await parseBody(request);
+    const parsed = validateLogPayload(payload);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.insert("food_log_entries", {
+      user_id: parsed.userId,
+      meal_type: parsed.mealType,
+      calories: parsed.calories,
+      food_name: parsed.foodName,
+      ...(parsed.entryDate ? { entry_date: parsed.entryDate } : {}),
+    });
+    if (!ok) return err(body?.message || "Log entry failed", status);
+    return success(body, { message: "Logged" });
+  }
+
+  if (method === "DELETE") {
+    if (!id) return err("Entry id required, e.g. DELETE /log/5?user_id=...");
+    const userId = url.searchParams.get("user_id");
+    if (!userId) return err("'user_id' query param is required to delete a log entry");
+
+    const { ok, status, body } = await db.removeWhere("food_log_entries", {
+      id: `eq.${id}`,
+      user_id: `eq.${userId}`,
+    });
+    if (!ok) return err(body?.message || "Delete failed", status);
+    const removed = Array.isArray(body) ? body.length : 0;
+    if (!removed) return notFound("Log entry");
+    return success(null, { message: "Log entry deleted" });
+  }
+
+  return err("Method not allowed", 405);
+}
+
+/**
+ * GET /log/summary?user_id=...&period=daily|weekly&date=YYYY-MM-DD
+ * Aggregates food_log_entries into kcal totals — daily gives one day's
+ * breakdown by meal; weekly gives a 7-day window (ending on `date`,
+ * default today) with per-day totals, a per-meal breakdown across the
+ * whole week, and the daily average.
+ */
+async function handleLogSummary(request, url, db) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const userId = url.searchParams.get("user_id");
+  if (!userId) return err("'user_id' query param is required");
+
+  const period = (url.searchParams.get("period") || "daily").toLowerCase();
+  if (!["daily", "weekly"].includes(period)) {
+    return err("'period' must be 'daily' or 'weekly'");
+  }
+
+  const dateParam = url.searchParams.get("date") || "";
+  if (dateParam && !DATE_RE.test(dateParam)) return err("'date' must be in YYYY-MM-DD format");
+  const anchor = dateParam ? new Date(`${dateParam}T00:00:00Z`) : new Date(`${toDateOnly(new Date())}T00:00:00Z`);
+  if (isNaN(anchor.getTime())) return err("Invalid 'date'");
+
+  if (period === "daily") {
+    const dateStr = toDateOnly(anchor);
+    const { ok, status, body } = await db.select("food_log_entries", {
+      filters: { user_id: `eq.${userId}`, entry_date: `eq.${dateStr}` },
+      limit: 500,
+      order: "created_at.asc",
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+
+    const rows = Array.isArray(body) ? body : [];
+    const byMeal = emptyMealTotals();
+    let total = 0;
+    for (const row of rows) {
+      const kcal = Number(row.calories) || 0;
+      total += kcal;
+      if (byMeal.hasOwnProperty(row.meal_type)) byMeal[row.meal_type] += kcal;
+    }
+
+    return success({
+      user_id: userId,
+      period: "daily",
+      date: dateStr,
+      total_calories: total,
+      by_meal: byMeal,
+      entry_count: rows.length,
+    });
+  }
+
+  // weekly — 7-day window ending on the anchor date (inclusive)
+  const start = new Date(anchor);
+  start.setUTCDate(start.getUTCDate() - 6);
+  const startStr = toDateOnly(start);
+  const endStr = toDateOnly(anchor);
+
+  const { ok, status, body } = await db.select("food_log_entries", {
+    filters: { user_id: `eq.${userId}`, entry_date: `gte.${startStr}` },
+    limit: 1000,
+    order: "entry_date.asc",
+  });
+  if (!ok) return err(body?.message || "Query failed", status);
+
+  // gte was applied server-side; the upper bound is filtered here since
+  // buildUrl can't express two conditions on the same column at once.
+  const rows = (Array.isArray(body) ? body : []).filter((row) => row.entry_date <= endStr);
+
+  const byMeal = emptyMealTotals();
+  const byDate = {};
+  let total = 0;
+  for (const row of rows) {
+    const kcal = Number(row.calories) || 0;
+    total += kcal;
+    if (byMeal.hasOwnProperty(row.meal_type)) byMeal[row.meal_type] += kcal;
+    byDate[row.entry_date] = (byDate[row.entry_date] || 0) + kcal;
+  }
+
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start);
+    d.setUTCDate(d.getUTCDate() + i);
+    const dStr = toDateOnly(d);
+    days.push({ date: dStr, total_calories: byDate[dStr] || 0 });
+  }
+
+  return success({
+    user_id: userId,
+    period: "weekly",
+    start_date: startStr,
+    end_date: endStr,
+    total_calories: total,
+    average_daily_calories: Math.round((total / 7) * 100) / 100,
+    by_meal: byMeal,
+    by_date: days,
+    entry_count: rows.length,
+  });
 }
 
 /**
@@ -3731,6 +3956,13 @@ function handleRoot(env) {
         "GET  /history?user_id=...&resource_type=...   (public, rate-limited) → recently viewed, viewed_at desc",
         "POST /history   (public, rate-limited) → body {user_id, resource_type, resource_id}, upserts viewed_at",
       ],
+      food_log: [
+        "GET    /log?user_id=...&date=YYYY-MM-DD   (public, rate-limited) → diary entries, newest first; date filter optional",
+        "GET    /log/:id                           (public, rate-limited) → single entry",
+        "POST   /log        (public, rate-limited) → body {user_id, meal_type: breakfast|lunch|snack|dinner, calories, food_name?, entry_date?}",
+        "DELETE /log/:id?user_id=...                (public, rate-limited) → delete one entry (scoped to user_id)",
+        "GET    /log/summary?user_id=...&period=daily|weekly&date=YYYY-MM-DD   (public, rate-limited) → kcal totals + by_meal breakdown; weekly adds by_date[] and average_daily_calories",
+      ],
       recipes: [
         "POST /recipes/calculate   (public, rate-limited) → body {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]}; resolves each ingredient (local foods, falling back to the same local→external cascade as /foods/lookup), converts quantity/unit to grams (see Serving-Size Intelligence), and returns total_nutrients + nutrients_per_serving + a per-ingredient breakdown + any unresolved_ingredients",
       ],
@@ -4561,6 +4793,14 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "history": {
       return await handleHistory(request, url, db);
+    }
+
+    case "log": {
+      if (param === "summary") {
+        return await handleLogSummary(request, url, db);
+      }
+      const id = param || null;
+      return await handleFoodLog(request, url, db, id);
     }
 
     case "recipes": {

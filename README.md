@@ -856,6 +856,65 @@ create table if not exists view_history (
 create index if not exists view_history_user_id_idx on view_history(user_id, viewed_at desc);
 ```
 
+### Food Log (nutrition diary)
+
+Same public, self-declared-identity model as Favorites & History above —
+no server-side account system, `user_id` is whatever the client supplies.
+
+**`GET /log?user_id=...&date=YYYY-MM-DD`** *(date optional)* — diary
+entries, newest first. Supports `limit`/`offset`.
+
+**`GET /log/:id`** — a single entry.
+
+**`POST /log`** — log an item under a meal slot.
+
+```json
+{ "user_id": "device-abc123", "meal_type": "breakfast", "calories": 450, "food_name": "Oatmeal with banana" }
+```
+
+`meal_type` must be one of `breakfast`, `lunch`, `snack`, `dinner`.
+`entry_date` is optional (`YYYY-MM-DD`, defaults to today).
+
+**`DELETE /log/:id?user_id=...`** — delete one entry (scoped to
+`user_id`, so one client can't delete another's rows even without a real
+auth system).
+
+**`GET /log/summary?user_id=...&period=daily|weekly&date=YYYY-MM-DD`** —
+aggregate kcal totals, no client-side summing needed.
+
+- `period=daily` *(default)* → `total_calories`, `by_meal` breakdown,
+  `entry_count`, for one day.
+- `period=weekly` → 7-day window ending on `date` (default today):
+  `total_calories`, `average_daily_calories`, `by_meal` breakdown across
+  the whole week, and `by_date[]` (one entry per day).
+
+Example — a full day logged and summarized:
+
+```
+POST /log  {"user_id":"u1","meal_type":"breakfast","calories":450}
+POST /log  {"user_id":"u1","meal_type":"lunch","calories":720}
+POST /log  {"user_id":"u1","meal_type":"snack","calories":180}
+POST /log  {"user_id":"u1","meal_type":"dinner","calories":650}
+
+GET /log/summary?user_id=u1&period=daily
+→ { "total_calories": 2000, "by_meal": {"breakfast":450,"lunch":720,"snack":180,"dinner":650}, "entry_count": 4 }
+```
+
+Requires this table:
+
+```sql
+create table if not exists food_log_entries (
+  id bigint generated always as identity primary key,
+  user_id text not null,
+  entry_date date not null default current_date,
+  meal_type text not null check (meal_type in ('breakfast','lunch','snack','dinner')),
+  food_name text,
+  calories numeric not null check (calories >= 0),
+  created_at timestamptz not null default now()
+);
+create index if not exists food_log_entries_user_date_idx on food_log_entries(user_id, entry_date);
+```
+
 ### RAG
 
 - `POST /rag/retrieve` *(public, rate-limited)*
