@@ -44,7 +44,7 @@ Chakudya can be used to build:
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.20.0`
+- **Current CNR version:** `1.20.2`
 
 ---
 
@@ -594,7 +594,7 @@ Both of the above require `FATSECRET_CONSUMER_KEY`/`FATSECRET_CONSUMER_SECRET` o
 ```
 
 - Each ingredient needs `quantity` and either `food_id` (exact row) or `food_name` (matched against local `foods` first, then falling back to the same local→external cascade `GET /foods/lookup` uses — so ingredients outside the local FCT can still resolve).
-- `unit` defaults to `"g"` if omitted. Accepts plain mass/volume units (`g`, `kg`, `ml`, `l`, `oz`, `lb`, ...), `"serving"`/`"servings"`, or a household unit (`cup`, `tbsp`, `tsp`, `piece`, `slice`, `handful`, ...) — household units are matched against *that specific food's* own serving-size candidates first (so "2 cups rice" uses rice's own cup measure), falling back to a generic estimate only if there's no food-specific match.
+- `unit` defaults to `"g"` if omitted. Accepts plain mass/volume units (`g`, `kg`, `ml`, `l`, `oz`, `lb`, `floz`/`fl_oz`, `pint`, `quart`, `gallon`, ...), `"serving"`/`"servings"`, or a household unit (`cup`, `tbsp`, `tsp`, `piece`, `slice`, `handful`, ...) — household units are matched against *that specific food's* own serving-size candidates first (so "2 cups rice" uses rice's own cup measure), falling back to a generic estimate only if there's no food-specific match. Conversion factors cross-checked against the Nutrition Care Manual (NC Dietetic Association).
 - `servings` (top-level, optional, default `1`) — the recipe yield, used to compute `nutrients_per_serving`.
 - Response includes `total_nutrients`, `nutrients_per_serving`, `total_grams`, `grams_per_serving`, a per-ingredient `ingredients[]` breakdown (with `grams_basis` explaining how each quantity was converted), and `unresolved_ingredients[]` for anything that couldn't be matched or converted — one bad ingredient never fails the whole request.
 

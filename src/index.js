@@ -3,7 +3,34 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.20.0
+ * Version: 1.20.2
+ *
+ * v1.20.2 changes:
+ *  - Expanded GENERIC_UNIT_GRAMS (used by Recipe Nutrition Calculation's
+ *    resolveIngredientGrams()) with fl oz, pint, quart, and gallon, and
+ *    added a distinct fluid-ounce entry (floz/fl_oz/fluidounce, ~29.57mL)
+ *    separate from the existing weight-ounce (oz/ounce, 28.35g) — the two
+ *    are different quantities for non-water liquids and conflating them
+ *    was a latent inaccuracy. Values cross-checked against the Nutrition
+ *    Care Manual (NC Dietetic Association, 2011) equivalents/conversion
+ *    tables; existing cup/Tbsp/tsp/oz/lb values already matched that
+ *    reference exactly, so those are unchanged.
+ *
+ * v1.20.1 changes:
+ *  - Fixed a data-trust bug in buildServingSizes()'s Tier 1 (the food's own
+ *    FCT household measure): some `foods` rows have a `weight_g` that
+ *    doesn't match the gram amount printed in `measure` (e.g. measure
+ *    "1 cup / chikombe (240g)" but weight_g: 100 — weight_g looks
+ *    defaulted to the 100g reference basis on a number of rows rather than
+ *    actually recorded per measure). Now parses the gram amount out of
+ *    `measure`'s own text first (extractGramsFromMeasureText()) and only
+ *    falls back to weight_g when that parse fails. Fixes both Serving-Size
+ *    Intelligence's serving_sizes[] and Recipe Nutrition Calculation's
+ *    grams_basis/grams for any ingredient resolved via a food's FCT
+ *    measure — both build on the same buildServingSizes(). No API shape
+ *    change, just corrected numbers. The underlying weight_g column data
+ *    itself is still worth a cleanup pass separately — this only changes
+ *    which column the Worker trusts at read time.
  *
  * v1.20.0 changes:
  *  - Added Recipe Nutrition Calculation: POST /recipes/calculate. Body
@@ -270,7 +297,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.20.0";
+const CNR_VERSION = "1.20.2";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1207,6 +1234,22 @@ const CATEGORY_KEYWORDS = [
   ["Nuts & Seeds", ["almond", "cashew", "walnut", "seed", "nut"]],
 ];
 
+// Some rows in `foods` have a `weight_g` value that doesn't match the gram
+// amount printed in `measure` (e.g. measure "1 cup / chikombe (240g)" but
+// weight_g: 100) — weight_g looks like it was defaulted to the 100g
+// reference basis on a number of rows rather than actually recorded per
+// measure. The gram amount printed inside `measure`'s parentheses is more
+// trustworthy when present, so that's tried first; weight_g is only the
+// fallback. This affects both Serving-Size Intelligence and Recipe
+// Nutrition Calculation, since both build on buildServingSizes() below.
+function extractGramsFromMeasureText(measureText) {
+  if (!measureText) return null;
+  const m = String(measureText).match(/\(\s*([\d.]+)\s*g\s*\)/i);
+  if (!m) return null;
+  const val = parseFloat(m[1]);
+  return isNaN(val) ? null : val;
+}
+
 function classifyCategory(foodName) {
   const name = (foodName || "").toLowerCase();
   for (const [category, keywords] of CATEGORY_KEYWORDS) {
@@ -1312,9 +1355,21 @@ function buildServingSizes(food) {
 
   const candidates = [];
 
-  // Tier 1 — this food's own Malawi FCT household-measure entry.
-  if (food.measure && food.weight_g != null && !isNaN(Number(food.weight_g))) {
-    candidates.push({ label: String(food.measure), grams: Number(food.weight_g), source: "fct" });
+  // Tier 1 — this food's own Malawi FCT household-measure entry. Prefer the
+  // gram amount printed inside `measure` itself (more trustworthy — see
+  // extractGramsFromMeasureText() above); fall back to weight_g only if
+  // `measure` doesn't have a parseable gram amount.
+  if (food.measure) {
+    const parsedGrams = extractGramsFromMeasureText(food.measure);
+    const grams =
+      parsedGrams != null
+        ? parsedGrams
+        : food.weight_g != null && !isNaN(Number(food.weight_g))
+        ? Number(food.weight_g)
+        : null;
+    if (grams != null) {
+      candidates.push({ label: String(food.measure), grams, source: "fct" });
+    }
   }
 
   // Tier 2 — specific local-food keyword match (first/most-specific wins).
@@ -1362,7 +1417,14 @@ function buildServingSizes(food) {
 // Unambiguous mass/volume units — exact conversion, doesn't depend on which
 // food it's attached to. ml/l assume ~1g/ml (water-like density) since we
 // don't have per-food density data; fine for the liquids/porridges this is
-// mostly used for, less exact for e.g. oil.
+// mostly used for, less exact for e.g. oil. Values cross-checked against
+// the Nutrition Care Manual (NC Dietetic Association, 2011) equivalents/
+// conversion tables — cup=240mL, Tbsp=15mL, tsp=5mL, oz=28.35g, lb=453.6g,
+// pint=473.2mL, quart=946.2mL, gallon=3785mL all match that reference.
+// "oz"/"ounce" defaults to the dry/weight ounce (28.35g), since that's how
+// most food-ingredient quantities in oz are meant; "fl oz" (fluid ounce,
+// ~29.57mL/g) is kept as a distinct unit rather than folded into "oz",
+// since the two are genuinely different quantities for non-water liquids.
 const GENERIC_UNIT_GRAMS = {
   g: 1, gram: 1, grams: 1, gm: 1,
   kg: 1000, kilogram: 1000, kilograms: 1000,
@@ -1371,6 +1433,10 @@ const GENERIC_UNIT_GRAMS = {
   l: 1000, liter: 1000, litre: 1000,
   oz: 28.35, ounce: 28.35, ounces: 28.35,
   lb: 453.6, pound: 453.6, pounds: 453.6,
+  floz: 29.57, fl_oz: 29.57, fluidounce: 29.57, fluidounces: 29.57,
+  pint: 473.2, pints: 473.2,
+  quart: 946.2, quarts: 946.2,
+  gallon: 3785, gallons: 3785,
 };
 
 // Generic household-unit fallback — used only when the unit couldn't be
