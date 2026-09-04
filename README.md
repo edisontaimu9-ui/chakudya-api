@@ -22,7 +22,7 @@ for AI assisted nutrition tools.
 - **RAG powered nutrition knowledge** (`/rag/ask`, `/rag/retrieve`). Retrieve relevant knowledge or ask a question directly.
 - **Session memory** (`/memory/write`, `/memory/recall`, `/memory/consolidate`). Store, consolidate, and recall contextual information for AI assisted applications like Oasis.
 - **Recipe nutrition calculation** (`/recipes/calculate`). Give it a list of ingredients (name or id, quantity, unit) and it resolves, converts, and sums the nutrition for you — total and per-serving.
-- **Meal analysis** (`/meals/analyze`). Same ingredient resolution as recipes, framed around a single meal: macronutrient % breakdown against the standard adult AMDR range, food-group coverage, and an optional comparison against caller-supplied daily targets.
+- **Meal analysis** (`/meals/analyze`). Same ingredient resolution as recipes, framed around a single meal: macronutrient % breakdown against the standard adult AMDR range, food-group coverage, an optional comparison against caller-supplied daily targets, and optional per-meal clinical screening flags (diabetes, hypertension, kidney disease).
 
 ## Who it's for
 
@@ -616,6 +616,11 @@ Adds, on top of the recipe response shape:
 - `macronutrient_breakdown` — kcal from protein/carbs/fat (Atwater 4/4/9 factors) and each as a % of total meal kcal, plus `within_amdr_adult_reference` (whether each % falls inside the standard adult Institute of Medicine Acceptable Macronutrient Distribution Range: protein 10–35%, carbs 45–65%, fat 20–35%). Purely descriptive — a reference range, not a personalized target.
 - `food_groups_present` / `food_groups_missing` — against a core set (Grains, Legumes, Protein, Vegetables, Fruits, Dairy), reusing the same category classification as Serving-Size Intelligence.
 - `daily_target_comparison` — **only included if you supply `daily_targets`** in the request. This endpoint never invents a personalized target on its own (no age/sex/weight-based EER calculation happens here); pass in a target computed elsewhere (e.g. from the Harris-Benedict tools in `chakudya-mcp-server`) if you want this comparison.
+- `clinical_flags` — **only included if you supply `conditions`** (array, any of `"diabetes"`, `"hypertension"`, `"kidney_disease"`). One entry per requested condition: `{ condition, flag: "appropriate"|"caution"|"avoid"|null, reasons: string[], note }`. Evaluated straight off the meal's own nutrient totals (carbs/fiber for diabetes, sodium/potassium for hypertension, potassium/sodium/protein for kidney disease) against standard per-meal reference thresholds (ADA carb-counting, DASH sodium, KDOQI conservative-CKD) — **screening, not a diagnosis or a personalized prescription**; `note` on each flag spells out what it doesn't account for (e.g. kidney-disease phosphorus isn't tracked in the local food data, and CKD protein/potassium targets depend on the patient's stage and dialysis status). `flag` is `null` when the underlying nutrient (e.g. sodium) is missing for one or more ingredients, rather than guessing.
+
+```json
+{ "ingredients": [{ "food_name": "nsima", "quantity": 1, "unit": "cup" }], "conditions": ["diabetes", "kidney_disease"] }
+```
 
 **`POST /ingredients/parse`** *(public, rate-limited)* — turns free text into the `ingredients[]` shape `/recipes/calculate` and `/meals/analyze` accept above, so a caller can paste a plain sentence instead of hand-building JSON.
 

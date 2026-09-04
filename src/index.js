@@ -2449,9 +2449,137 @@ const AMDR_ADULT = {
 // their absence isn't flagged as "missing".
 const CORE_FOOD_GROUPS = ["Grains", "Legumes", "Protein", "Vegetables", "Fruits", "Dairy"];
 
+// ─── CLINICAL CONDITION FLAGS ───────────────────────────────────────────────
+//
+// Per-meal screening against a handful of conditions, evaluated straight off
+// the same resolved-ingredient nutrient totals /meals/analyze already
+// computes — no extra lookups, no invented daily targets. These are
+// meal-level screening flags for a dietitian/patient to weigh, not a
+// diagnosis or a substitute for an individualized prescription (a CKD
+// patient's protein allowance depends on their weight and stage, a
+// diabetic's carb target on their own plan, etc.) — each flag's `note` says
+// so explicitly.
+//
+// Thresholds are meal-level (roughly a third to a quarter of commonly-cited
+// daily limits), sourced from standard references (ADA carb-counting
+// guidance, DASH/AHA sodium targets, KDOQI conservative-CKD guidance) rather
+// than any single patient's prescription. Two known gaps, called out in each
+// flag's `note` rather than silently ignored:
+//   - phosphorus isn't in the local `foods` schema, so kidney-disease
+//     phosphorus screening isn't possible from meal data alone — cross-check
+//     against the renal exchange list (GET /renal-foods, or /rag/ask with
+//     context=clinical) for phosphorus-specific guidance.
+//   - CKD protein/potassium limits vary hugely by dialysis status and stage;
+//     the flag here is "this meal's protein/potassium looks high relative to
+//     a *typical* restricted diet", not a per-patient verdict.
+
+const CLINICAL_CONDITIONS = ["diabetes", "hypertension", "kidney_disease"];
+
+// Three-tier flag from a single nutrient value against caution/avoid
+// cutoffs — null propagates (missing data means "can't say", not "fine").
+function flagLevel(value, cautionAt, avoidAt) {
+  if (value == null) return null;
+  if (value >= avoidAt) return "avoid";
+  if (value >= cautionAt) return "caution";
+  return "appropriate";
+}
+
+function evaluateDiabetes(totalNutrients) {
+  const carbs = totalNutrients.carbs_g ?? null;
+  const fiber = totalNutrients.fiber_g ?? null;
+  const reasons = [];
+  // ADA carb-counting guidance commonly starts patients around 45-60g
+  // carbohydrate per meal; 75g+ in one sitting is a large single-meal load.
+  const level = flagLevel(carbs, 60, 75);
+  if (level == null) {
+    reasons.push("Carbohydrate content unknown for one or more ingredients — flag is incomplete.");
+  } else {
+    reasons.push(
+      `Meal carries ${roundServingVal(carbs)}g carbohydrate (a common per-meal starting target is ~45-60g — adjust to the individual's own carb-counting plan).`
+    );
+    if (fiber != null && carbs > 0) {
+      const fiberRatio = fiber / carbs;
+      reasons.push(
+        fiberRatio < 0.1
+          ? `Low fiber relative to carbs (${roundServingVal(fiber)}g) — refined-carb meals raise blood glucose faster; pairing with more fiber or protein slows the rise.`
+          : `Fiber-to-carb ratio is reasonable (${roundServingVal(fiber)}g fiber), which helps blunt the glycemic response.`
+      );
+    }
+  }
+  return {
+    condition: "diabetes",
+    flag: level,
+    reasons,
+    note: "Screening only — carb totals don't capture glycemic index/load or the individual's own carb-counting target. Confirm against the patient's prescribed plan.",
+  };
+}
+
+function evaluateHypertension(totalNutrients) {
+  const sodium = totalNutrients.sodium_mg ?? null;
+  const potassium = totalNutrients.potassium_mg ?? null;
+  const reasons = [];
+  // DASH targets ~1500-2300mg sodium/day; roughly a third of that per meal
+  // is a reasonable per-meal ceiling for a three-meal day.
+  const level = flagLevel(sodium, 400, 700);
+  if (level == null) {
+    reasons.push("Sodium content unknown for one or more ingredients — flag is incomplete.");
+  } else {
+    reasons.push(`Meal carries ${roundServingVal(sodium)}mg sodium (DASH guidance targets 1500-2300mg/day total).`);
+  }
+  if (potassium != null) {
+    reasons.push(`${roundServingVal(potassium)}mg potassium — DASH favors potassium-rich meals (fruit, vegetables, legumes) alongside the sodium limit.`);
+  }
+  return {
+    condition: "hypertension",
+    flag: level,
+    reasons,
+    note: "Sodium-focused DASH screening — doesn't account for a clinician-set sodium limit stricter than DASH, or potassium-sparing diuretics, where high-potassium meals need their own caution.",
+  };
+}
+
+function evaluateKidneyDisease(totalNutrients) {
+  const potassium = totalNutrients.potassium_mg ?? null;
+  const sodium = totalNutrients.sodium_mg ?? null;
+  const protein = totalNutrients.protein_g ?? null;
+  const reasons = [];
+  // Conservative (non-dialysis) CKD potassium limits often run
+  // 2000-3000mg/day total — a per-meal share of that is much tighter than
+  // the general-population DASH sodium ceiling reused here for sodium.
+  const potassiumLevel = flagLevel(potassium, 700, 1000);
+  const sodiumLevel = flagLevel(sodium, 400, 700);
+  const levels = [potassiumLevel, sodiumLevel].filter((l) => l != null);
+  const worst = levels.includes("avoid") ? "avoid" : levels.includes("caution") ? "caution" : levels.length ? "appropriate" : null;
+
+  reasons.push(
+    potassium != null
+      ? `${roundServingVal(potassium)}mg potassium (conservative CKD limits often run 2000-3000mg/day total, stage-dependent).`
+      : "Potassium content unknown for one or more ingredients — flag is incomplete."
+  );
+  if (sodium != null) reasons.push(`${roundServingVal(sodium)}mg sodium.`);
+  if (protein != null && protein > 30) {
+    reasons.push(
+      `${roundServingVal(protein)}g protein is high for a single meal on a protein-restricted CKD diet (typical restriction: 0.6-0.8g/kg/day) — check against the patient's prescribed protein target.`
+    );
+  }
+  reasons.push("Phosphorus isn't tracked in the local food data — cross-check against the renal exchange list for phosphorus-specific guidance.");
+
+  return {
+    condition: "kidney_disease",
+    flag: worst,
+    reasons,
+    note: "Non-dialysis conservative-management screening (potassium/sodium/protein only, no phosphorus). Dialysis patients have different, often opposite, fluid/potassium/protein targets — always confirm against the patient's stage and dialysis status.",
+  };
+}
+
+const CONDITION_EVALUATORS = {
+  diabetes: evaluateDiabetes,
+  hypertension: evaluateHypertension,
+  kidney_disease: evaluateKidneyDisease,
+};
+
 /**
  * POST /meals/analyze
- * Body: { meal_type?: string, ingredients: [{ food_id? | food_name, quantity, unit? }], daily_targets?: {kcal, protein_g, carbs_g, fat_g} }
+ * Body: { meal_type?: string, ingredients: [{ food_id? | food_name, quantity, unit? }], daily_targets?: {kcal, protein_g, carbs_g, fat_g}, conditions?: string[] }
  * Same ingredient resolution as /recipes/calculate (resolveIngredientsList)
  * — no `servings` concept here, a meal is just eaten once. Adds:
  *   - macronutrient_breakdown: kcal from protein/carbs/fat (Atwater
@@ -2460,12 +2588,28 @@ const CORE_FOOD_GROUPS = ["Grains", "Legumes", "Protein", "Vegetables", "Fruits"
  *   - food_groups_present / food_groups_missing, from CORE_FOOD_GROUPS.
  *   - daily_target_comparison: only included if the caller supplies
  *     `daily_targets` — this endpoint never invents personalized targets.
+ *   - clinical_flags: only included if the caller supplies `conditions`
+ *     (subset of "diabetes", "hypertension", "kidney_disease") — per-meal
+ *     screening flags, see CONDITION_EVALUATORS above. Screening, not a
+ *     diagnosis or a personalized prescription.
  * Purely additive/computational — writes nothing, no auth required.
  */
 async function handleMealsAnalyze(request, db, env) {
   const payload = await parseBody(request);
   if (!payload || !Array.isArray(payload.ingredients) || !payload.ingredients.length) {
     return err("'ingredients' array is required — each item: {food_name or food_id, quantity, unit?}");
+  }
+
+  let requestedConditions = [];
+  if (payload.conditions !== undefined) {
+    if (!Array.isArray(payload.conditions)) {
+      return err("'conditions' must be an array of condition names");
+    }
+    const invalid = payload.conditions.filter((c) => !CLINICAL_CONDITIONS.includes(c));
+    if (invalid.length) {
+      return err(`Unknown condition(s): ${invalid.join(", ")} — supported: ${CLINICAL_CONDITIONS.join(", ")}`);
+    }
+    requestedConditions = [...new Set(payload.conditions)];
   }
 
   const { resolvedIngredients, unresolvedIngredients } = await resolveIngredientsList(payload.ingredients, db, env);
@@ -2537,6 +2681,10 @@ async function handleMealsAnalyze(request, db, env) {
       }
     }
     if (Object.keys(comparison).length) result.daily_target_comparison = comparison;
+  }
+
+  if (requestedConditions.length) {
+    result.clinical_flags = requestedConditions.map((c) => CONDITION_EVALUATORS[c](totalNutrients));
   }
 
   return success(result);
