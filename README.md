@@ -17,6 +17,7 @@ for AI assisted nutrition tools.
 - **Food exchange systems** (`/exchange`). Standard and therapeutic exchange lists.
 - **Renal nutrition data** (`/renal`). Foods and nutrition information relevant to renal dietary planning.
 - **Enteral formulas** (`/formulas`). Structured information for clinical nutrition applications.
+- **Drug-nutrient interactions** (`/drug-interactions`). 117-entry reference DB (migrated from Oasis CNST) with keyword search, shared across the ecosystem instead of bundled per-app.
 - **Packaged and branded foods** (`/packaged`). Barcode lookup, community product submission, OCR assisted data capture, and an admin review workflow.
 - **External food lookup** (`/foods/lookup`, `/foods/autocomplete`, `/foods/categories`). Additional food information from USDA FoodData Central, Open Food Facts, and FatSecret when a food isn't in the local database.
 - **RAG powered nutrition knowledge** (`/rag/ask`, `/rag/retrieve`). Retrieve relevant knowledge or ask a question directly.
@@ -484,8 +485,8 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 
 ## Bulk insert
 
-`POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, and `/formulas/bulk`
-*(all admin)* accept a batch
+`POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`, and
+`/drug-interactions/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
 
@@ -507,9 +508,9 @@ curl -X POST https://your-worker-url/foods/bulk \
 
 - Max **500 items** per request — split larger loads into multiple calls.
 - `food_name` is required on every item for `/foods/bulk` (mirrors the
-  single-row `POST /foods` validation); the other five resources have no
-  required-field check beyond a non-empty array, matching their single-row
-  endpoints today.
+  single-row `POST /foods` validation), `drug` for `/drug-interactions/bulk`;
+  the other four resources have no required-field check beyond a non-empty
+  array, matching their single-row endpoints today.
 - **All-or-nothing:** this is one PostgREST batch insert, not N sequential
   inserts. If any row in the batch violates a constraint (e.g. a duplicate
   unique key), the *entire* batch is rejected and nothing is inserted —
@@ -703,6 +704,29 @@ Query params: `limit`, `offset`/`cursor`
 - `DELETE /formulas/:id` *(admin)*
 
 Query params: `route`, `limit`, `offset`/`cursor`
+
+### Drug Interactions
+
+Migrated from Oasis CNST's client-side 117-entry drug-nutrient interaction
+database (`js/dni.js`), so every app in the ecosystem shares one copy
+instead of each bundling its own. Sources: Krause & Mahan's *Food and the
+Nutrition Care Process* 16th ed.; *The Essential Pocket Guide for Clinical
+Nutrition* 4th ed.; LPI/OSU Micronutrient Info Center; NIH PMC6109862.
+Clinical reference only — not a substitute for a current pharmacopoeia or
+a per-patient interaction checker.
+
+- `GET /drug-interactions`
+- `GET /drug-interactions/:id`
+- `GET /drug-interactions/search?q=warfarin` *(public, rate-limited)* — keyword scan across `drug`/`aliases`/`category`/`subcategory`/`tags`/`effects`/`implications` (same whole-row-scan approach `/rag/ask` already uses for `exchange_lists`/`renal_foods`/`enteral_formulas`, since none of these have a single documented column to `ilike` on). `q` can be a drug name, brand name, drug class, or a nutrient/food keyword (e.g. `"grapefruit"`, `"vitamin B12"`); `drug` is also accepted as the param name. Returns rows with a `match_score` (count of matched keywords), sorted descending.
+- `POST /drug-interactions` *(admin)*
+- `POST /drug-interactions/bulk` *(admin)*
+- `PUT /drug-interactions/:id` *(admin)*
+- `PATCH /drug-interactions/:id` *(admin)*
+- `DELETE /drug-interactions/:id` *(admin)*
+
+Query params (list): `category`, `severity`, `limit`, `offset`/`cursor`
+
+Row shape: `{ external_id, drug, aliases[], category, subcategory, effects[], implications[], severity: "info"|"caution"|"moderate"|"major", tags[] }`
 
 ### Packaged
 

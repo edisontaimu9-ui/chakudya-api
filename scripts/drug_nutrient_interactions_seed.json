@@ -1,0 +1,3982 @@
+{
+  "items": [
+    {
+      "external_id": "penicillins",
+      "drug": "Penicillins",
+      "aliases": [
+        "amoxicillin",
+        "amoxil",
+        "augmentin",
+        "amoxicillin/clavulanic acid",
+        "penicillin VK",
+        "pen-vk",
+        "piperacillin/tazobactam",
+        "zosyn"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Penicillins",
+      "effects": [
+        "Short-term: diarrhea",
+        "Long-term: oral candidiasis, epigastric distress, C. difficile",
+        "Pen-VK contains potassium (0.73–1.44 mEq/tab); Zosyn contains sodium (125–256 mg/dose)"
+      ],
+      "implications": [
+        "Take Augmentin with food to reduce GI distress",
+        "Replace fluids and electrolytes for diarrhea",
+        "Probiotic recommended during and after course",
+        "Caution: low-potassium diets or renal failure (Pen-VK potassium load)"
+      ],
+      "severity": "caution",
+      "tags": [
+        "gi",
+        "diarrhea",
+        "electrolytes",
+        "potassium",
+        "sodium",
+        "probiotic",
+        "c.diff"
+      ]
+    },
+    {
+      "external_id": "macrolides",
+      "drug": "Macrolides",
+      "aliases": [
+        "azithromycin",
+        "zithromax",
+        "clarithromycin",
+        "biaxin",
+        "erythromycin",
+        "ery-tab"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Macrolides",
+      "effects": [
+        "GI distress (promotility: erythromycin >> clarithromycin >> azithromycin)",
+        "Anorexia, stomatitis, dysgeusia, diarrhea",
+        "May increase sedative effect of alcohol",
+        "Grapefruit may increase erythromycin levels → cardiac conduction abnormalities",
+        "May cause C. difficile"
+      ],
+      "implications": [
+        "Take with food to reduce GI distress",
+        "Small, frequent, appealing meals for anorexia",
+        "Mouth rinses, fresh mint, or lemon water for dysgeusia",
+        "Replace fluids and electrolytes for diarrhea",
+        "AVOID alcohol; AVOID grapefruit with erythromycin",
+        "Probiotic recommended"
+      ],
+      "severity": "caution",
+      "tags": [
+        "gi",
+        "diarrhea",
+        "anorexia",
+        "dysgeusia",
+        "grapefruit",
+        "alcohol",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "cotrimoxazole",
+      "drug": "Sulfamethoxazole / Trimethoprim (Bactrim)",
+      "aliases": [
+        "bactrim",
+        "cotrimoxazole",
+        "sulfamethoxazole",
+        "trimethoprim",
+        "smx-tmp",
+        "tmp-smx"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Sulfonamide Combination",
+      "effects": [
+        "May interfere with folate metabolism (especially long-term)",
+        "Stomatitis, anorexia, nausea/vomiting, severe allergic reactions",
+        "Disulfiram-type reaction with alcohol",
+        "May increase potassium levels (high doses) and cause hypoglycemia (elderly)",
+        "May cause C. difficile"
+      ],
+      "implications": [
+        "Take with food and 8 oz fluid to reduce nausea/vomiting",
+        "Supplement folic acid as needed",
+        "AVOID alcohol",
+        "Caution: potassium supplements or renal failure",
+        "May potentiate hypoglycemia in diabetic patients",
+        "Probiotic recommended"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "folate",
+        "folic acid",
+        "alcohol",
+        "potassium",
+        "hypoglycemia",
+        "gi",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "cephalosporins",
+      "drug": "Cephalosporins",
+      "aliases": [
+        "cephalexin",
+        "keflex",
+        "cefazolin",
+        "ancef",
+        "cefprozil",
+        "cefzil",
+        "cefuroxime",
+        "ceftin",
+        "ceftriaxone",
+        "rocephin",
+        "ceftazidime",
+        "fortaz",
+        "cefdinir",
+        "omnicef",
+        "cefpodoxime",
+        "vantin",
+        "cefepime",
+        "maxipime"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Cephalosporins",
+      "effects": [
+        "Stomatitis, sore mouth and tongue; may interfere with eating",
+        "Diarrhea, C. difficile",
+        "Cefuroxime: food affects bioavailability; antacids (H2 blockers, PPIs) may decrease bioavailability",
+        "Some cefuroxime products contain phenylalanine (PKU risk)"
+      ],
+      "implications": [
+        "Moist, soft, low-salt, cold foods (ice chips, sherbet, yogurt) for stomatitis",
+        "Take cefuroxime with a meal for optimal bioavailability; separate from H2 blockers/PPIs",
+        "Take cefpodoxime with food",
+        "Replace fluids and electrolytes for diarrhea",
+        "Probiotic recommended"
+      ],
+      "severity": "caution",
+      "tags": [
+        "gi",
+        "diarrhea",
+        "stomatitis",
+        "bioavailability",
+        "phenylalanine",
+        "pku",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "fluoroquinolones",
+      "drug": "Fluoroquinolones",
+      "aliases": [
+        "ciprofloxacin",
+        "cipro",
+        "levofloxacin",
+        "levaquin",
+        "moxifloxacin",
+        "avelox"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Fluoroquinolones",
+      "effects": [
+        "Binds Mg, Ca, Zn, Fe → insoluble unabsorbable complex (mineral chelation)",
+        "Ciprofloxacin inhibits caffeine metabolism → increased CNS stimulation",
+        "May cause C. difficile"
+      ],
+      "implications": [
+        "Take 2 h before or 6 h after antacids, Mg, Ca, Fe, Zn supplements, or multivitamins with minerals",
+        "Limit caffeine intake with ciprofloxacin",
+        "Hold tube feeds 1–2 h before and 1–2 h after dose",
+        "Take with 8 oz fluid; maintain adequate hydration",
+        "Replace fluids and electrolytes for diarrhea",
+        "Probiotic recommended"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "mineral chelation",
+        "magnesium",
+        "calcium",
+        "zinc",
+        "iron",
+        "caffeine",
+        "tube feeding",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "linezolid",
+      "drug": "Linezolid (Zyvox)",
+      "aliases": [
+        "linezolid",
+        "zyvox",
+        "oxazolidinone"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antimicrobial — Oxazolidinone",
+      "effects": [
+        "Mild MAO inhibition",
+        "Taste change, oral candidiasis",
+        "May cause C. difficile"
+      ],
+      "implications": [
+        "AVOID significant amounts (>100 mg) of high-tyramine/pressor foods (aged cheeses, cured meats, fermented products)",
+        "Small, frequent, appealing meals for taste changes",
+        "Replace fluids and electrolytes for diarrhea",
+        "Probiotic recommended"
+      ],
+      "severity": "major",
+      "tags": [
+        "maoi",
+        "tyramine",
+        "hypertensive crisis",
+        "taste",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "tetracyclines",
+      "drug": "Tetracyclines",
+      "aliases": [
+        "tetracycline",
+        "sumycin",
+        "doxycycline",
+        "vibramycin"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Tetracyclines",
+      "effects": [
+        "Binds Mg, Ca, Zn, Fe → insoluble unabsorbable complex",
+        "May affect bacterial vitamin K production in GI tract",
+        "Long-term: B-vitamin deficiencies",
+        "Combining with vitamin A may increase risk of benign intracranial hypertension",
+        "May cause C. difficile; anorexia"
+      ],
+      "implications": [
+        "Take mineral supplements separately by ≥3 h",
+        "Tetracycline: take 1 h before or 2 h after food or milk",
+        "Both: take with a full glass of water (prevent pill esophagitis)",
+        "Avoid excessive vitamin A",
+        "Long-term: consider vitamins K and B complex supplementation",
+        "Small, frequent meals for anorexia",
+        "Probiotic recommended"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "mineral chelation",
+        "calcium",
+        "magnesium",
+        "zinc",
+        "iron",
+        "vitamin K",
+        "vitamin B",
+        "vitamin A",
+        "anorexia",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "metronidazole",
+      "drug": "Metronidazole (Flagyl)",
+      "aliases": [
+        "metronidazole",
+        "flagyl"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antiprotozoal / Antibacterial",
+      "effects": [
+        "Anorexia, GI distress, stomatitis, metallic taste",
+        "Disulfiram-like reaction with alcohol (nausea, vomiting, flushing, tachycardia)"
+      ],
+      "implications": [
+        "Take with food to reduce GI distress",
+        "Small, frequent meals for anorexia",
+        "AVOID ALL alcohol during use AND for 3 days after discontinuation",
+        "Probiotic recommended"
+      ],
+      "severity": "major",
+      "tags": [
+        "alcohol",
+        "disulfiram",
+        "gi",
+        "anorexia",
+        "metallic taste",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "clindamycin",
+      "drug": "Clindamycin (Cleocin)",
+      "aliases": [
+        "clindamycin",
+        "cleocin"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial",
+      "effects": [
+        "Weight loss, increased thirst, esophagitis, nausea/vomiting, cramps, flatulence, bloating, diarrhea",
+        "Risk of severe C. difficile colitis"
+      ],
+      "implications": [
+        "Take oral forms with food or 8 oz water to decrease esophageal irritation",
+        "Replace fluids and electrolytes for diarrhea",
+        "Probiotic recommended"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "gi",
+        "diarrhea",
+        "esophagitis",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "nitrofurantoin",
+      "drug": "Nitrofurantoin (Macrobid)",
+      "aliases": [
+        "nitrofurantoin",
+        "macrobid"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Nitrofuran",
+      "effects": [
+        "Peripheral neuropathy, muscle weakness, and wasting with preexisting anemia, B-vitamin deficiency, or electrolyte abnormalities",
+        "C. difficile risk"
+      ],
+      "implications": [
+        "Take with food to maximize absorption",
+        "Ensure adequate protein and B-complex vitamin intake",
+        "AVOID in G-6-PD deficiency (risk of hemolytic anemia)",
+        "Probiotic recommended"
+      ],
+      "severity": "caution",
+      "tags": [
+        "vitamin B",
+        "neuropathy",
+        "g6pd",
+        "protein",
+        "c.diff",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "isoniazid",
+      "drug": "Isoniazid (Nydrazid)",
+      "aliases": [
+        "isoniazid",
+        "inh",
+        "nydrazid"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antitubercular",
+      "effects": [
+        "Pyridoxine (B6) and niacin (B3) deficiency → peripheral neuropathy and pellagra",
+        "MAO inhibitor–like activity (tyramine restriction required)"
+      ],
+      "implications": [
+        "Supplement pyridoxine 25–50 mg/day; consider B-complex if skin changes occur",
+        "AVOID in malnourished individuals without supplementation",
+        "AVOID foods high in tyramine (aged cheeses, cured meats, fermented products)"
+      ],
+      "severity": "major",
+      "tags": [
+        "vitamin B6",
+        "pyridoxine",
+        "niacin",
+        "vitamin B3",
+        "peripheral neuropathy",
+        "pellagra",
+        "maoi",
+        "tyramine"
+      ]
+    },
+    {
+      "external_id": "rifampin",
+      "drug": "Rifampin / Rifabutin",
+      "aliases": [
+        "rifampin",
+        "rifadin",
+        "rifabutin"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antitubercular",
+      "effects": [
+        "Increases metabolism of vitamin D; rare cases of osteomalacia",
+        "Food decreases rifampin absorption by 30%",
+        "Rifabutin is a less potent inducer with less effect on vitamin D"
+      ],
+      "implications": [
+        "May need vitamin D supplement with long-term use",
+        "Take on an EMPTY STOMACH"
+      ],
+      "severity": "caution",
+      "tags": [
+        "vitamin D",
+        "calcium",
+        "osteomalacia",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "ethambutol",
+      "drug": "Ethambutol / Pyrazinamide",
+      "aliases": [
+        "ethambutol",
+        "myambutol",
+        "pyrazinamide",
+        "rifater"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antitubercular",
+      "effects": [
+        "May decrease excretion of uric acid → hyperuricemia and gout",
+        "Ethambutol may affect copper and zinc"
+      ],
+      "implications": [
+        "Maintain adequate hydration and purine-restricted diet",
+        "Increase foods high in copper and zinc",
+        "Daily multivitamin with long-term use"
+      ],
+      "severity": "caution",
+      "tags": [
+        "uric acid",
+        "gout",
+        "copper",
+        "zinc",
+        "purine"
+      ]
+    },
+    {
+      "external_id": "amphotericin",
+      "drug": "Amphotericin B (Fungizone)",
+      "aliases": [
+        "amphotericin b",
+        "fungizone"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antifungal",
+      "effects": [
+        "Anorexia and weight loss",
+        "Causes loss of potassium, magnesium, and calcium",
+        "Nephrotoxic"
+      ],
+      "implications": [
+        "Frequent, small, appealing meals high in magnesium, potassium, and calcium",
+        "May require PO/IV electrolyte supplementation",
+        "Ensure adequate IV hydration pre- and post-infusion to reduce renal injury"
+      ],
+      "severity": "major",
+      "tags": [
+        "potassium",
+        "magnesium",
+        "calcium",
+        "electrolytes",
+        "anorexia",
+        "renal",
+        "nephrotoxic"
+      ]
+    },
+    {
+      "external_id": "azole_antifungals",
+      "drug": "Azole Antifungals",
+      "aliases": [
+        "ketoconazole",
+        "nizoral",
+        "fluconazole",
+        "diflucan",
+        "posaconazole",
+        "noxafil",
+        "voriconazole",
+        "vfend"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antifungal — Azoles",
+      "effects": [
+        "Ketoconazole does not dissolve at pH >5; affected by achlorhydria, H2 blockers, PPIs",
+        "Posaconazole tablets: take with full high-fat meal (>50 g fat) for absorption",
+        "Voriconazole: food decreases absorption"
+      ],
+      "implications": [
+        "Ketoconazole: Take with acidic liquid (e.g., orange juice) especially with achlorhydria or PPI use",
+        "Posaconazole suspension: give during or within 20 min of a full meal or acidic carbonated beverage",
+        "Voriconazole: take 1 h before or 2 h after a meal"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "absorption",
+        "ph",
+        "fat",
+        "food timing",
+        "ppi",
+        "h2 blocker"
+      ]
+    },
+    {
+      "external_id": "terbinafine",
+      "drug": "Terbinafine (Lamisil)",
+      "aliases": [
+        "terbinafine",
+        "lamisil"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antifungal",
+      "effects": [
+        "Taste changes or loss, dyspepsia, abdominal pain, diarrhea, weight loss",
+        "May increase adverse effects of caffeine (headache, agitation, insomnia, diuresis)"
+      ],
+      "implications": [
+        "Avoid acidic foods (applesauce, fruit-based foods)",
+        "Limit alcohol and caffeine"
+      ],
+      "severity": "caution",
+      "tags": [
+        "taste",
+        "gi",
+        "caffeine",
+        "alcohol",
+        "diarrhea"
+      ]
+    },
+    {
+      "external_id": "warfarin",
+      "drug": "Warfarin (Coumadin)",
+      "aliases": [
+        "warfarin",
+        "coumadin",
+        "vitamin k antagonist"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Anticoagulant — Vitamin K Antagonist",
+      "effects": [
+        "Prevents conversion of oxidized vitamin K to active form",
+        "CONSISTENT vitamin K intake required — not avoidance",
+        "May inhibit bone mineralization with long-term use",
+        "Cranberry/pomegranate juice may increase INR and bleeding risk",
+        "Tea (green/black) contains vitamin K in variable amounts",
+        "Enteral nutrition may cause warfarin resistance",
+        "Celery contains coumarin derivatives and apigenin (antiplatelet)"
+      ],
+      "implications": [
+        "Maintain CONSISTENT (not zero) vitamin K intake from foods/supplements",
+        "Monitor bone mineral density with long-term use",
+        "Advise caution with large quantities of cranberry juice; monitor INR",
+        "AVOID high doses of fish oil, vitamin E, herbal antiplatelet/anticoagulant products",
+        "Use caution with enteral nutrition; monitor INR closely"
+      ],
+      "severity": "major",
+      "tags": [
+        "vitamin K",
+        "inr",
+        "bleeding",
+        "cranberry",
+        "grapefruit",
+        "enteral nutrition",
+        "fish oil",
+        "vitamin E",
+        "celery",
+        "anticoagulant"
+      ]
+    },
+    {
+      "external_id": "dabigatran",
+      "drug": "Dabigatran (Pradaxa)",
+      "aliases": [
+        "dabigatran",
+        "pradaxa"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Anticoagulant — Direct Thrombin Inhibitor",
+      "effects": [
+        "Dyspepsia, GERD, esophagitis, erosive gastritis, diarrhea, GI ulcer",
+        "Alcohol potentiates effect → increased bleeding risk",
+        "Grapefruit can increase dabigatran concentrations",
+        "Chewing capsules decreases bioavailability by 75%",
+        "St. John's Wort (SJW) decreases drug effectiveness"
+      ],
+      "implications": [
+        "AVOID alcohol; AVOID grapefruit",
+        "Avoid SJW",
+        "Do NOT chew capsules",
+        "Take with food if GI distress occurs"
+      ],
+      "severity": "major",
+      "tags": [
+        "alcohol",
+        "grapefruit",
+        "bleeding",
+        "gi",
+        "sjw",
+        "bioavailability"
+      ]
+    },
+    {
+      "external_id": "factor_xa",
+      "drug": "Factor Xa Inhibitors",
+      "aliases": [
+        "rivaroxaban",
+        "xarelto",
+        "apixaban",
+        "eliquis",
+        "edoxaban",
+        "savaysa",
+        "betrixaban",
+        "bevyxxa"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Anticoagulant — Factor Xa Inhibitors",
+      "effects": [
+        "Abdominal pain, dyspepsia, anemia",
+        "Excess alcohol increases bleeding risk",
+        "Grapefruit/related citrus increases bleeding risk",
+        "SJW decreases effectiveness"
+      ],
+      "implications": [
+        "AVOID high doses of fish oil, vitamin E, herbal antiplatelet/anticoagulant products",
+        "Avoid SJW",
+        "AVOID grapefruit and related citrus (limes, pomelo, Seville oranges)",
+        "Minimize alcohol intake"
+      ],
+      "severity": "major",
+      "tags": [
+        "alcohol",
+        "grapefruit",
+        "bleeding",
+        "sjw",
+        "fish oil",
+        "vitamin E"
+      ]
+    },
+    {
+      "external_id": "aspirin",
+      "drug": "Aspirin / Salicylate",
+      "aliases": [
+        "aspirin",
+        "salicylate",
+        "asa",
+        "bayer"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antiplatelet — Platelet Aggregation Inhibitor",
+      "effects": [
+        "GI irritation and bleeding",
+        "Decreases vitamin C uptake and increases urinary loss"
+      ],
+      "implications": [
+        "Increase foods high in vitamin C and folate",
+        "Monitor electrolytes and hemoglobin (potassium, iron supplementation may be needed)",
+        "AVOID alcohol"
+      ],
+      "severity": "caution",
+      "tags": [
+        "gi",
+        "bleeding",
+        "vitamin C",
+        "folate",
+        "iron",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "thienopyridines",
+      "drug": "Clopidogrel / Prasugrel / Ticagrelor",
+      "aliases": [
+        "clopidogrel",
+        "plavix",
+        "prasugrel",
+        "effient",
+        "ticagrelor",
+        "brilinta"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antiplatelet — Platelet Aggregation Inhibitor",
+      "effects": [
+        "Dyspepsia, nausea/vomiting, abdominal pain, GI bleeding, diarrhea, constipation",
+        "Grapefruit and related citrus should be avoided"
+      ],
+      "implications": [
+        "Take with food if GI distress occurs",
+        "AVOID grapefruit and related citrus (limes, pomelo, Seville oranges)",
+        "Replace fluids and electrolytes for diarrhea"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "gi",
+        "grapefruit",
+        "bleeding",
+        "diarrhea"
+      ]
+    },
+    {
+      "external_id": "metformin",
+      "drug": "Metformin (Glucophage)",
+      "aliases": [
+        "metformin",
+        "glucophage",
+        "biguanide"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic — Biguanide",
+      "effects": [
+        "Decreases absorption of vitamin B12 and folic acid",
+        "May cause lactic acidosis",
+        "Does NOT cause hypoglycemia"
+      ],
+      "implications": [
+        "Follow ADA dietary guidelines",
+        "Increase foods high in vitamin B12 and folate; supplement if necessary",
+        "AVOID alcohol (increases risk of lactic acidosis)"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin B12",
+        "folate",
+        "folic acid",
+        "lactic acidosis",
+        "alcohol",
+        "diabetes"
+      ]
+    },
+    {
+      "external_id": "tzd",
+      "drug": "Thiazolidinediones (Rosiglitazone / Pioglitazone)",
+      "aliases": [
+        "rosiglitazone",
+        "avandia",
+        "pioglitazone",
+        "actos",
+        "thiazolidinedione",
+        "tzd"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic — TZD",
+      "effects": [
+        "Weight gain and fluid retention",
+        "Avandia: increases total cholesterol, LDL, triglycerides, decreases HDL",
+        "Black box warning: cause or exacerbate congestive heart failure",
+        "Rarely causes hypoglycemia"
+      ],
+      "implications": [
+        "Follow ADA dietary guidelines",
+        "Reduce calorie intake if weight loss is the goal",
+        "Avoid SJW",
+        "Monitor blood lipids closely; encourage anti-inflammatory diet"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "weight gain",
+        "lipids",
+        "cholesterol",
+        "sjw",
+        "diabetes",
+        "heart failure"
+      ]
+    },
+    {
+      "external_id": "sulfonylureas",
+      "drug": "Sulfonylureas",
+      "aliases": [
+        "glipizide",
+        "glucotrol",
+        "glyburide",
+        "diabeta",
+        "glimepiride",
+        "amaryl"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic — Sulfonylureas",
+      "effects": [
+        "Appetite changes (↑ or ↓), weight gain, dyspepsia, nausea, diarrhea, constipation",
+        "May cause hypoglycemia",
+        "Food can decrease absorption",
+        "Enhances effect of alcohol → hypoglycemia risk"
+      ],
+      "implications": [
+        "Take 30 min before meal to avoid erratic absorption",
+        "Follow ADA guidelines; encourage regular exercise",
+        "AVOID alcohol",
+        "Monitor for hypoglycemia"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "hypoglycemia",
+        "alcohol",
+        "diabetes",
+        "gi",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "sglt2",
+      "drug": "SGLT-2 Inhibitors (Gliflozins)",
+      "aliases": [
+        "canagliflozin",
+        "invokana",
+        "dapagliflozin",
+        "farxiga",
+        "empagliflozin",
+        "jardiance",
+        "ertugliflozin",
+        "steglatro",
+        "gliflozin",
+        "sglt2"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic — SGLT-2 Inhibitor",
+      "effects": [
+        "Weight loss, polydipsia, increased LDL, hypovolemia, dehydration",
+        "May cause hypoglycemia"
+      ],
+      "implications": [
+        "Follow ADA dietary guidelines",
+        "Monitor LDL; encourage appropriate fat intake",
+        "Reduce calorie intake if weight loss is the goal",
+        "Avoid SJW (Invokana)"
+      ],
+      "severity": "caution",
+      "tags": [
+        "weight loss",
+        "dehydration",
+        "ldl",
+        "sjw",
+        "diabetes",
+        "hypoglycemia"
+      ]
+    },
+    {
+      "external_id": "dpp4",
+      "drug": "DPP-4 Inhibitors (Gliptins)",
+      "aliases": [
+        "sitagliptin",
+        "januvia",
+        "saxagliptin",
+        "onglyza",
+        "linagliptin",
+        "tradjenta",
+        "alogliptin",
+        "nesina",
+        "dpp-4",
+        "gliptin"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic — DPP-4 Inhibitor",
+      "effects": [
+        "Weight gain, abdominal pain, constipation, diarrhea, nausea/vomiting, pancreatitis (rare)",
+        "May cause hypoglycemia",
+        "Onglyza: grapefruit interaction",
+        "Januvia: pancreatitis reports; Nesina: hepatotoxicity reports"
+      ],
+      "implications": [
+        "Follow ADA dietary guidelines; reduce calories if weight loss is goal",
+        "Avoid grapefruit/related citrus with Onglyza",
+        "Avoid SJW with Onglyza/Tradjenta"
+      ],
+      "severity": "caution",
+      "tags": [
+        "grapefruit",
+        "sjw",
+        "pancreatitis",
+        "diabetes",
+        "gi"
+      ]
+    },
+    {
+      "external_id": "corticosteroids",
+      "drug": "Corticosteroids",
+      "aliases": [
+        "prednisone",
+        "deltasone",
+        "methylprednisolone",
+        "medrol",
+        "dexamethasone",
+        "decadron",
+        "steroid",
+        "corticosteroid"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Corticosteroids",
+      "effects": [
+        "Protein catabolism → muscle wasting, bone matrix atrophy, delayed wound healing",
+        "Decreases intestinal calcium absorption",
+        "Increases urinary loss of calcium, potassium, zinc, vitamin C, and nitrogen",
+        "Sodium retention"
+      ],
+      "implications": [
+        "Maintain diet high in calcium, vitamin D, protein, potassium, zinc, and vitamin C",
+        "Maintain LOW sodium intake",
+        "Calcium and vitamin D supplements recommended for long-term use (osteoporosis prevention)"
+      ],
+      "severity": "major",
+      "tags": [
+        "calcium",
+        "vitamin D",
+        "protein",
+        "potassium",
+        "zinc",
+        "vitamin C",
+        "sodium",
+        "osteoporosis",
+        "muscle wasting"
+      ]
+    },
+    {
+      "external_id": "bisphosphonates",
+      "drug": "Bisphosphonates",
+      "aliases": [
+        "alendronate",
+        "fosamax",
+        "ibandronate",
+        "boniva",
+        "risedronate",
+        "actonel",
+        "zoledronic acid",
+        "reclast"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Bisphosphonates",
+      "effects": [
+        "Mild decrease in serum calcium",
+        "Long-term use may cause zinc deficiency"
+      ],
+      "implications": [
+        "Pair with diet high in calcium or use Ca/vitamin D supplement",
+        "Monitor for zinc deficiency",
+        "Take 30–60 min before first food/drink of day with PLAIN WATER ONLY",
+        "Remain upright for 30 min after dose (pill esophagitis risk)",
+        "Take zinc supplements 2 h away from drug"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "calcium",
+        "vitamin D",
+        "zinc",
+        "osteoporosis",
+        "absorption",
+        "esophagitis"
+      ]
+    },
+    {
+      "external_id": "oral_contraceptives",
+      "drug": "Estrogen / Oral Contraceptives",
+      "aliases": [
+        "estrogen",
+        "premarin",
+        "oral contraceptives",
+        "ocp",
+        "pill"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Female Hormones",
+      "effects": [
+        "Decreases absorption and tissue uptake of vitamin C",
+        "May increase absorption of vitamin A",
+        "Inhibits folate conjugase → decreased serum folic acid",
+        "Decreases serum vitamin B6, B12, riboflavin, magnesium, zinc"
+      ],
+      "implications": [
+        "Maintain diet adequate in Mg, folate, B6, B12, riboflavin, and zinc",
+        "Calcium and vitamin D supplements may be advised with estrogen HRT"
+      ],
+      "severity": "caution",
+      "tags": [
+        "vitamin C",
+        "vitamin A",
+        "folate",
+        "vitamin B6",
+        "vitamin B12",
+        "riboflavin",
+        "magnesium",
+        "zinc",
+        "folic acid"
+      ]
+    },
+    {
+      "external_id": "levothyroxine",
+      "drug": "Levothyroxine / Liothyronine",
+      "aliases": [
+        "levothyroxine",
+        "synthroid",
+        "liothyronine",
+        "cytomel",
+        "thyroid hormone"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Thyroid Hormones",
+      "effects": [
+        "Iron, calcium, or magnesium may decrease absorption",
+        "Soy, walnuts, cottonseed oil, high-fiber foods may decrease absorption",
+        "Enteral nutrition reduces bioavailability → hypothyroidism risk"
+      ],
+      "implications": [
+        "Take Fe, Ca, or Mg supplements ≥4 h away from drug",
+        "Take drug 2–3 h before soy or high-fiber foods",
+        "Take on an EMPTY STOMACH, 30 min before meal or 3–4 h after last meal",
+        "Caution with grapefruit/related citrus",
+        "Stop enteral feeds before administration or monitor TSH closely"
+      ],
+      "severity": "major",
+      "tags": [
+        "iron",
+        "calcium",
+        "magnesium",
+        "soy",
+        "fiber",
+        "grapefruit",
+        "enteral nutrition",
+        "absorption",
+        "thyroid"
+      ]
+    },
+    {
+      "external_id": "digoxin",
+      "drug": "Digoxin (Lanoxin)",
+      "aliases": [
+        "digoxin",
+        "lanoxin",
+        "cardiac glycoside"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Cardiac Glycoside",
+      "effects": [
+        "Increases urinary loss of magnesium",
+        "Decreases serum potassium levels"
+      ],
+      "implications": [
+        "Monitor potassium and magnesium levels",
+        "Use caution with calcium supplements and antacids",
+        "Take on an EMPTY STOMACH",
+        "Avoid high amounts of bran (may decrease digoxin absorption)"
+      ],
+      "severity": "major",
+      "tags": [
+        "potassium",
+        "magnesium",
+        "calcium",
+        "electrolytes",
+        "absorption",
+        "bran"
+      ]
+    },
+    {
+      "external_id": "beta_blockers",
+      "drug": "Beta Blockers",
+      "aliases": [
+        "metoprolol",
+        "lopressor",
+        "toprol",
+        "atenolol",
+        "tenormin",
+        "bisoprolol",
+        "nadolol",
+        "propranolol",
+        "inderal",
+        "carvedilol",
+        "coreg"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Beta Blocking Agents",
+      "effects": [
+        "Masks signs of or prolongs hypoglycemia",
+        "May decrease insulin release in response to hyperglycemia",
+        "Carvedilol: weight gain, nausea/vomiting, diarrhea; masks diabetic hyperglycemia"
+      ],
+      "implications": [
+        "Take with food",
+        "Monitor blood glucose (hypoglycemia or hyperglycemia) on initiation",
+        "Carvedilol: avoid natural licorice; low-sodium diet; reduce calories if weight loss is goal",
+        "DO NOT stop abruptly without physician supervision"
+      ],
+      "severity": "caution",
+      "tags": [
+        "hypoglycemia",
+        "glucose",
+        "sodium",
+        "licorice",
+        "diabetes"
+      ]
+    },
+    {
+      "external_id": "ace_inhibitors",
+      "drug": "ACE Inhibitors",
+      "aliases": [
+        "enalapril",
+        "vasotec",
+        "lisinopril",
+        "zestril",
+        "benazepril",
+        "lotensin",
+        "ramipril",
+        "altace",
+        "ace inhibitor"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "ACE Inhibitors",
+      "effects": [
+        "Increases serum potassium",
+        "May cause abdominal pain, constipation, or diarrhea"
+      ],
+      "implications": [
+        "Caution with high-potassium diet or supplements",
+        "AVOID salt substitutes (potassium chloride)",
+        "Ensure adequate fluid intake",
+        "Avoid natural licorice",
+        "Limit alcohol"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "potassium",
+        "hyperkalemia",
+        "salt substitute",
+        "licorice",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "arbs",
+      "drug": "Angiotensin II Receptor Antagonists (ARBs)",
+      "aliases": [
+        "losartan",
+        "cozaar",
+        "valsartan",
+        "diovan",
+        "irbesartan",
+        "avapro",
+        "telmisartan",
+        "micardis",
+        "arb"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "ARBs",
+      "effects": [
+        "May increase serum potassium",
+        "Cozaar: grapefruit/related citrus interaction"
+      ],
+      "implications": [
+        "Caution with high-potassium diet or supplements",
+        "AVOID salt substitutes",
+        "AVOID natural licorice",
+        "Avoid grapefruit/related citrus (especially Cozaar)",
+        "Ensure adequate hydration"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "potassium",
+        "hyperkalemia",
+        "grapefruit",
+        "salt substitute",
+        "licorice"
+      ]
+    },
+    {
+      "external_id": "calcium_channel_blockers",
+      "drug": "Calcium Channel Blockers",
+      "aliases": [
+        "amlodipine",
+        "norvasc",
+        "diltiazem",
+        "cardizem"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Calcium Channel Blockers",
+      "effects": [
+        "Amlodipine: dysphagia, nausea, cramps, edema; grapefruit modestly increases levels",
+        "Diltiazem: anorexia, dry mouth, dyspepsia, nausea, vomiting, constipation, diarrhea; grapefruit increases levels"
+      ],
+      "implications": [
+        "Take with food if GI distress occurs",
+        "Avoid natural licorice",
+        "Reduce sodium intake",
+        "AVOID grapefruit (especially diltiazem)"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "grapefruit",
+        "sodium",
+        "licorice",
+        "gi",
+        "anorexia",
+        "edema"
+      ]
+    },
+    {
+      "external_id": "hydralazine",
+      "drug": "Hydralazine (Apresoline)",
+      "aliases": [
+        "hydralazine",
+        "apresoline"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Peripheral Vasodilator",
+      "effects": [
+        "Interferes with pyridoxine (vitamin B6) metabolism → B6 deficiency",
+        "Food and enteral nutrition decrease bioavailability"
+      ],
+      "implications": [
+        "Maintain diet high in pyridoxine; supplementation may be necessary",
+        "Stop enteral nutrition before administration or take on empty stomach"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin B6",
+        "pyridoxine",
+        "enteral nutrition",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "amiodarone",
+      "drug": "Amiodarone (Pacerone)",
+      "aliases": [
+        "amiodarone",
+        "pacerone"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antiarrhythmic",
+      "effects": [
+        "Anorexia, nausea, vomiting, taste changes, elevated liver enzymes, thyroid hormone changes",
+        "Contains 3 mg inorganic iodide per 100 mg amiodarone"
+      ],
+      "implications": [
+        "AVOID grapefruit/related citrus",
+        "Avoid SJW",
+        "Monitor hepatic and thyroid function"
+      ],
+      "severity": "major",
+      "tags": [
+        "grapefruit",
+        "sjw",
+        "iodine",
+        "thyroid",
+        "liver",
+        "taste",
+        "anorexia"
+      ]
+    },
+    {
+      "external_id": "statins",
+      "drug": "HMG Co-A Reductase Inhibitors (Statins)",
+      "aliases": [
+        "atorvastatin",
+        "lipitor",
+        "simvastatin",
+        "zocor",
+        "pravastatin",
+        "pravachol",
+        "rosuvastatin",
+        "crestor",
+        "statin"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antihyperlipidemic — Statins",
+      "effects": [
+        "May cause significant reduction in CoQ10",
+        "Lowers LDL; raises HDL cholesterol",
+        "Red yeast rice concurrent use may increase side effects"
+      ],
+      "implications": [
+        "CoQ10 supplementation may be advisable for nutrient repletion",
+        "Encourage anti-inflammatory diet",
+        "Lipitor/Zocor: AVOID grapefruit/related citrus (limes, pomelo, Seville oranges)",
+        "Avoid concurrent red yeast rice"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "coq10",
+        "grapefruit",
+        "red yeast rice",
+        "cholesterol",
+        "ldl"
+      ]
+    },
+    {
+      "external_id": "cholestyramine",
+      "drug": "Cholestyramine (Questran)",
+      "aliases": [
+        "cholestyramine",
+        "questran",
+        "bile acid sequestrant"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antihyperlipidemic — Bile Acid Sequestrant",
+      "effects": [
+        "Binds fat-soluble vitamins (A, E, D, K), β-carotene, calcium, magnesium, iron, zinc, and folic acid"
+      ],
+      "implications": [
+        "Take fat-soluble vitamins in water-miscible form OR at least 1 h before first daily dose",
+        "Maintain diet high in folate, Mg, Ca, Fe, Zn; supplement as needed",
+        "Monitor serum nutrient levels with long-term use"
+      ],
+      "severity": "major",
+      "tags": [
+        "vitamin A",
+        "vitamin D",
+        "vitamin E",
+        "vitamin K",
+        "calcium",
+        "magnesium",
+        "iron",
+        "zinc",
+        "folate",
+        "fat-soluble vitamins"
+      ]
+    },
+    {
+      "external_id": "loop_diuretics",
+      "drug": "Loop Diuretics",
+      "aliases": [
+        "furosemide",
+        "lasix",
+        "bumetanide",
+        "bumex"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Diuretics — Loop",
+      "effects": [
+        "Increases urinary excretion of sodium, potassium, magnesium, and calcium",
+        "Long-term use may increase urinary zinc excretion"
+      ],
+      "implications": [
+        "Maintain diet high in zinc, potassium, magnesium, and calcium",
+        "AVOID natural licorice (may counteract diuretic effect)",
+        "Monitor and supplement electrolytes as needed"
+      ],
+      "severity": "major",
+      "tags": [
+        "potassium",
+        "magnesium",
+        "calcium",
+        "zinc",
+        "sodium",
+        "electrolytes",
+        "licorice"
+      ]
+    },
+    {
+      "external_id": "thiazide_diuretics",
+      "drug": "Thiazide Diuretics",
+      "aliases": [
+        "hydrochlorothiazide",
+        "hctz",
+        "hydrodiuril",
+        "chlorothiazide",
+        "diuril",
+        "chlorthalidone",
+        "hygroton",
+        "metolazone",
+        "zaroxolyn"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Diuretics — Thiazide",
+      "effects": [
+        "Increases urinary excretion of sodium, potassium, and magnesium",
+        "Increases renal resorption of calcium",
+        "Long-term use may increase urinary zinc excretion"
+      ],
+      "implications": [
+        "Maintain diet high in zinc, potassium, and magnesium",
+        "AVOID natural licorice",
+        "Monitor electrolytes; supplement as needed",
+        "Caution with calcium supplements (hypercalcemia risk)"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "potassium",
+        "magnesium",
+        "zinc",
+        "sodium",
+        "calcium",
+        "electrolytes",
+        "licorice"
+      ]
+    },
+    {
+      "external_id": "potassium_sparing",
+      "drug": "Potassium-Sparing Diuretics",
+      "aliases": [
+        "triamterene",
+        "dyrenium",
+        "spironolactone",
+        "aldactone"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Diuretics — Potassium-Sparing",
+      "effects": [
+        "Increases renal resorption of potassium → hyperkalemia risk",
+        "Long-term use may increase urinary zinc excretion"
+      ],
+      "implications": [
+        "AVOID salt substitutes (potassium chloride)",
+        "Caution with potassium supplements",
+        "Avoid excessive potassium intake in diet",
+        "Monitor for signs of zinc deficiency"
+      ],
+      "severity": "major",
+      "tags": [
+        "potassium",
+        "hyperkalemia",
+        "zinc",
+        "salt substitute"
+      ]
+    },
+    {
+      "external_id": "acetaminophen",
+      "drug": "Acetaminophen (Tylenol)",
+      "aliases": [
+        "acetaminophen",
+        "paracetamol",
+        "tylenol",
+        "panadol",
+        "apap"
+      ],
+      "category": "Analgesics",
+      "subcategory": "Non-narcotic Analgesic",
+      "effects": [
+        "May cause hepatotoxicity at high doses",
+        "Chronic alcohol ingestion increases risk of hepatotoxicity"
+      ],
+      "implications": [
+        "Maximum safe adult dose ≤3 g/day",
+        "Avoid alcohol or limit to ≤2 drinks/day"
+      ],
+      "severity": "major",
+      "tags": [
+        "liver",
+        "hepatotoxicity",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "nsaids",
+      "drug": "NSAIDs",
+      "aliases": [
+        "ibuprofen",
+        "motrin",
+        "naproxen",
+        "naprosyn",
+        "meloxicam",
+        "mobic",
+        "ketorolac",
+        "toradol",
+        "nsaid"
+      ],
+      "category": "Analgesics",
+      "subcategory": "Non-steroidal Anti-inflammatory",
+      "effects": [
+        "GI bleeding, ulceration, and perforation (any time, without warning)",
+        "Increased risk of kidney injury",
+        "Increased cardiovascular risk",
+        "Elderly on corticosteroids, antiplatelets, or anticoagulants at greatest GI risk"
+      ],
+      "implications": [
+        "Take with food or milk to decrease GI toxicity",
+        "Avoid in elderly with severe CVD or renal disease",
+        "Consider adding PPI for chronic use to reduce gastric ulceration risk"
+      ],
+      "severity": "major",
+      "tags": [
+        "gi",
+        "bleeding",
+        "ulcer",
+        "renal",
+        "cardiovascular"
+      ]
+    },
+    {
+      "external_id": "opioids",
+      "drug": "Opioid Analgesics",
+      "aliases": [
+        "morphine",
+        "ms contin",
+        "codeine",
+        "hydrocodone",
+        "norco",
+        "oxycodone",
+        "oxycontin",
+        "hydromorphone",
+        "dilaudid",
+        "fentanyl",
+        "duragesic",
+        "methadone",
+        "dolophine",
+        "tramadol",
+        "ultram"
+      ],
+      "category": "Analgesics",
+      "subcategory": "Narcotic Analgesics / Opioids",
+      "effects": [
+        "Constipation, dry mouth, slowing of digestion",
+        "Methadone: QT prolongation; monitor ECG, Mg, K+",
+        "OxyContin/Fentanyl/Methadone: grapefruit and SJW interactions",
+        "Tramadol: anorexia, dry mouth, nausea, constipation, diarrhea"
+      ],
+      "implications": [
+        "Monitor respiratory and bowel function",
+        "Do NOT crush or chew sustained-release formulations",
+        "Avoid grapefruit/related citrus and SJW with OxyContin/Fentanyl/Methadone",
+        "AVOID alcohol and other CNS depressants",
+        "Methadone: replete Mg and K+ as needed"
+      ],
+      "severity": "major",
+      "tags": [
+        "constipation",
+        "grapefruit",
+        "sjw",
+        "alcohol",
+        "magnesium",
+        "potassium",
+        "methadone",
+        "qt"
+      ]
+    },
+    {
+      "external_id": "ssri",
+      "drug": "SSRIs (Selective Serotonin Reuptake Inhibitors)",
+      "aliases": [
+        "sertraline",
+        "zoloft",
+        "citalopram",
+        "celexa",
+        "escitalopram",
+        "lexapro",
+        "fluoxetine",
+        "prozac",
+        "paroxetine",
+        "paxil",
+        "ssri"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antidepressant — SSRI",
+      "effects": [
+        "May increase weight, appetite, dry mouth, or anorexia",
+        "Prozac: weight loss; affects leucine absorption",
+        "Antiplatelet effects → intestinal bleeding risk",
+        "Many interactions via CYP450 with herbs and supplements"
+      ],
+      "implications": [
+        "AVOID tryptophan and SJW (serotonin syndrome risk)",
+        "Monitor weight trends",
+        "AVOID alcohol",
+        "Avoid herbal products with antiplatelet effects",
+        "Check all herb/supplement interactions via CYP450"
+      ],
+      "severity": "major",
+      "tags": [
+        "tryptophan",
+        "sjw",
+        "serotonin syndrome",
+        "alcohol",
+        "weight",
+        "bleeding",
+        "cyp450"
+      ]
+    },
+    {
+      "external_id": "snri",
+      "drug": "SNRIs / SARIs",
+      "aliases": [
+        "trazodone",
+        "desyrel",
+        "venlafaxine",
+        "effexor",
+        "desvenlafaxine",
+        "pristiq",
+        "duloxetine",
+        "cymbalta",
+        "milnacipran",
+        "savella",
+        "snri",
+        "sari"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antidepressant — SNRI/SARI",
+      "effects": [
+        "Antiplatelet effects → intestinal bleeding risk",
+        "Alcohol: increased sedation, psychomotor impairment, hepatotoxicity (duloxetine/milnacipran)"
+      ],
+      "implications": [
+        "Avoid tryptophan and SJW",
+        "AVOID herbs with antiplatelet effects",
+        "AVOID alcohol (especially with duloxetine/milnacipran)",
+        "Check all herb/supplement interactions via CYP450"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "tryptophan",
+        "sjw",
+        "serotonin syndrome",
+        "alcohol",
+        "bleeding",
+        "cyp450"
+      ]
+    },
+    {
+      "external_id": "maoi",
+      "drug": "MAO Inhibitors (MAOIs)",
+      "aliases": [
+        "phenelzine",
+        "nardil",
+        "maoi",
+        "monoamine oxidase inhibitor"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antidepressant — MAOI",
+      "effects": [
+        "Increased appetite for carbohydrates/sweets → weight gain",
+        "Risk of severe hypertensive crisis with dietary tyramine"
+      ],
+      "implications": [
+        "AVOID all high-tyramine foods: aged cheeses, cured/smoked meats, fermented products, overripe fruit, red wine, beer, soy sauce, miso",
+        "Also avoid dopamine, tyrosine, phenylalanine, tryptophan, and caffeine-rich foods",
+        "Restriction continues for 2 WEEKS AFTER discontinuation",
+        "Monitor caloric intake"
+      ],
+      "severity": "major",
+      "tags": [
+        "tyramine",
+        "hypertensive crisis",
+        "dopamine",
+        "tryptophan",
+        "caffeine",
+        "weight gain",
+        "food interaction"
+      ]
+    },
+    {
+      "external_id": "lithium",
+      "drug": "Lithium (Lithobid)",
+      "aliases": [
+        "lithium",
+        "lithobid",
+        "mood stabilizer"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Mood Stabilizer",
+      "effects": [
+        "Sodium intake directly affects drug levels (low Na → elevated lithium → toxicity)",
+        "Dry mouth, dehydration, thirst (signs of toxicity)",
+        "GI irritation; nephrotoxicity"
+      ],
+      "implications": [
+        "Drink 2–3 L fluid daily",
+        "MAINTAIN CONSISTENT dietary sodium intake (low sodium raises lithium levels)",
+        "Take with food to reduce GI irritation",
+        "Limit caffeine"
+      ],
+      "severity": "major",
+      "tags": [
+        "sodium",
+        "hydration",
+        "dehydration",
+        "caffeine",
+        "gi",
+        "renal",
+        "toxicity"
+      ]
+    },
+    {
+      "external_id": "tca",
+      "drug": "Tricyclic Antidepressants (TCAs)",
+      "aliases": [
+        "amitriptyline",
+        "elavil",
+        "nortriptyline",
+        "pamelor",
+        "doxepin",
+        "silenor",
+        "imipramine",
+        "tofranil",
+        "tca"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antidepressant — TCA",
+      "effects": [
+        "Increased appetite (especially carbohydrates/sweets) and weight gain",
+        "Dry mouth and constipation",
+        "High fiber may decrease drug absorption"
+      ],
+      "implications": [
+        "Monitor caloric intake",
+        "Maintain CONSISTENT fiber in diet (don't add large amounts suddenly)",
+        "AVOID alcohol (increased sedation)"
+      ],
+      "severity": "caution",
+      "tags": [
+        "weight gain",
+        "fiber",
+        "alcohol",
+        "constipation",
+        "appetite"
+      ]
+    },
+    {
+      "external_id": "mirtazapine",
+      "drug": "Mirtazapine (Remeron)",
+      "aliases": [
+        "mirtazapine",
+        "remeron",
+        "nassa"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antidepressant — NaSSA",
+      "effects": [
+        "Significant appetite stimulant → weight gain",
+        "Dry mouth and constipation common"
+      ],
+      "implications": [
+        "AVOID tryptophan and SJW (serotonin syndrome)",
+        "AVOID alcohol and cannabis",
+        "Some products contain phenylalanine"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "weight gain",
+        "tryptophan",
+        "sjw",
+        "alcohol",
+        "appetite stimulant",
+        "phenylalanine"
+      ]
+    },
+    {
+      "external_id": "antipsychotics_atypical",
+      "drug": "Atypical Antipsychotics",
+      "aliases": [
+        "aripiprazole",
+        "abilify",
+        "clozapine",
+        "clozaril",
+        "olanzapine",
+        "zyprexa",
+        "paliperidone",
+        "invega",
+        "quetiapine",
+        "seroquel",
+        "risperidone",
+        "risperdal",
+        "ziprasidone",
+        "geodon"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antipsychotics — Atypical",
+      "effects": [
+        "Increased appetite and weight gain",
+        "May increase blood sugar, HbA1C, and lipids/triglycerides",
+        "Xerostomia, constipation"
+      ],
+      "implications": [
+        "Monitor weight, fasting blood sugar, HbA1C, and lipids/triglycerides",
+        "Do NOT use in elderly dementia patients (increased cerebrovascular events and mortality)"
+      ],
+      "severity": "major",
+      "tags": [
+        "weight gain",
+        "glucose",
+        "lipids",
+        "metabolic syndrome",
+        "diabetes"
+      ]
+    },
+    {
+      "external_id": "benzodiazepines",
+      "drug": "Benzodiazepines / Hypnotics",
+      "aliases": [
+        "lorazepam",
+        "ativan",
+        "alprazolam",
+        "xanax",
+        "clonazepam",
+        "klonopin",
+        "diazepam",
+        "valium",
+        "temazepam",
+        "restoril",
+        "zolpidem",
+        "ambien",
+        "benzodiazepine"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antianxiety / Hypnotic",
+      "effects": [
+        "Significant sedation; highly addictive",
+        "Alcohol produces CNS depression (coma, respiratory depression, death risk)",
+        "Caffeine may decrease therapeutic effect"
+      ],
+      "implications": [
+        "AVOID concurrent alcohol (life-threatening CNS depression)",
+        "Limit or avoid caffeine",
+        "Caution with CNS-sedating herbal products (valerian, kava)",
+        "Avoid in patients >65 years old"
+      ],
+      "severity": "major",
+      "tags": [
+        "alcohol",
+        "caffeine",
+        "sedation",
+        "cns depression"
+      ]
+    },
+    {
+      "external_id": "phenytoin",
+      "drug": "Phenytoin (Dilantin)",
+      "aliases": [
+        "phenytoin",
+        "dilantin",
+        "hydantoin"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anticonvulsant — Hydantoin",
+      "effects": [
+        "Decreases serum folic acid, calcium, vitamin D, biotin, and thiamine",
+        "Gingival enlargement, altered taste, dysphagia, nausea, vomiting, constipation",
+        "Alcohol decreases drug levels and increases seizure potential",
+        "Ca and Mg may decrease absorption"
+      ],
+      "implications": [
+        "May pair with daily folic acid supplement; monitor levels",
+        "Consider Ca, vitamin D, and B-vitamin supplements with long-term use",
+        "Take Ca/Mg/antacids 2 h away from drug",
+        "Hold tube feeds 2 h before and 2 h after oral dose",
+        "Continuous tube feeds: switch to IV or may need double oral dose",
+        "AVOID alcohol and SJW"
+      ],
+      "severity": "major",
+      "tags": [
+        "folate",
+        "folic acid",
+        "calcium",
+        "vitamin D",
+        "biotin",
+        "thiamine",
+        "alcohol",
+        "sjw",
+        "tube feeding",
+        "enteral nutrition"
+      ]
+    },
+    {
+      "external_id": "carbamazepine",
+      "drug": "Carbamazepine (Tegretol)",
+      "aliases": [
+        "carbamazepine",
+        "tegretol"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anticonvulsant — Carboxamide",
+      "effects": [
+        "Decreases biotin, folic acid, and vitamin D levels",
+        "Long-term (>6 months) may cause loss of bone mineral density",
+        "May cause clinically significant hyponatremia"
+      ],
+      "implications": [
+        "Maintain diet high in folate and vitamin D",
+        "Calcium and vitamin D supplements may be necessary long-term",
+        "Avoid grapefruit/related citrus",
+        "Star fruit or pomegranate may increase drug levels to toxicity",
+        "AVOID alcohol"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "folate",
+        "vitamin D",
+        "calcium",
+        "hyponatremia",
+        "grapefruit",
+        "pomegranate",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "valproate",
+      "drug": "Valproic Acid / Divalproex (Depakote)",
+      "aliases": [
+        "valproate",
+        "valproic acid",
+        "divalproex",
+        "depakote"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anticonvulsant — Valproic Acid",
+      "effects": [
+        "Competitive inhibition of intestinal SLC22A transport → malabsorption of dietary carnitine",
+        "Can cause symptomatic carnitine deficiency"
+      ],
+      "implications": [
+        "Supplement carnitine as necessary"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "carnitine",
+        "malabsorption"
+      ]
+    },
+    {
+      "external_id": "phenobarbital",
+      "drug": "Phenobarbital (Luminal)",
+      "aliases": [
+        "phenobarbital",
+        "luminal",
+        "barbiturate"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anticonvulsant — Barbiturate",
+      "effects": [
+        "Rapid metabolism of vitamin D → vitamin D and calcium deficiencies",
+        "May increase metabolism of vitamin K",
+        "Decreases serum folic acid and vitamin B12",
+        "Alcohol increases CNS depression → respiratory depression risk"
+      ],
+      "implications": [
+        "Encourage dietary calcium, vitamin D, and folate",
+        "Consider Ca, vitamin D, folic acid, and vitamin B12 supplementation long-term",
+        "AVOID alcohol"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin D",
+        "calcium",
+        "vitamin K",
+        "folate",
+        "vitamin B12",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "ppi",
+      "drug": "Proton Pump Inhibitors (PPIs)",
+      "aliases": [
+        "omeprazole",
+        "prilosec",
+        "lansoprazole",
+        "prevacid",
+        "esomeprazole",
+        "nexium",
+        "pantoprazole",
+        "protonix",
+        "dexlansoprazole",
+        "dexilant",
+        "ppi"
+      ],
+      "category": "Gastrointestinal",
+      "subcategory": "Proton Pump Inhibitor",
+      "effects": [
+        "Long-term: inhibits absorption of iron and vitamin B12",
+        "Decreases calcium absorption → osteoporosis risk",
+        "May cause low magnesium",
+        "May increase risk of C. difficile, SIBO, and IBS"
+      ],
+      "implications": [
+        "Monitor iron, vitamin B12, magnesium, and bone density with long-term use",
+        "Supplement as needed",
+        "Consider alternatives in SIBO/IBS",
+        "Prilosec: avoid SJW and ginkgo",
+        "Prilosec: hold tube feeds 1 h before and 1 h after dose"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin B12",
+        "iron",
+        "magnesium",
+        "calcium",
+        "osteoporosis",
+        "c.diff",
+        "sjw",
+        "tube feeding"
+      ]
+    },
+    {
+      "external_id": "h2_blockers",
+      "drug": "H2 Receptor Antagonists",
+      "aliases": [
+        "ranitidine",
+        "zantac",
+        "famotidine",
+        "pepcid",
+        "h2 blocker",
+        "h2 antagonist"
+      ],
+      "category": "Gastrointestinal",
+      "subcategory": "H2 Receptor Antagonist",
+      "effects": [
+        "May reduce absorption of vitamin B12 and iron"
+      ],
+      "implications": [
+        "Monitor iron studies and vitamin B12 on long-term therapy",
+        "Supplement as needed"
+      ],
+      "severity": "caution",
+      "tags": [
+        "vitamin B12",
+        "iron",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "metoclopramide",
+      "drug": "Metoclopramide (Reglan)",
+      "aliases": [
+        "metoclopramide",
+        "reglan",
+        "prokinetic"
+      ],
+      "category": "Gastrointestinal",
+      "subcategory": "Prokinetic Agent",
+      "effects": [
+        "Increases gastric emptying → may change insulin requirements in diabetes",
+        "May increase CNS depressant effects of alcohol",
+        "Extended use may cause tardive dyskinesia (affects eating)"
+      ],
+      "implications": [
+        "Monitor blood glucose carefully when initiated in diabetic patients",
+        "AVOID alcohol",
+        "Tardive dyskinesia may interfere with biting, chewing, and swallowing"
+      ],
+      "severity": "caution",
+      "tags": [
+        "glucose",
+        "diabetes",
+        "alcohol",
+        "tardive dyskinesia",
+        "swallowing"
+      ]
+    },
+    {
+      "external_id": "methotrexate",
+      "drug": "Methotrexate (Trexall)",
+      "aliases": [
+        "methotrexate",
+        "trexall",
+        "folate antagonist"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Antineoplastic — Folate Antagonist",
+      "effects": [
+        "Inhibits dihydrofolate reductase → decreased active folate",
+        "GI irritation (stomatitis, gingivitis, GI hemorrhage, intestinal perforation)",
+        "Nausea/vomiting, anorexia, diarrhea"
+      ],
+      "implications": [
+        "Maintain diet high in folate and vitamin B12",
+        "Daily folic acid supplement recommended with ANTIRHEUMATIC doses (NOT antineoplastic doses)",
+        "Leucovorin rescue may be necessary at antineoplastic doses",
+        "AVOID alcohol (increases hepatotoxicity risk)"
+      ],
+      "severity": "major",
+      "tags": [
+        "folate",
+        "folic acid",
+        "vitamin B12",
+        "alcohol",
+        "liver",
+        "gi",
+        "stomatitis"
+      ]
+    },
+    {
+      "external_id": "immunosuppressants",
+      "drug": "Immunosuppressants (Tacrolimus / Cyclosporine)",
+      "aliases": [
+        "tacrolimus",
+        "prograf",
+        "envarsus",
+        "cyclosporine",
+        "neoral",
+        "sandimmune"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Immunosuppressant — Calcineurin Inhibitor",
+      "effects": [
+        "Kidney injury, hyperglycemia, hyperkalemia, hypomagnesemia, hyperlipidemia",
+        "CYP 3A4 substrate — grapefruit interaction"
+      ],
+      "implications": [
+        "Monitor potassium; may need low-potassium diet",
+        "Monitor Mg and replete as needed",
+        "Check fasting blood sugar and lipids at regular intervals",
+        "AVOID grapefruit and other CYP3A4 inhibitors",
+        "Envarsus XR: AVOID alcohol"
+      ],
+      "severity": "major",
+      "tags": [
+        "potassium",
+        "hyperkalemia",
+        "magnesium",
+        "glucose",
+        "lipids",
+        "grapefruit",
+        "cyp3a4",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "levodopa",
+      "drug": "Carbidopa / Levodopa (Sinemet)",
+      "aliases": [
+        "carbidopa",
+        "levodopa",
+        "sinemet",
+        "l-dopa"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anti-Parkinson — Dopamine Precursor",
+      "effects": [
+        "High-protein diet (>2 g/kg) can decrease efficacy of l-dopa",
+        "Pyridoxine supplements >10–25 mg/day may have adverse effects on carbidopa/levodopa"
+      ],
+      "implications": [
+        "Pyridoxine supplements should be kept ≤10 mg/day unless specifically indicated",
+        "Avoid very high-protein diets (>2 g/kg/day)"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin B6",
+        "pyridoxine",
+        "protein",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "cinacalcet",
+      "drug": "Cinacalcet (Sensipar)",
+      "aliases": [
+        "cinacalcet",
+        "sensipar",
+        "calcimimetic"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Calcimimetic",
+      "effects": [
+        "Anorexia, nausea, vomiting, and diarrhea",
+        "High fat intake may increase cinacalcet plasma concentration",
+        "Concurrent use with DHEA may result in increased bioavailability; may cause serum hypocalcemia",
+        "Grapefruit/grapefruit-containing foods may increase effects of cinacalcet"
+      ],
+      "implications": [
+        "AVOID grapefruit or grapefruit-containing foods",
+        "Monitor serum calcium levels closely",
+        "Take with food or shortly after a meal"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "calcium",
+        "hypocalcemia",
+        "grapefruit",
+        "fat",
+        "absorption",
+        "gi"
+      ]
+    },
+    {
+      "external_id": "cisplatin",
+      "drug": "Cisplatin (Platinol)",
+      "aliases": [
+        "cisplatin",
+        "platinol",
+        "platinol-aq"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Antineoplastic — Alkylating Agent",
+      "effects": [
+        "Loss of appetite, weight loss, diarrhea, nausea, vomiting, hiccups, stomatitis, and altered taste",
+        "Vomiting is severe",
+        "Nephrotoxic; may deplete magnesium and potassium"
+      ],
+      "implications": [
+        "Drink plenty of fluids to protect the kidneys",
+        "Consider antiemetic therapy; encourage food intake when patient feels best (e.g., mornings)",
+        "Monitor weight and electrolytes; replete magnesium and potassium as needed"
+      ],
+      "severity": "major",
+      "tags": [
+        "anorexia",
+        "gi",
+        "nausea",
+        "vomiting",
+        "renal",
+        "nephrotoxic",
+        "magnesium",
+        "potassium",
+        "taste",
+        "weight loss"
+      ]
+    },
+    {
+      "external_id": "cyclophosphamide",
+      "drug": "Cyclophosphamide (Cytoxan)",
+      "aliases": [
+        "cyclophosphamide",
+        "cytoxan",
+        "nitrogen mustard"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Antineoplastic — Alkylating Agent",
+      "effects": [
+        "Nausea, vomiting, loss of appetite, and weight loss",
+        "Concurrent use with St. John's Wort may result in reduced cyclophosphamide effectiveness",
+        "Irritates the bladder and kidneys"
+      ],
+      "implications": [
+        "Drink plenty of fluids to protect the bladder and kidneys",
+        "Encourage food intake when patient feels best (e.g., mornings)",
+        "AVOID SJW"
+      ],
+      "severity": "major",
+      "tags": [
+        "anorexia",
+        "weight loss",
+        "gi",
+        "renal",
+        "sjw",
+        "hydration"
+      ]
+    },
+    {
+      "external_id": "gemfibrozil",
+      "drug": "Gemfibrozil / Fenofibrate (Lopid / Tricor)",
+      "aliases": [
+        "gemfibrozil",
+        "lopid",
+        "fenofibrate",
+        "tricor",
+        "fibric acid derivative"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antihyperlipidemic — Fibric Acid Derivative",
+      "effects": [
+        "Stomach pain, diarrhea, constipation, vomiting, and gas"
+      ],
+      "implications": [
+        "Eat a low-cholesterol, low-fat, low-sucrose diet for best results",
+        "AVOID alcohol",
+        "Consider fluid and electrolyte replacement for diarrhea and vomiting"
+      ],
+      "severity": "caution",
+      "tags": [
+        "gi",
+        "diarrhea",
+        "cholesterol",
+        "lipids",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "niacin",
+      "drug": "Niacin (Nicotinic Acid)",
+      "aliases": [
+        "niacin",
+        "nicotinic acid",
+        "niaspan",
+        "niacor",
+        "slo-niacin",
+        "vitamin B3"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antihyperlipidemic — Nicotinic Acid Derivative",
+      "effects": [
+        "Occasional gas, nausea, vomiting, and diarrhea",
+        "Alcohol may increase side effects of niacin",
+        "May increase blood uric acid and glucose levels"
+      ],
+      "implications": [
+        "Caution with diabetes; ensure adherence to diabetic diet if necessary",
+        "May consider low-purine diet if uric acid is elevated",
+        "Consider fluid and electrolyte replacement for diarrhea and vomiting",
+        "AVOID or limit alcohol"
+      ],
+      "severity": "caution",
+      "tags": [
+        "alcohol",
+        "glucose",
+        "diabetes",
+        "uric acid",
+        "gi",
+        "diarrhea"
+      ]
+    },
+    {
+      "external_id": "nifedipine",
+      "drug": "Nifedipine (Adalat, Procardia)",
+      "aliases": [
+        "nifedipine",
+        "adalat",
+        "procardia",
+        "nifedical"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Calcium Channel Blocker — Dihydropyridine",
+      "effects": [
+        "Upset stomach, heartburn, nausea, and constipation",
+        "Grapefruit juice or grapefruit-containing foods may result in severe hypotension, myocardial ischemia, and increased vasodilator side effects",
+        "Ginseng or Ginkgo biloba may result in an increased risk of nifedipine side effects",
+        "Dong quai may result in low blood pressure",
+        "Calcium salts and St. John's Wort decrease the effects of nifedipine",
+        "Agrimony, cornsilk, DHEA, fo-ti, maitake, reishi increase the effects of nifedipine"
+      ],
+      "implications": [
+        "AVOID drinking grapefruit juice or eating grapefruit 1 h before or 2 h after taking nifedipine",
+        "Take with food if GI distress occurs",
+        "Avoid natural licorice; reduce sodium intake"
+      ],
+      "severity": "major",
+      "tags": [
+        "grapefruit",
+        "gi",
+        "hypotension",
+        "calcium",
+        "sjw",
+        "sodium",
+        "licorice"
+      ]
+    },
+    {
+      "external_id": "orlistat",
+      "drug": "Orlistat (Xenical, Alli)",
+      "aliases": [
+        "orlistat",
+        "xenical",
+        "alli",
+        "lipase inhibitor"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Weight Management — Lipase Inhibitor",
+      "effects": [
+        "Flatulence, fatty stools, nausea, diarrhea",
+        "Decreased absorption of fat-soluble vitamins A, D, E, K"
+      ],
+      "implications": [
+        "Monitor fat-soluble vitamin levels; supplement fat-soluble vitamins in water-miscible form",
+        "Take a multivitamin containing fat-soluble vitamins at least 2 h apart from orlistat (e.g., at bedtime)",
+        "Effects are transient and generally improve with reduced fat intake"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin A",
+        "vitamin D",
+        "vitamin E",
+        "vitamin K",
+        "fat-soluble vitamins",
+        "diarrhea",
+        "gi"
+      ]
+    },
+    {
+      "external_id": "quinidine",
+      "drug": "Quinidine (Quinidex)",
+      "aliases": [
+        "quinidine",
+        "quinidex",
+        "extentabs",
+        "quinora",
+        "antiarrhythmic"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antiarrhythmic — Class IA",
+      "effects": [
+        "Abdominal pain and cramps, diarrhea, nausea, and vomiting",
+        "May cause hypokalemia, hypomagnesemia, and/or hypocalcemia",
+        "Grapefruit juice may result in decreased metabolic conversion of quinidine",
+        "Aluminum hydroxide, calcium carbonate, sodium bicarbonate, DHEA, grapefruit, hawthorn increase the level or effect of quinidine",
+        "Quinidine and lily of the valley each increase the toxicity of the other"
+      ],
+      "implications": [
+        "Consider fluid and electrolyte replacement for diarrhea and vomiting",
+        "Consume diet adequate in potassium, magnesium, and calcium; supplementation may be necessary",
+        "AVOID grapefruit"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "potassium",
+        "magnesium",
+        "calcium",
+        "electrolytes",
+        "grapefruit",
+        "diarrhea",
+        "gi"
+      ]
+    },
+    {
+      "external_id": "glp1_agonists",
+      "drug": "GLP-1 Receptor Agonists (Semaglutide / Tirzepatide)",
+      "aliases": [
+        "semaglutide",
+        "ozempic",
+        "wegovy",
+        "rybelsus",
+        "tirzepatide",
+        "mounjaro",
+        "zepbound",
+        "liraglutide",
+        "victoza",
+        "saxenda",
+        "dulaglutide",
+        "trulicity",
+        "glp-1",
+        "incretin mimetic"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic / Weight Management — Incretin Mimetic",
+      "effects": [
+        "Nausea, vomiting, diarrhea, abdominal pain, constipation, heartburn, burping",
+        "Significant risk of hypoglycemia when taken concurrently with insulin",
+        "Alcohol may affect blood glucose levels in patients with diabetes (both hypoglycemia and hyperglycemia may occur depending on how much and how often you drink)"
+      ],
+      "implications": [
+        "Follow ADA dietary guidelines",
+        "Alcohol use requires caution; monitor blood glucose closely",
+        "Encourage small, frequent meals to manage GI side effects",
+        "Ensure adequate protein intake to preserve lean muscle mass during weight loss"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "gi",
+        "nausea",
+        "vomiting",
+        "diarrhea",
+        "hypoglycemia",
+        "alcohol",
+        "diabetes",
+        "weight loss",
+        "protein"
+      ]
+    },
+    {
+      "external_id": "sevelamer",
+      "drug": "Sevelamer (Renagel)",
+      "aliases": [
+        "sevelamer",
+        "renagel",
+        "non-calcium phosphorus binder"
+      ],
+      "category": "Renal",
+      "subcategory": "Non-Calcium-Based Phosphorus Binder",
+      "effects": [
+        "Diarrhea, dyspepsia, gas, constipation, nausea, and vomiting",
+        "May decrease absorption of fat-soluble vitamins and some medications"
+      ],
+      "implications": [
+        "Take with food",
+        "Use of aluminum antacids should be limited to <14 days",
+        "Monitor bicarbonate, chloride, calcium, and phosphorus levels"
+      ],
+      "severity": "caution",
+      "tags": [
+        "calcium",
+        "phosphorus",
+        "electrolytes",
+        "fat-soluble vitamins",
+        "gi",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "clonidine",
+      "drug": "Clonidine (Catapres)",
+      "aliases": [
+        "clonidine",
+        "catapres",
+        "duraclon",
+        "alpha-2 adrenergic"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Alpha-2 Adrenergic Agonist — Antihypertensive",
+      "effects": [
+        "Constipation, nausea, vomiting, dry mouth, and drowsiness",
+        "Ethanol and clonidine increase the effects of each other",
+        "Clonidine may also mask hypoglycemia",
+        "Yohimbine may result in reduced clonidine effectiveness",
+        "Cornsilk, maitake, reishi increase effects of clonidine",
+        "Ma huang, shepherd's purse may result in increased blood pressure"
+      ],
+      "implications": [
+        "AVOID alcohol intake as it can exacerbate drowsiness",
+        "Use ice chips or chew gum for dry mouth",
+        "Monitor blood glucose closely"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "alcohol",
+        "dry mouth",
+        "hypoglycemia",
+        "gi",
+        "drowsiness",
+        "blood pressure"
+      ]
+    },
+    {
+      "external_id": "tranylcypromine",
+      "drug": "Tranylcypromine (Parnate)",
+      "aliases": [
+        "tranylcypromine",
+        "parnate",
+        "maoi",
+        "irreversible maoi"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antidepressant — MAOI (Irreversible)",
+      "effects": [
+        "Sudden high blood pressure or increased MAO activity may occur with ingestion of certain foods (avocado, yerba mate, guarana, kava, liquorice, ma huang, St. John's Wort, 5-htp, SAMe, yohimbe, caffeine)",
+        "Alcohol may increase depressant effect",
+        "Caffeine may increase blood pressure and cardiac arrhythmias",
+        "Tranylcypromine and valerian both increase sedation",
+        "Pleurisy root decreases the effect of tranylcypromine"
+      ],
+      "implications": [
+        "AVOID all high-tyramine foods: aged cheeses, fava/broad bean pods, yeast or meat extracts, smoked or pickled meat, poultry, or fish, fermented sausages (bologna, pepperoni, salami), other fermented meats, avocados, bananas, beer, wine, and raisins",
+        "Avoid excess amounts of caffeine, tea, or chocolate",
+        "AVOID alcohol",
+        "Tyramine restriction continues for 2 WEEKS AFTER discontinuation"
+      ],
+      "severity": "major",
+      "tags": [
+        "tyramine",
+        "maoi",
+        "hypertensive crisis",
+        "caffeine",
+        "alcohol",
+        "food interaction",
+        "sjw"
+      ]
+    },
+    {
+      "external_id": "verapamil",
+      "drug": "Verapamil (Calan, Isoptin)",
+      "aliases": [
+        "verapamil",
+        "calan",
+        "verelan",
+        "isoptin",
+        "covera-hs"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Calcium Channel Blocker — Non-Dihydropyridine",
+      "effects": [
+        "Constipation, upset stomach, heartburn",
+        "Concurrent use with caffeine or green tea may result in increased caffeine serum concentrations and enhanced CNS stimulation",
+        "Grapefruit/grapefruit-containing foods, DHEA, hawthorn, agrimony, cornsilk, fo-ti, maitake, reishi increase the level or effect of verapamil",
+        "Eucalyptus, St. John's Wort decreases level or effect of verapamil",
+        "Lily of the valley and verapamil affect the toxicity of each other",
+        "Shepherd's purse may interfere with blood pressure control"
+      ],
+      "implications": [
+        "AVOID grapefruit juice or eating grapefruit 1 h before or 2 h after taking verapamil",
+        "Take with food if GI distress occurs",
+        "Avoid natural licorice; reduce sodium intake",
+        "AVOID SJW"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "grapefruit",
+        "caffeine",
+        "sjw",
+        "gi",
+        "constipation",
+        "licorice",
+        "sodium"
+      ]
+    },
+    {
+      "external_id": "vinblastine",
+      "drug": "Vinblastine (Velban)",
+      "aliases": [
+        "vinblastine",
+        "velban",
+        "velsar",
+        "vbl",
+        "plant alkaloid"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Antineoplastic — Vinca Alkaloid",
+      "effects": [
+        "Nausea, vomiting, stomach pain, constipation, and diarrhea",
+        "St. John's Wort or eucalyptus will decrease the effectiveness of vinblastine",
+        "DHEA, maitake, or grapefruit will increase the level or effect of vinblastine"
+      ],
+      "implications": [
+        "Drink plenty of fluids to decrease constipation",
+        "AVOID grapefruit or grapefruit-containing foods",
+        "AVOID SJW"
+      ],
+      "severity": "major",
+      "tags": [
+        "gi",
+        "constipation",
+        "grapefruit",
+        "sjw",
+        "nausea",
+        "vomiting"
+      ]
+    },
+    {
+      "external_id": "vincristine",
+      "drug": "Vincristine (Oncovin)",
+      "aliases": [
+        "vincristine",
+        "oncovin",
+        "vincasar",
+        "vcr",
+        "plant alkaloid"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Antineoplastic — Vinca Alkaloid",
+      "effects": [
+        "Nausea, vomiting, stomach pain, stomach cramps, constipation, and diarrhea",
+        "St. John's Wort or eucalyptus will decrease the effectiveness of vincristine",
+        "DHEA, grapefruit will increase level or effect of vincristine"
+      ],
+      "implications": [
+        "Consider fluid and electrolyte replacement for diarrhea and vomiting",
+        "Mild vomiting: consider laxatives for constipation",
+        "AVOID grapefruit or grapefruit-containing foods",
+        "AVOID SJW"
+      ],
+      "severity": "major",
+      "tags": [
+        "gi",
+        "constipation",
+        "grapefruit",
+        "sjw",
+        "nausea",
+        "vomiting",
+        "diarrhea"
+      ]
+    },
+    {
+      "external_id": "metformin",
+      "drug": "Metformin (Glucophage)",
+      "aliases": [
+        "metformin",
+        "glucophage",
+        "glucophage xr",
+        "fortamet",
+        "riomet",
+        "biguanide"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic — Biguanide",
+      "effects": [
+        "Inhibits calcium-dependent receptor-mediated endocytosis of the intrinsic factor–vitamin B12 complex → decreased vitamin B12 absorption",
+        "Long-term use associated with vitamin B12 deficiency → megaloblastic anemia and hyperhomocysteinemia",
+        "May modestly reduce folate levels in some patients",
+        "Increased calcium intake (≥1,200 mg/day) may reverse metformin-induced B12 malabsorption (Bauman et al. Diabetes Care 2000)",
+        "Guar gum and high-fiber meals may delay metformin absorption"
+      ],
+      "implications": [
+        "Monitor vitamin B12 status (serum B12, methylmalonic acid) annually with long-term use",
+        "Supplement vitamin B12; consider MVM; crystalline B12 (supplements, fortified foods) is absorbed normally",
+        "Ensure adequate calcium intake; calcium citrate preferred",
+        "Maintain adequate folate intake",
+        "Take with food to reduce GI side effects"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin B12",
+        "folate",
+        "megaloblastic anemia",
+        "calcium",
+        "absorption",
+        "diabetes"
+      ]
+    },
+    {
+      "external_id": "sulfonylureas",
+      "drug": "Sulfonylureas",
+      "aliases": [
+        "glipizide",
+        "glucotrol",
+        "glyburide",
+        "diabeta",
+        "micronase",
+        "glimepiride",
+        "amaryl",
+        "chlorpropamide",
+        "tolbutamide"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Antihyperglycemic — Sulfonylurea",
+      "effects": [
+        "Stimulates insulin secretion → risk of hypoglycemia (especially with skipped or delayed meals)",
+        "Alcohol: increased hypoglycemia risk; may cause disulfiram-like reaction with chlorpropamide/tolbutamide",
+        "High-fiber meals may delay peak drug absorption",
+        "Chlorpropamide: may cause hyponatremia (SIADH-like effect)"
+      ],
+      "implications": [
+        "Take with first meal of the day to coordinate with insulin release",
+        "AVOID alcohol; especially chlorpropamide/tolbutamide",
+        "Do not skip or delay meals — carry fast-acting carbohydrate",
+        "Follow ADA dietary guidelines; carbohydrate consistency is key",
+        "Monitor for sodium levels with chlorpropamide"
+      ],
+      "severity": "major",
+      "tags": [
+        "hypoglycemia",
+        "glucose",
+        "alcohol",
+        "disulfiram",
+        "sodium",
+        "fiber",
+        "diabetes"
+      ]
+    },
+    {
+      "external_id": "colchicine",
+      "drug": "Colchicine (Colcrys, Mitigare)",
+      "aliases": [
+        "colchicine",
+        "colcrys",
+        "mitigare",
+        "gloperba"
+      ],
+      "category": "Analgesics",
+      "subcategory": "Anti-Gout — Microtubule Inhibitor",
+      "effects": [
+        "Damages ileal mucosa → impaired absorption of food-bound vitamin B12 via intrinsic factor",
+        "Long-term use may lead to vitamin B12 deficiency and megaloblastic anemia (Webb et al. NEJM 1968)",
+        "Also reduces fat, sodium, potassium, carotenoid, and protein absorption at higher doses",
+        "GI side effects: nausea, vomiting, diarrhea — dose-limiting"
+      ],
+      "implications": [
+        "Monitor vitamin B12 status (methylmalonic acid is the specific indicator) with chronic use",
+        "Higher-dose crystalline vitamin B12 supplements recommended for chronic colchicine therapy",
+        "Maintain adequate hydration",
+        "AVOID grapefruit (CYP3A4 inhibition → increased colchicine toxicity)"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin B12",
+        "megaloblastic anemia",
+        "absorption",
+        "grapefruit",
+        "gi",
+        "gout"
+      ]
+    },
+    {
+      "external_id": "allopurinol",
+      "drug": "Allopurinol (Zyloprim)",
+      "aliases": [
+        "allopurinol",
+        "zyloprim",
+        "xanthine oxidase inhibitor"
+      ],
+      "category": "Analgesics",
+      "subcategory": "Anti-Gout — Xanthine Oxidase Inhibitor",
+      "effects": [
+        "May increase iron storage in the liver → risk of hepatocellular toxicity with concurrent iron supplementation",
+        "High-purine foods (organ meats, shellfish, red meat, beer, high-fructose corn syrup) counteract drug effect",
+        "Alcohol increases uric acid production and may reduce allopurinol efficacy",
+        "Vitamin C (high dose ≥500 mg/day) may have a modest independent uricosuric effect"
+      ],
+      "implications": [
+        "AVOID concurrent iron supplements (increased hepatic iron storage)",
+        "Follow low-purine diet; avoid organ meats, shellfish, anchovies, high-fructose drinks",
+        "AVOID alcohol",
+        "Maintain adequate hydration (≥2–3 L/day) to prevent uric acid crystallization",
+        "Limit fructose-sweetened beverages"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "iron",
+        "liver",
+        "hepatotoxicity",
+        "purine",
+        "uric acid",
+        "alcohol",
+        "gout",
+        "fructose"
+      ]
+    },
+    {
+      "external_id": "febuxostat",
+      "drug": "Febuxostat (Uloric)",
+      "aliases": [
+        "febuxostat",
+        "uloric"
+      ],
+      "category": "Analgesics",
+      "subcategory": "Anti-Gout — Xanthine Oxidase Inhibitor",
+      "effects": [
+        "Nausea, arthralgia, rash; GI distress",
+        "High-purine diet significantly counteracts drug effect",
+        "Alcohol increases uric acid synthesis"
+      ],
+      "implications": [
+        "Follow low-purine, low-fructose diet",
+        "AVOID alcohol",
+        "Maintain adequate hydration",
+        "Take without regard to food"
+      ],
+      "severity": "caution",
+      "tags": [
+        "purine",
+        "uric acid",
+        "alcohol",
+        "fructose",
+        "gi",
+        "gout"
+      ]
+    },
+    {
+      "external_id": "sulfasalazine",
+      "drug": "Sulfasalazine (Azulfidine)",
+      "aliases": [
+        "sulfasalazine",
+        "azulfidine",
+        "azulfidine en-tabs"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "DMARD / Anti-inflammatory — Sulfonamide",
+      "effects": [
+        "Potent inhibitor of the reduced folate carrier (RFC) → impairs intestinal folate absorption",
+        "Also inhibits folate polyglutamate synthesis in intestinal cells",
+        "Risk of folate deficiency, hyperhomocysteinemia, and megaloblastic anemia (Halsted NEJM 1981; Jansen Arthritis Rheum 2004)",
+        "GI: nausea, vomiting, anorexia, stomatitis (common especially with enteric-coated form)"
+      ],
+      "implications": [
+        "Folic acid supplementation (1 mg/day) recommended for all patients on long-term therapy",
+        "Take folate supplement 1 h before or 4–6 h after the drug to reduce binding interference",
+        "Monitor folate, vitamin B12, and CBC regularly",
+        "Take with food to reduce GI side effects"
+      ],
+      "severity": "major",
+      "tags": [
+        "folate",
+        "folic acid",
+        "megaloblastic anemia",
+        "homocysteine",
+        "gi",
+        "anorexia",
+        "stomatitis"
+      ]
+    },
+    {
+      "external_id": "hydroxychloroquine",
+      "drug": "Hydroxychloroquine (Plaquenil)",
+      "aliases": [
+        "hydroxychloroquine",
+        "plaquenil",
+        "chloroquine",
+        "dmard",
+        "antimalarial"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "DMARD — Antimalarial",
+      "effects": [
+        "May lower fasting blood glucose → risk of hypoglycemia in diabetic patients on insulin or oral agents",
+        "GI: nausea, anorexia, abdominal cramps, diarrhea"
+      ],
+      "implications": [
+        "Monitor blood glucose closely, especially in diabetic patients",
+        "Take with food or milk to minimize GI side effects",
+        "Ensure adequate vitamin D intake (patients with lupus/RA often vitamin D-depleted)"
+      ],
+      "severity": "caution",
+      "tags": [
+        "hypoglycemia",
+        "glucose",
+        "diabetes",
+        "gi",
+        "anorexia",
+        "vitamin D"
+      ]
+    },
+    {
+      "external_id": "aspirin_dnr",
+      "drug": "Aspirin (High-Dose / Chronic)",
+      "aliases": [
+        "aspirin",
+        "asa",
+        "acetylsalicylic acid",
+        "aspirin ec",
+        "enteric coated aspirin"
+      ],
+      "category": "Analgesics",
+      "subcategory": "Salicylate — NSAID",
+      "effects": [
+        "Decreases absorption and increases urinary excretion of vitamin C; may impair intragastric vitamin C concentration → increased gastric mucosal damage",
+        "High-dose vitamin E (≥800 IU/day) may potentiate antiplatelet effects → prolonged bleeding time",
+        "Chronic/high-dose: iron deficiency may develop due to GI blood loss and mucosal irritation",
+        "High-dose use may impair folate status"
+      ],
+      "implications": [
+        "Long-term high-dose aspirin: ensure adequate vitamin C from diet and/or supplements",
+        "Monitor for GI bleeding and iron-deficiency anemia with chronic use",
+        "AVOID high-dose vitamin E supplements concurrently",
+        "Take with food to reduce GI irritation"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "vitamin C",
+        "vitamin E",
+        "iron",
+        "folate",
+        "gi",
+        "bleeding",
+        "antiplatelet"
+      ]
+    },
+    {
+      "external_id": "chloramphenicol",
+      "drug": "Chloramphenicol (Chloromycetin)",
+      "aliases": [
+        "chloramphenicol",
+        "chloromycetin"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Broad-Spectrum",
+      "effects": [
+        "Can cause bone marrow suppression (dose-independent aplastic anemia, rare but fatal)",
+        "Interferes with hematopoietic response to iron and vitamin B12 supplements — may mask deficiency correction",
+        "Decreases intestinal absorption of food-bound (but not supplemental) vitamin B12",
+        "May inhibit folate utilization → reduced efficacy of supplemental folic acid",
+        "High-fat meal may increase chloramphenicol absorption"
+      ],
+      "implications": [
+        "Monitor CBC, iron studies, and vitamin B12 status closely",
+        "Crystalline vitamin B12 (supplements) is not affected; may be supplemented safely",
+        "Use lowest effective dose; consider alternative antibiotic if available",
+        "Monitor for signs of aplastic anemia: unusual bruising, fatigue, pallor"
+      ],
+      "severity": "major",
+      "tags": [
+        "vitamin B12",
+        "iron",
+        "folate",
+        "aplastic anemia",
+        "bone marrow",
+        "gi"
+      ]
+    },
+    {
+      "external_id": "cycloserine_tb",
+      "drug": "Cycloserine (Seromycin)",
+      "aliases": [
+        "cycloserine",
+        "seromycin"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antitubercular",
+      "effects": [
+        "Forms an inactive covalently-bound complex with pyridoxal-5-phosphate (PLP) → functional vitamin B6 deficiency",
+        "May cause anemia, peripheral neuropathy, neurotoxicity (seizures)",
+        "May elevate homocysteine levels"
+      ],
+      "implications": [
+        "Vitamin B6 supplementation required (≥50–200 mg/day, higher doses often needed vs. isoniazid)",
+        "Monitor neurological status and CBC"
+      ],
+      "severity": "major",
+      "tags": [
+        "vitamin B6",
+        "pyridoxine",
+        "neuropathy",
+        "anemia",
+        "homocysteine"
+      ]
+    },
+    {
+      "external_id": "trimethoprim",
+      "drug": "Trimethoprim (Primsol)",
+      "aliases": [
+        "trimethoprim",
+        "primsol",
+        "proloprim"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antibacterial — Diaminopyrimidine",
+      "effects": [
+        "Inhibits dihydrofolate reductase → blocks folate synthesis; risk of megaloblastic anemia with long-term use",
+        "May elevate serum creatinine and potassium (independent of renal effects)"
+      ],
+      "implications": [
+        "Folic acid supplementation may be needed, especially in pregnancy and in folate-depleted patients",
+        "Monitor folate status and CBC with prolonged use",
+        "Avoid potassium supplementation in high-dose/long-term use (hyperkalemia risk)"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "folate",
+        "folic acid",
+        "megaloblastic anemia",
+        "potassium",
+        "hyperkalemia"
+      ]
+    },
+    {
+      "external_id": "antacids",
+      "drug": "Antacids (Aluminum/Magnesium/Calcium-Based)",
+      "aliases": [
+        "aluminum hydroxide",
+        "magnesium hydroxide",
+        "calcium carbonate",
+        "tums",
+        "maalox",
+        "mylanta",
+        "gaviscon",
+        "rolaids",
+        "amphojel"
+      ],
+      "category": "Gastrointestinal",
+      "subcategory": "Antacid",
+      "effects": [
+        "Aluminum-containing antacids reduce fluoride absorption and phosphate absorption → hypophosphatemia with excess use",
+        "Increased GI pH → reduced iron solubility → decreased iron absorption",
+        "May slightly impair absorption of synthetic folic acid from supplements",
+        "Magnesium-containing antacids: may cause hypermagnesemia in renal failure; may decrease manganese absorption"
+      ],
+      "implications": [
+        "Separate iron supplements and folic acid by ≥2 h from antacid use",
+        "Separate calcium citrate supplements by ≥3 h",
+        "Separate any manganese-containing supplements by ≥2 h",
+        "Avoid excessive aluminum-based antacid use (hypophosphatemia risk, especially with low dietary phosphorus)",
+        "Caution with magnesium antacids in renal insufficiency"
+      ],
+      "severity": "caution",
+      "tags": [
+        "iron",
+        "folate",
+        "calcium",
+        "magnesium",
+        "phosphorus",
+        "fluoride",
+        "manganese",
+        "absorption",
+        "renal"
+      ]
+    },
+    {
+      "external_id": "warfarin_coq10",
+      "drug": "Warfarin + CoQ10 Interaction (Extended)",
+      "aliases": [
+        "warfarin coq10",
+        "coenzyme q10 warfarin"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Anticoagulant — Supplement Interaction",
+      "effects": [
+        "CoQ10 is structurally similar to vitamin K → higher doses of CoQ10 may reduce warfarin efficacy (decreased INR)",
+        "This is an underrecognized supplement-drug interaction"
+      ],
+      "implications": [
+        "AVOID high-dose CoQ10 supplements if on warfarin",
+        "If CoQ10 supplementation is started or stopped, monitor INR closely and adjust warfarin dose as needed",
+        "Inform prescriber of all supplements"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "coq10",
+        "warfarin",
+        "inr",
+        "vitamin K",
+        "anticoagulant",
+        "supplement"
+      ]
+    },
+    {
+      "external_id": "heparin_dnr",
+      "drug": "Heparin (Unfractionated / LMWH)",
+      "aliases": [
+        "heparin",
+        "enoxaparin",
+        "lovenox",
+        "dalteparin",
+        "fragmin",
+        "fondaparinux",
+        "arixtra",
+        "lmwh",
+        "anticoagulant"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Anticoagulant — Parenteral",
+      "effects": [
+        "Long-term heparin use: may inhibit osteoblast activity and increase bone resorption → osteoporosis risk",
+        "High doses of vitamin E or fish oil may potentiate anticoagulant effect",
+        "Herbal anticoagulants (ginkgo, garlic, ginger, dong quai, danshen) may increase bleeding risk"
+      ],
+      "implications": [
+        "Long-term LMWH: consider calcium and vitamin D supplementation",
+        "AVOID high-dose vitamin E (≥800 IU/day) and high-dose fish oil",
+        "AVOID herbal anticoagulants/antiplatelets",
+        "Monitor for bruising and bleeding; platelet count (HIT risk with UFH)"
+      ],
+      "severity": "major",
+      "tags": [
+        "osteoporosis",
+        "calcium",
+        "vitamin D",
+        "vitamin E",
+        "fish oil",
+        "bleeding",
+        "ginkgo",
+        "garlic",
+        "anticoagulant"
+      ]
+    },
+    {
+      "external_id": "direct_oral_anticoagulants",
+      "drug": "DOACs (Rivaroxaban / Apixaban / Edoxaban)",
+      "aliases": [
+        "rivaroxaban",
+        "xarelto",
+        "apixaban",
+        "eliquis",
+        "edoxaban",
+        "savaysa",
+        "betrixaban",
+        "bevyxxa",
+        "doac",
+        "noac"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Anticoagulant — Direct Factor Xa Inhibitor",
+      "effects": [
+        "Rivaroxaban: bioavailability is significantly higher when taken with food (increase from ~66% to >90%)",
+        "GI effects: nausea, abdominal pain, GI bleeding",
+        "Vitamin K status is NOT relevant (unlike warfarin)",
+        "St. John's Wort (P-gp/CYP3A4 inducer) decreases DOAC levels significantly",
+        "Grapefruit, quercetin, and strong P-gp inhibitors may increase DOAC exposure"
+      ],
+      "implications": [
+        "Take rivaroxaban WITH the largest meal of the day (food critical for absorption)",
+        "Apixaban and edoxaban: may be taken without regard to meals",
+        "AVOID SJW (St. John's Wort)",
+        "AVOID grapefruit with rivaroxaban",
+        "Consult pharmacist before any herbal supplement",
+        "Note: dietary vitamin K does NOT affect DOACs — no vitamin K restriction needed"
+      ],
+      "severity": "major",
+      "tags": [
+        "grapefruit",
+        "sjw",
+        "absorption",
+        "gi",
+        "bleeding",
+        "anticoagulant",
+        "p-gp"
+      ]
+    },
+    {
+      "external_id": "antiplatelets",
+      "drug": "Antiplatelet Agents (Clopidogrel / Ticagrelor / Prasugrel)",
+      "aliases": [
+        "clopidogrel",
+        "plavix",
+        "ticagrelor",
+        "brilinta",
+        "prasugrel",
+        "effient",
+        "aspirin/clopidogrel",
+        "antiplatelet"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antiplatelet",
+      "effects": [
+        "Increased bleeding risk, especially GI bleeding",
+        "Clopidogrel: high-fat meal may modestly alter absorption; grapefruit inhibits CYP3A4 activation",
+        "Ticagrelor: grapefruit increases drug levels",
+        "High-dose omega-3/fish oil supplements may potentiate antiplatelet effects"
+      ],
+      "implications": [
+        "AVOID grapefruit/related citrus with ticagrelor and clopidogrel",
+        "Caution with high-dose fish oil, vitamin E, garlic, ginkgo (additive antiplatelet effects)",
+        "Monitor for signs of GI bleeding",
+        "Take with food to reduce GI irritation"
+      ],
+      "severity": "major",
+      "tags": [
+        "grapefruit",
+        "fish oil",
+        "vitamin E",
+        "garlic",
+        "ginkgo",
+        "bleeding",
+        "gi",
+        "antiplatelet"
+      ]
+    },
+    {
+      "external_id": "ivabradine",
+      "drug": "Ivabradine (Corlanor)",
+      "aliases": [
+        "ivabradine",
+        "corlanor",
+        "procoralan"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "If Channel Inhibitor — Heart Failure",
+      "effects": [
+        "Grapefruit juice markedly increases ivabradine levels (CYP3A4 inhibition) → risk of bradycardia",
+        "St. John's Wort decreases ivabradine levels"
+      ],
+      "implications": [
+        "AVOID grapefruit and grapefruit juice entirely",
+        "AVOID SJW"
+      ],
+      "severity": "major",
+      "tags": [
+        "grapefruit",
+        "sjw",
+        "cyp3a4",
+        "bradycardia"
+      ]
+    },
+    {
+      "external_id": "sacubitril_valsartan",
+      "drug": "Sacubitril/Valsartan (Entresto)",
+      "aliases": [
+        "sacubitril",
+        "valsartan",
+        "entresto",
+        "arni",
+        "angiotensin receptor neprilysin inhibitor"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "ARNI — Heart Failure",
+      "effects": [
+        "Increases serum potassium (shares ARB mechanism) → hyperkalemia risk",
+        "Risk of angioedema (higher risk in Black patients)",
+        "Hypotension risk with high sodium restriction in combination with diuretics"
+      ],
+      "implications": [
+        "AVOID salt substitutes (potassium chloride)",
+        "Caution with high-potassium foods or supplements",
+        "Maintain consistent sodium intake; avoid very-low-sodium diet without medical supervision"
+      ],
+      "severity": "major",
+      "tags": [
+        "potassium",
+        "hyperkalemia",
+        "salt substitute",
+        "sodium"
+      ]
+    },
+    {
+      "external_id": "theophylline",
+      "drug": "Theophylline (Theo-24, Uniphyl)",
+      "aliases": [
+        "theophylline",
+        "theo-24",
+        "uniphyl",
+        "aminophylline"
+      ],
+      "category": "Respiratory",
+      "subcategory": "Bronchodilator — Methylxanthine",
+      "effects": [
+        "High-fat meals increase absorption of sustained-release theophylline → toxicity risk",
+        "Caffeine and theophylline are both methylxanthines; concurrent use increases CNS and cardiovascular toxicity risk",
+        "Charcoal-grilled protein and high-protein/low-carbohydrate diets increase theophylline clearance → reduced effect",
+        "Vitamin B6 (pyridoxine) deficiency may exacerbate theophylline-induced seizures"
+      ],
+      "implications": [
+        "Avoid high-fat meals with sustained-release theophylline",
+        "Avoid excessive caffeine consumption",
+        "Maintain consistent dietary pattern (especially protein and fat)",
+        "Monitor theophylline levels; therapeutic range is narrow",
+        "Ensure adequate pyridoxine intake"
+      ],
+      "severity": "major",
+      "tags": [
+        "caffeine",
+        "fat",
+        "protein",
+        "vitamin B6",
+        "pyridoxine",
+        "toxicity",
+        "seizure",
+        "narrow therapeutic index"
+      ]
+    },
+    {
+      "external_id": "montelukast",
+      "drug": "Montelukast (Singulair)",
+      "aliases": [
+        "montelukast",
+        "singulair"
+      ],
+      "category": "Respiratory",
+      "subcategory": "Leukotriene Receptor Antagonist",
+      "effects": [
+        "Some chewable tablet forms contain phenylalanine (aspartame) → risk for PKU",
+        "No clinically significant food interactions"
+      ],
+      "implications": [
+        "Caution in patients with phenylketonuria (PKU) — check formulation for phenylalanine content"
+      ],
+      "severity": "info",
+      "tags": [
+        "phenylalanine",
+        "pku",
+        "aspartame"
+      ]
+    },
+    {
+      "external_id": "mycophenolate",
+      "drug": "Mycophenolate Mofetil (CellCept)",
+      "aliases": [
+        "mycophenolate",
+        "cellcept",
+        "myfortic",
+        "mycophenolic acid"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Immunosuppressant — Antimetabolite",
+      "effects": [
+        "Nausea, vomiting, diarrhea, abdominal pain; GI effects are the most common reason for dose reduction",
+        "Inhibits de novo purine synthesis → may cause anemia and leukopenia",
+        "Antacids (Mg/Al hydroxide) and high-fat meals reduce MMF absorption",
+        "Enteral nutrition may decrease drug absorption"
+      ],
+      "implications": [
+        "Take on an EMPTY STOMACH for optimal absorption; if GI intolerable, may take with food",
+        "Separate from antacids by ≥2 h",
+        "Probiotic may help with GI side effects",
+        "Monitor CBC for anemia and leukopenia"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "gi",
+        "nausea",
+        "diarrhea",
+        "anemia",
+        "absorption",
+        "antacids",
+        "probiotic"
+      ]
+    },
+    {
+      "external_id": "sirolimus",
+      "drug": "Sirolimus / Everolimus (Rapamune / Zortress)",
+      "aliases": [
+        "sirolimus",
+        "rapamune",
+        "everolimus",
+        "zortress",
+        "afinitor",
+        "mtor inhibitor"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Immunosuppressant — mTOR Inhibitor",
+      "effects": [
+        "Hyperlipidemia, hyperglycemia, mouth ulcers, decreased appetite",
+        "Grapefruit significantly increases drug levels via CYP3A4 inhibition",
+        "High-fat meals increase variability in sirolimus absorption",
+        "May deplete vitamin D and may worsen hypophosphatemia post-transplant"
+      ],
+      "implications": [
+        "AVOID grapefruit and grapefruit juice",
+        "Take drug CONSISTENTLY with or without food (do not switch between)",
+        "Monitor blood glucose, lipids, and vitamin D",
+        "Monitor and replete phosphorus as needed"
+      ],
+      "severity": "major",
+      "tags": [
+        "grapefruit",
+        "cyp3a4",
+        "lipids",
+        "glucose",
+        "vitamin D",
+        "phosphorus",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "raloxifene",
+      "drug": "Raloxifene (Evista)",
+      "aliases": [
+        "raloxifene",
+        "evista",
+        "serm",
+        "selective estrogen receptor modulator"
+      ],
+      "category": "Endocrine",
+      "subcategory": "SERM — Osteoporosis",
+      "effects": [
+        "No significant direct food interactions",
+        "Calcium and vitamin D adequacy is essential for optimal drug benefit (prevents bone loss)",
+        "Calcium carbonate absorption is reduced at low gastric pH — take with food"
+      ],
+      "implications": [
+        "Ensure daily calcium intake (≥1,200 mg/day) and vitamin D (800–1,000 IU/day) from diet and/or supplements",
+        "Calcium citrate preferred if on PPIs"
+      ],
+      "severity": "info",
+      "tags": [
+        "calcium",
+        "vitamin D",
+        "osteoporosis",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "testosterone",
+      "drug": "Testosterone (Androderm, AndroGel)",
+      "aliases": [
+        "testosterone",
+        "androderm",
+        "androgel",
+        "testim",
+        "axiron"
+      ],
+      "category": "Endocrine",
+      "subcategory": "Androgen",
+      "effects": [
+        "May increase appetite and nitrogen retention",
+        "Risk of erythrocytosis → increased blood viscosity",
+        "Chronic use: may alter insulin sensitivity and lipid profile"
+      ],
+      "implications": [
+        "Monitor dietary fat and cholesterol",
+        "Ensure adequate hydration",
+        "Monitor CBC (polycythemia risk)"
+      ],
+      "severity": "info",
+      "tags": [
+        "appetite",
+        "lipids",
+        "glucose",
+        "insulin sensitivity"
+      ]
+    },
+    {
+      "external_id": "bupropion",
+      "drug": "Bupropion (Wellbutrin, Zyban)",
+      "aliases": [
+        "bupropion",
+        "wellbutrin",
+        "zyban",
+        "aplenzin",
+        "forfivo",
+        "ndri"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "Antidepressant — NDRI",
+      "effects": [
+        "Appetite suppression and weight loss common; may worsen undernutrition",
+        "Lowers seizure threshold — risk increased with low sodium (hyponatremia), eating disorders (electrolyte depletion), or alcohol withdrawal",
+        "AVOID alcohol (lowers seizure threshold)"
+      ],
+      "implications": [
+        "Monitor weight and nutritional status; encourage adequate food intake",
+        "AVOID alcohol",
+        "Screen for eating disorders before prescribing — CONTRAINDICATED in patients with active bulimia or anorexia nervosa",
+        "Maintain adequate sodium and electrolytes"
+      ],
+      "severity": "major",
+      "tags": [
+        "weight loss",
+        "anorexia",
+        "seizure",
+        "alcohol",
+        "sodium",
+        "electrolytes",
+        "eating disorder"
+      ]
+    },
+    {
+      "external_id": "stimulants_adhd",
+      "drug": "CNS Stimulants (Amphetamine / Methylphenidate)",
+      "aliases": [
+        "amphetamine",
+        "adderall",
+        "adderall xr",
+        "methylphenidate",
+        "ritalin",
+        "concerta",
+        "dexmethylphenidate",
+        "focalin",
+        "lisdexamfetamine",
+        "vyvanse"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "CNS Stimulant — ADHD",
+      "effects": [
+        "Significant appetite suppression → reduced caloric intake, growth suppression in children, weight loss",
+        "Acidic beverages (fruit juice, vitamin C) lower urine pH → increase amphetamine excretion → reduced drug duration",
+        "Alkaline urine (citrate-based antacids) prolongs amphetamine effect",
+        "Caffeine may increase anxiety and cardiovascular effects"
+      ],
+      "implications": [
+        "Monitor weight, height, and nutritional status in children; drug holidays may be needed",
+        "Take drug BEFORE breakfast; offer second meal at noon",
+        "AVOID acidic juices (OJ, grapefruit) 1 h before and 1 h after dose (amphetamines)",
+        "Limit caffeine",
+        "High-protein breakfast helps sustain attention and compensates for midday appetite loss"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "appetite suppression",
+        "weight loss",
+        "vitamin C",
+        "acidic food",
+        "caffeine",
+        "growth",
+        "protein",
+        "fruit juice"
+      ]
+    },
+    {
+      "external_id": "valbenazine",
+      "drug": "Valbenazine / Deutetrabenazine (Ingrezza / Austedo)",
+      "aliases": [
+        "valbenazine",
+        "ingrezza",
+        "deutetrabenazine",
+        "austedo",
+        "tetrabenazine",
+        "nitoman",
+        "vmat2 inhibitor"
+      ],
+      "category": "Psychiatric",
+      "subcategory": "VMAT2 Inhibitor — Tardive Dyskinesia",
+      "effects": [
+        "Grapefruit (CYP3A4 inhibitor) significantly increases valbenazine exposure",
+        "Drowsiness, dysphagia; may interfere with oral food intake"
+      ],
+      "implications": [
+        "AVOID grapefruit and grapefruit juice",
+        "Monitor swallowing function; soft/pureed diet if dysphagia develops"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "grapefruit",
+        "cyp3a4",
+        "dysphagia",
+        "swallowing"
+      ]
+    },
+    {
+      "external_id": "gabapentin_pregabalin",
+      "drug": "Gabapentin / Pregabalin (Neurontin / Lyrica)",
+      "aliases": [
+        "gabapentin",
+        "neurontin",
+        "gralise",
+        "horizant",
+        "pregabalin",
+        "lyrica"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anticonvulsant / Neuropathic Pain",
+      "effects": [
+        "Significant weight gain and increased appetite; fluid retention",
+        "Somnolence and dizziness can impair self-feeding",
+        "Aluminum/magnesium antacids reduce gabapentin absorption by ~20%",
+        "Alcohol enhances CNS depression"
+      ],
+      "implications": [
+        "Monitor weight and fluid status; consider calorie-controlled diet",
+        "Separate from antacids by ≥2 h",
+        "AVOID alcohol"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "weight gain",
+        "appetite",
+        "alcohol",
+        "antacids",
+        "absorption",
+        "gi"
+      ]
+    },
+    {
+      "external_id": "levetiracetam",
+      "drug": "Levetiracetam (Keppra)",
+      "aliases": [
+        "levetiracetam",
+        "keppra",
+        "keppra xr",
+        "briviact",
+        "brivaracetam"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anticonvulsant — Synaptic Vesicle Protein",
+      "effects": [
+        "Decreased appetite, weight loss",
+        "Minimal nutrient-specific interactions — generally favorable food interaction profile",
+        "Alcohol increases CNS depression"
+      ],
+      "implications": [
+        "Monitor weight and encourage adequate caloric intake",
+        "AVOID alcohol",
+        "Can be taken with or without food"
+      ],
+      "severity": "caution",
+      "tags": [
+        "weight loss",
+        "appetite",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "topiramate",
+      "drug": "Topiramate (Topamax)",
+      "aliases": [
+        "topiramate",
+        "topamax",
+        "trokendi xr",
+        "qudexy xr"
+      ],
+      "category": "Neurological",
+      "subcategory": "Anticonvulsant — Carbonic Anhydrase Inhibitor",
+      "effects": [
+        "Significant appetite suppression and weight loss (used therapeutically for obesity)",
+        "May cause metabolic acidosis → reduced bicarbonate → decreased calcium and phosphate levels",
+        "Risk of kidney stones (renal calculi) — mechanism via carbonic anhydrase inhibition",
+        "Dysgeusia (taste disturbance), cognitive impairment (\"dopy feeling\")"
+      ],
+      "implications": [
+        "Monitor weight, bicarbonate, calcium, phosphate",
+        "Maintain high fluid intake (≥2 L/day) to prevent kidney stones; avoid dehydration",
+        "AVOID ketogenic diet unless medically supervised (increases acidosis risk)",
+        "AVOID alcohol"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "weight loss",
+        "appetite suppression",
+        "kidney stones",
+        "renal calculi",
+        "calcium",
+        "bicarbonate",
+        "dysgeusia",
+        "alcohol"
+      ]
+    },
+    {
+      "external_id": "antiretrovirals",
+      "drug": "Antiretrovirals (NRTIs / NNRTIs / PIs)",
+      "aliases": [
+        "tenofovir",
+        "viread",
+        "emtricitabine",
+        "truvada",
+        "efavirenz",
+        "sustiva",
+        "lopinavir/ritonavir",
+        "kaletra",
+        "atazanavir",
+        "reyataz",
+        "dolutegravir",
+        "tivicay",
+        "bictegravir",
+        "biktarvy",
+        "nrti",
+        "nnrti",
+        "protease inhibitor",
+        "hiv"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antiretroviral — HIV",
+      "effects": [
+        "Tenofovir: decreases bone mineral density and may impair phosphate reabsorption → hypophosphatemia, Fanconi syndrome",
+        "Protease inhibitors: grapefruit significantly increases drug levels (CYP3A4)",
+        "Efavirenz: high-fat meals increase absorption by 50% → risk of toxicity; neuropsychiatric effects",
+        "Atazanavir: requires acidic pH for absorption — PPIs, H2 blockers reduce bioavailability",
+        "Long-term NRTI use: may cause mitochondrial toxicity → lactic acidosis, lipodystrophy",
+        "Metabolic effects: dyslipidemia, insulin resistance, hyperglycemia (especially PIs)",
+        "Dolutegravir: take 2 h before or 6 h after multivalent cations (Ca, Mg, Fe, Zn) or antacids"
+      ],
+      "implications": [
+        "Ensure adequate calcium, phosphate, and vitamin D intake (tenofovir users)",
+        "AVOID grapefruit with protease inhibitors",
+        "Take efavirenz on an EMPTY STOMACH at bedtime",
+        "Avoid PPIs with atazanavir; if needed, take atazanavir with food and H2 blocker timing separated",
+        "Monitor fasting lipids, glucose, and BMI/body composition",
+        "Take dolutegravir with food only if using with antacids; separate from mineral supplements",
+        "Screen for lipodystrophy and metabolic syndrome"
+      ],
+      "severity": "major",
+      "tags": [
+        "calcium",
+        "vitamin D",
+        "phosphorus",
+        "grapefruit",
+        "fat",
+        "ppi",
+        "absorption",
+        "lipids",
+        "glucose",
+        "lipodystrophy",
+        "metabolic syndrome",
+        "mineral chelation"
+      ]
+    },
+    {
+      "external_id": "oseltamivir",
+      "drug": "Oseltamivir (Tamiflu)",
+      "aliases": [
+        "oseltamivir",
+        "tamiflu"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antiviral — Neuraminidase Inhibitor",
+      "effects": [
+        "Nausea and vomiting (most common; especially on empty stomach)",
+        "No significant nutrient-specific interactions"
+      ],
+      "implications": [
+        "Take with food to reduce nausea"
+      ],
+      "severity": "info",
+      "tags": [
+        "gi",
+        "nausea",
+        "vomiting"
+      ]
+    },
+    {
+      "external_id": "sofosbuvir_ledipasvir",
+      "drug": "Sofosbuvir/Ledipasvir (Harvoni) — HCV",
+      "aliases": [
+        "sofosbuvir",
+        "ledipasvir",
+        "harvoni",
+        "velpatasvir",
+        "epclusa",
+        "glecaprevir",
+        "pibrentasvir",
+        "mavyret",
+        "hcv"
+      ],
+      "category": "Anti-infective",
+      "subcategory": "Antiviral — HCV Direct-Acting",
+      "effects": [
+        "Ledipasvir: high gastric pH (from PPIs, H2 blockers, antacids) reduces ledipasvir solubility → lower absorption",
+        "Fatigue, headache, nausea common during treatment"
+      ],
+      "implications": [
+        "Avoid PPIs at doses above standard with ledipasvir-containing regimens",
+        "Separate antacids and H2 blockers from dosing (4 h before or after)",
+        "Take with or without food; food does not affect sofosbuvir absorption significantly",
+        "Monitor for fatigue; ensure adequate caloric intake"
+      ],
+      "severity": "caution",
+      "tags": [
+        "absorption",
+        "ppi",
+        "h2 blocker",
+        "antacids",
+        "gi",
+        "fatigue"
+      ]
+    },
+    {
+      "external_id": "erlotinib_gefitinib",
+      "drug": "Tyrosine Kinase Inhibitors (Erlotinib / Gefitinib)",
+      "aliases": [
+        "erlotinib",
+        "tarceva",
+        "gefitinib",
+        "iressa",
+        "afatinib",
+        "gilotrif",
+        "osimertinib",
+        "tagrisso",
+        "egfr inhibitor",
+        "tki"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Antineoplastic — EGFR TKI",
+      "effects": [
+        "Diarrhea, mucositis, anorexia, nausea, weight loss — common GI toxicities",
+        "Erlotinib: food increases absorption by ~100% — both therapeutic effect and toxicity may increase",
+        "High-fat meal increases erlotinib AUC dramatically",
+        "PPIs reduce erlotinib absorption (requires acidic environment)"
+      ],
+      "implications": [
+        "Take erlotinib on an EMPTY STOMACH (≥1 h before or ≥2 h after food)",
+        "AVOID PPIs; use H2 blockers or antacids cautiously with timing",
+        "Monitor weight and nutritional status closely",
+        "High-protein supplements may help support nutritional status",
+        "Manage diarrhea aggressively; replace fluids and electrolytes"
+      ],
+      "severity": "major",
+      "tags": [
+        "absorption",
+        "fat",
+        "ppi",
+        "anorexia",
+        "diarrhea",
+        "weight loss",
+        "gi",
+        "protein"
+      ]
+    },
+    {
+      "external_id": "imatinib",
+      "drug": "Imatinib (Gleevec)",
+      "aliases": [
+        "imatinib",
+        "gleevec",
+        "glivec"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "Antineoplastic — BCR-ABL TKI",
+      "effects": [
+        "Nausea, vomiting; food markedly reduces nausea",
+        "May cause fluid retention, edema",
+        "Grapefruit increases imatinib levels",
+        "St. John's Wort reduces imatinib levels → reduced efficacy"
+      ],
+      "implications": [
+        "Take WITH food and large glass of water to reduce GI effects",
+        "AVOID grapefruit",
+        "AVOID SJW",
+        "Monitor and manage fluid/electrolyte balance"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "grapefruit",
+        "sjw",
+        "gi",
+        "nausea",
+        "fluid retention",
+        "edema",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "tamoxifen",
+      "drug": "Tamoxifen (Nolvadex)",
+      "aliases": [
+        "tamoxifen",
+        "nolvadex",
+        "soltamox",
+        "serm",
+        "breast cancer"
+      ],
+      "category": "Oncology / Immunology",
+      "subcategory": "SERM — Hormone-Receptor Positive Cancer",
+      "effects": [
+        "Hot flashes may alter eating patterns and appetite",
+        "Strong CYP2D6 inhibitors (some SSRIs) significantly reduce tamoxifen activation → reduced anti-cancer efficacy",
+        "Soy isoflavones (phytoestrogens): theoretical antagonism — evidence inconclusive but high-dose soy supplements advised against"
+      ],
+      "implications": [
+        "AVOID high-dose soy isoflavone supplements (weak evidence, but precautionary)",
+        "Discuss all supplements with oncologist",
+        "Maintain adequate calcium and vitamin D intake (estrogen deprivation → bone loss)"
+      ],
+      "severity": "moderate",
+      "tags": [
+        "soy",
+        "phytoestrogen",
+        "calcium",
+        "vitamin D",
+        "osteoporosis",
+        "cyp2d6"
+      ]
+    },
+    {
+      "external_id": "colestipol",
+      "drug": "Colestipol (Colestid)",
+      "aliases": [
+        "colestipol",
+        "colestid",
+        "bile acid sequestrant"
+      ],
+      "category": "Cardiovascular",
+      "subcategory": "Antihyperlipidemic — Bile Acid Sequestrant",
+      "effects": [
+        "Like cholestyramine: binds bile acids → impairs absorption of fat-soluble vitamins A, D, E, K and carotenoids",
+        "May decrease folate absorption by binding folate polyglutamates",
+        "Iron and colestipol may form chelation complex → decreased iron absorption"
+      ],
+      "implications": [
+        "Take fat-soluble vitamins 1 h before or 4–6 h after colestipol",
+        "Monitor folate, vitamins A, D, E, K, and iron status with long-term use",
+        "Supplement folate; take folic acid 1 h before or 4–6 h after drug",
+        "Separate all medications by ≥1 h before or 4 h after colestipol"
+      ],
+      "severity": "major",
+      "tags": [
+        "vitamin A",
+        "vitamin D",
+        "vitamin E",
+        "vitamin K",
+        "folate",
+        "iron",
+        "fat-soluble vitamins",
+        "carotenoids",
+        "absorption"
+      ]
+    },
+    {
+      "external_id": "lactulose",
+      "drug": "Lactulose / Polyethylene Glycol (MiraLax)",
+      "aliases": [
+        "lactulose",
+        "enulose",
+        "kristalose",
+        "polyethylene glycol",
+        "peg",
+        "miralax",
+        "golytely",
+        "laxative"
+      ],
+      "category": "Gastrointestinal",
+      "subcategory": "Laxative — Osmotic",
+      "effects": [
+        "Chronic overuse: fluid and electrolyte losses — hypokalemia, hyponatremia, dehydration",
+        "Lactulose: bacterial fermentation → hydrogen gas, bloating, flatulence, diarrhea"
+      ],
+      "implications": [
+        "Maintain adequate fluid intake",
+        "Monitor electrolytes with chronic use; supplement potassium if needed",
+        "Long-term use of stimulant or osmotic laxatives should be medically supervised"
+      ],
+      "severity": "caution",
+      "tags": [
+        "potassium",
+        "sodium",
+        "electrolytes",
+        "dehydration",
+        "diarrhea",
+        "gi"
+      ]
+    },
+    {
+      "external_id": "antihistamines",
+      "drug": "Antihistamines (First- and Second-Generation)",
+      "aliases": [
+        "diphenhydramine",
+        "benadryl",
+        "cetirizine",
+        "zyrtec",
+        "loratadine",
+        "claritin",
+        "fexofenadine",
+        "allegra",
+        "hydroxyzine",
+        "atarax",
+        "chlorpheniramine"
+      ],
+      "category": "Respiratory",
+      "subcategory": "Antihistamine — H1 Antagonist",
+      "effects": [
+        "First-generation (diphenhydramine, hydroxyzine): increased appetite and weight gain; dry mouth",
+        "Grapefruit and apple/orange juice may decrease fexofenadine absorption (OATP inhibition)",
+        "Alcohol increases sedation with first-generation antihistamines"
+      ],
+      "implications": [
+        "AVOID alcohol with first-generation antihistamines",
+        "Take fexofenadine (Allegra) with water — AVOID taking with grapefruit, apple, or orange juice",
+        "Monitor weight with chronic first-generation antihistamine use"
+      ],
+      "severity": "caution",
+      "tags": [
+        "alcohol",
+        "weight gain",
+        "dry mouth",
+        "grapefruit",
+        "fruit juice",
+        "oatp",
+        "absorption",
+        "appetite"
+      ]
+    }
+  ]
+}

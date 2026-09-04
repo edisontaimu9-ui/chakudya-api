@@ -663,7 +663,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -673,6 +673,8 @@ function routePolicy(resource, method, param, action) {
   const isMealsAnalyze = resource === "meals" && param === "analyze" && method === "POST";
   const isIngredientsParse = resource === "ingredients" && param === "parse" && method === "POST";
   const isDri = resource === "dri";
+  const isDrugInteractionsSearch =
+    resource === "drug-interactions" && param === "search" && method === "GET";
 
   // Favorites/history — no admin gate (same public, self-declared-identity
   // model as memory/write and memory/recall: the client supplies its own
@@ -823,7 +825,15 @@ function routePolicy(resource, method, param, action) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
-  // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
+  // Drug-interaction keyword search — same cost class as the exchange/renal
+  // keyword scans /rag/ask already runs internally (a full-table scan
+  // capped by scan_limit), so it gets its own moderate cap rather than the
+  // generous plain-read default.
+  if (isDrugInteractionsSearch) {
+    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // All other writes (foods/exchange/renal/formulas/drug-interactions/packaged CRUD): admin only.
   if (isWrite) {
     return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
   }
@@ -4567,6 +4577,14 @@ function handleRoot(env) {
       ingredients: [
         "POST /ingredients/parse   (public, rate-limited) → body {text}; parses free text like \"2 eggs, 1 cup rice, 100g chicken and ½ avocado\" into ingredients:[{food_name, quantity, unit}] — the exact shape /recipes/calculate and /meals/analyze accept. Groq LLM parse, falls back to a local regex parser if GROQ_API_KEY isn't configured or the LLM call fails. A bare count with no stated unit (\"2 eggs\") comes back as unit:\"serving\", not grams.",
       ],
+      drug_interactions: [
+        "GET  /drug-interactions?category=&severity=&limit=&offset=/cursor=   (public, rate-limited) → paginated list of drug-nutrient interaction entries",
+        "GET  /drug-interactions/:id   (public, rate-limited) → single entry",
+        "GET  /drug-interactions/search?q=warfarin   (public, rate-limited) → keyword scan across drug/aliases/category/subcategory/tags/effects/implications (same approach as /rag/ask's exchange/renal/formula lookups) — 'drug' also accepted as the param name",
+        "POST /drug-interactions   (admin) → body: {drug, aliases?, category?, subcategory?, effects?, implications?, severity?, tags?}",
+        "POST /drug-interactions/bulk   (admin) → body {items:[...]}, up to 500 rows",
+        "PUT/PATCH/DELETE /drug-interactions/:id   (admin)",
+      ],
       dri: [
         "GET  /dri/life-stages   (public, rate-limited) → every DRI life-stage group (code, label, sex, age range)",
         "GET  /dri?nutrient=&life_stage=   OR   ?nutrient=&age=&sex=&life_stage_type=   (public, rate-limited) → EAR/RDA/AI/UL for one nutrient (or every nutrient if 'nutrient' is omitted) at the resolved life stage, plus that life stage's AMDR and sodium CDRR when returning the full set",
@@ -4809,6 +4827,102 @@ async function handleFormulas(request, url, db, id) {
   }
 
   return err("Method not allowed", 405);
+}
+
+// ── /drug-interactions ───────────────────────────────────────────────────────
+//
+// Migrated from Oasis CNST's client-side 117-entry drug-nutrient interaction
+// database (js/dni.js — Krause & Mahan's Food and the Nutrition Care
+// Process 16th ed., The Essential Pocket Guide for Clinical Nutrition 4th
+// ed., LPI/OSU Micronutrient Info Center, NIH PMC) so every app in the
+// ecosystem (Oasis CNST, Thanzi, Umoyo Agent, NCRS) can query one shared
+// copy instead of each bundling its own. Standard CRUD (same shape as
+// /renal, /exchange, /formulas) plus a keyword search endpoint that mirrors
+// the client-side search this data used to have (drug name/aliases/
+// category/tags/effects/implications, whole-row substring match).
+//
+// Requires:
+//   create table if not exists public.drug_nutrient_interactions ( ... );
+// — see sql/003_add_drug_nutrient_interactions.sql.
+
+async function handleDrugInteractions(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const category = url.searchParams.get("category") || "";
+    const severity = url.searchParams.get("severity") || "";
+    const filters = {};
+    if (category) filters["category"] = `eq.${category}`;
+    if (severity) filters["severity"] = `eq.${severity}`;
+
+    if (id) {
+      const { ok, status, body } = await db.selectOne("drug_nutrient_interactions", id);
+      if (status === 404) return notFound("Drug-nutrient interaction entry");
+      if (!ok) return err(body?.message || "Query failed", status);
+      return success(body);
+    }
+    return await paginatedList(db, "drug_nutrient_interactions", url, { filters });
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    if (!payload.drug) return err("'drug' is required");
+    const { ok, status, body } = await db.insert("drug_nutrient_interactions", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Drug-nutrient interaction entry created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PUT") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("drug_nutrient_interactions", id, payload, "PUT");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Drug-nutrient interaction entry replaced" });
+  }
+
+  if (method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("drug_nutrient_interactions", id, payload, "PATCH");
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Drug-nutrient interaction entry updated" });
+  }
+
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("drug_nutrient_interactions", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Drug-nutrient interaction entry ${id} deleted` });
+  }
+
+  return err("Method not allowed", 405);
+}
+
+/**
+ * GET /drug-interactions/search?q=warfarin
+ * Same keyword-scan approach /rag/ask already uses for exchange_lists/
+ * renal_foods/enteral_formulas (scanTableByKeywords — no documented single
+ * "name" column to ilike on, so it's a whole-row substring scan instead).
+ * `q` can be a drug name, brand name, drug class, or a nutrient/food
+ * keyword (e.g. "grapefruit", "warfarin", "vitamin B12") — matches the
+ * client-side search this data used to have in Oasis CNST.
+ */
+async function handleDrugInteractionsSearch(request, url, db) {
+  const q = url.searchParams.get("q") || url.searchParams.get("drug") || "";
+  if (!q.trim()) return err("'q' (or 'drug') query param is required");
+
+  const keywords = extractKeywords(q);
+  if (!keywords.length) return success([], { message: "Query too short/generic to search on", query: q });
+
+  const scanLimit = intParam(url, "scan_limit", 300);
+  const matches = await scanTableByKeywords(db, "drug_nutrient_interactions", keywords, scanLimit);
+
+  return success(
+    matches.map((m) => ({ ...m.row, match_score: m.score })),
+    { query: q, count: matches.length }
+  );
 }
 
 // ── /packaged/scan ────────────────────────────────────────────────────────────
@@ -5362,6 +5476,22 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       }
       const id = param || null;
       return await handleFormulas(request, url, db, id);
+    }
+
+    case "drug-interactions": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "drug_nutrient_interactions", {
+          requiredField: "drug",
+          label: "drug-nutrient interaction entries",
+        });
+      }
+      if (param === "search") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        return await handleDrugInteractionsSearch(request, url, db);
+      }
+      const id = param || null;
+      return await handleDrugInteractions(request, url, db, id);
     }
 
     case "packaged": {
