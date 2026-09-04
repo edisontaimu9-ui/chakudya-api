@@ -356,11 +356,22 @@
  *     aren't picked up by a dashboard-only Quick Edit save.
  */
 
+import {
+  DRI_LIFE_STAGES,
+  DRI_NUTRIENT_META,
+  DRI_VALUES,
+  DRI_AMDR_BY_AGE_BUCKET,
+  DRI_ADDITIONAL_MACRO_RECOMMENDATIONS,
+  amdrBucketForAge,
+  sodiumCdrrForAge,
+  resolveDriLifeStage,
+} from "./dri_data.js";
+
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.23.0";
+const CNR_VERSION = "1.24.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -661,6 +672,7 @@ function routePolicy(resource, method, param, action) {
   const isRecipesCalculate = resource === "recipes" && param === "calculate" && method === "POST";
   const isMealsAnalyze = resource === "meals" && param === "analyze" && method === "POST";
   const isIngredientsParse = resource === "ingredients" && param === "parse" && method === "POST";
+  const isDri = resource === "dri";
 
   // Favorites/history — no admin gate (same public, self-declared-identity
   // model as memory/write and memory/recall: the client supplies its own
@@ -802,6 +814,13 @@ function routePolicy(resource, method, param, action) {
   // class as recipes/meals above), no persistence.
   if (isIngredientsParse) {
     return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // DRI lookup/compare — pure in-memory computation, no DB or LLM call at
+  // all, so it gets the generous plain-read allowance even for the POST
+  // /dri/compare endpoint.
+  if (isDri) {
+    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
@@ -2046,6 +2065,219 @@ async function handleIngredientsParse(request, db, env) {
   }
 
   return success({ text, ingredients, count: ingredients.length });
+}
+
+// ─── DIETARY REFERENCE INTAKES (DRI) ────────────────────────────────────────
+//
+// EAR / RDA / AI / UL / AMDR by life stage — official Food and Nutrition
+// Board (NASEM/IOM) tables, data lives in ./dri_data.js (see that file's
+// header for sourcing, the RDA-vs-AI derivation rule, and what's
+// intentionally omitted). Three endpoints:
+//
+//   GET  /dri/life-stages          — list every life-stage group
+//   GET  /dri                      — look up EAR/RDA/AI/UL, either by
+//                                     life_stage code directly or by
+//                                     age+sex(+life_stage_type)
+//   POST /dri/compare              — compare an actual day's intake
+//                                     against a resolved life stage's
+//                                     RDA/AI targets, flagging UL
+//
+// All three are read-only/computational — no persistence, no auth beyond
+// the standard public rate limit.
+
+/** GET /dri/life-stages — every DRI life-stage group CNR has data for. */
+async function handleDriLifeStages(request) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+  return success({
+    life_stages: DRI_LIFE_STAGES.map((s) => ({
+      code: s.code,
+      label: s.label,
+      sex: s.sex,
+      life_stage_type: s.life_stage_type,
+      age_min_years: s.age_min,
+      age_max_years: s.age_max,
+    })),
+  });
+}
+
+/** Shapes one nutrient's stored {ear?,rda?,ai?,ul?} into a full response entry. */
+function formatDriNutrientEntry(key, values) {
+  const meta = DRI_NUTRIENT_META[key];
+  const target = values.rda ?? values.ai ?? null;
+  return {
+    nutrient: key,
+    label: meta?.label || key,
+    unit: meta?.unit || null,
+    trackable: !!meta?.trackable,
+    ear: values.ear ?? null,
+    rda: values.rda ?? null,
+    ai: values.ai ?? null,
+    ul: values.ul ?? null,
+    target_type: values.rda != null ? "rda" : values.ai != null ? "ai" : null,
+    target,
+  };
+}
+
+/**
+ * GET /dri?nutrient=<key>&life_stage=<code>
+ * GET /dri?nutrient=<key>&age=<years>&sex=<male|female>&life_stage_type=<normal|pregnancy|lactation>
+ * `nutrient` is optional — omit it to get every nutrient for the resolved
+ * life stage. `life_stage` (a code from GET /dri/life-stages) takes
+ * priority over age/sex if both are given.
+ */
+async function handleDriLookup(request, url) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const lifeStageCode = url.searchParams.get("life_stage");
+  const nutrient = url.searchParams.get("nutrient");
+
+  let stage;
+  if (lifeStageCode) {
+    stage = DRI_LIFE_STAGES.find((s) => s.code === lifeStageCode);
+    if (!stage) {
+      return err(`Unknown life_stage '${lifeStageCode}' — see GET /dri/life-stages for valid codes`);
+    }
+  } else {
+    const age = url.searchParams.get("age");
+    if (!age) {
+      return err("Provide either 'life_stage' (a code from GET /dri/life-stages) or 'age' (years, plus 'sex' if age >= 9)");
+    }
+    const sex = url.searchParams.get("sex");
+    const lifeStageType = url.searchParams.get("life_stage_type") || "normal";
+    if (!["normal", "pregnancy", "lactation"].includes(lifeStageType)) {
+      return err("'life_stage_type' must be one of: normal, pregnancy, lactation");
+    }
+    stage = resolveDriLifeStage(Number(age), sex, lifeStageType);
+    if (!stage) {
+      return err(
+        "Could not resolve a life stage for that age/sex/life_stage_type combination — check 'age' is a valid number, 'sex' is 'male' or 'female' for age >= 9, and pregnancy/lactation are only defined from age 14 up"
+      );
+    }
+  }
+
+  const nutrientMap = DRI_VALUES[stage.code] || {};
+
+  if (nutrient) {
+    if (!DRI_NUTRIENT_META[nutrient]) {
+      return err(`Unknown nutrient '${nutrient}' — see the 'nutrients' list on any /dri response for valid keys`);
+    }
+    const values = nutrientMap[nutrient];
+    if (!values) {
+      return success({
+        life_stage: stage.code,
+        life_stage_label: stage.label,
+        nutrient: formatDriNutrientEntry(nutrient, {}),
+        note: `No DRI value established for '${nutrient}' at this life stage`,
+      });
+    }
+    return success({
+      life_stage: stage.code,
+      life_stage_label: stage.label,
+      nutrient: formatDriNutrientEntry(nutrient, values),
+    });
+  }
+
+  const nutrients = Object.entries(nutrientMap)
+    .map(([key, values]) => formatDriNutrientEntry(key, values))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  const amdrBucket = amdrBucketForAge(stage.age_min);
+  const sodiumCdrr = sodiumCdrrForAge(stage.age_min);
+
+  return success({
+    life_stage: stage.code,
+    life_stage_label: stage.label,
+    nutrient_count: nutrients.length,
+    nutrients,
+    amdr: DRI_AMDR_BY_AGE_BUCKET[amdrBucket],
+    sodium_chronic_disease_risk_reduction_mg: sodiumCdrr?.mg_per_day ?? null,
+    additional_macronutrient_recommendations: DRI_ADDITIONAL_MACRO_RECOMMENDATIONS,
+  });
+}
+
+/**
+ * POST /dri/compare
+ * Body: { age, sex?, life_stage_type?, life_stage?, intake: {nutrient_key: amount, ...} }
+ * `intake` uses the same field names as /recipes/calculate and
+ * /meals/analyze's total_nutrients (protein_g, calcium_mg, vitc_mg, ...) —
+ * pipe either straight in. Only nutrients present in `intake` AND tracked
+ * in DRI_NUTRIENT_META are compared; untrackable nutrients (thiamin,
+ * vitamin E/K, most trace minerals — see GET /dri) are skipped since
+ * intake data for them doesn't exist in CNR yet.
+ */
+async function handleDriCompare(request) {
+  if (request.method !== "POST") return err("Method not allowed", 405);
+
+  const body = await parseBody(request);
+  const intake = body?.intake;
+  if (!intake || typeof intake !== "object" || Array.isArray(intake)) {
+    return err("'intake' is required — an object like {\"calcium_mg\": 850, \"iron_mg\": 12}, e.g. the total_nutrients from /meals/analyze");
+  }
+
+  let stage;
+  if (body?.life_stage) {
+    stage = DRI_LIFE_STAGES.find((s) => s.code === body.life_stage);
+    if (!stage) return err(`Unknown life_stage '${body.life_stage}' — see GET /dri/life-stages for valid codes`);
+  } else {
+    if (body?.age == null) return err("Provide either 'life_stage' or 'age' (plus 'sex' if age >= 9)");
+    const lifeStageType = body?.life_stage_type || "normal";
+    if (!["normal", "pregnancy", "lactation"].includes(lifeStageType)) {
+      return err("'life_stage_type' must be one of: normal, pregnancy, lactation");
+    }
+    stage = resolveDriLifeStage(Number(body.age), body?.sex, lifeStageType);
+    if (!stage) {
+      return err(
+        "Could not resolve a life stage for that age/sex/life_stage_type — check 'age' is a valid number, 'sex' is 'male' or 'female' for age >= 9, and pregnancy/lactation are only defined from age 14 up"
+      );
+    }
+  }
+
+  const nutrientMap = DRI_VALUES[stage.code] || {};
+  const results = [];
+  const skipped = [];
+
+  for (const [key, rawAmount] of Object.entries(intake)) {
+    const amount = Number(rawAmount);
+    if (!Number.isFinite(amount)) continue;
+
+    const meta = DRI_NUTRIENT_META[key];
+    if (!meta) {
+      skipped.push({ nutrient: key, reason: "not a recognized DRI nutrient key" });
+      continue;
+    }
+    const values = nutrientMap[key];
+    if (!values || (values.rda == null && values.ai == null)) {
+      skipped.push({ nutrient: key, reason: "no RDA/AI established for this nutrient at this life stage" });
+      continue;
+    }
+
+    const target = values.rda ?? values.ai;
+    const targetType = values.rda != null ? "rda" : "ai";
+    const percentOfTarget = target > 0 ? Math.round((amount / target) * 1000) / 10 : null;
+    const exceedsUl = values.ul != null && amount > values.ul;
+
+    results.push({
+      nutrient: key,
+      label: meta.label,
+      unit: meta.unit,
+      intake: amount,
+      target,
+      target_type: targetType,
+      percent_of_target: percentOfTarget,
+      ul: values.ul ?? null,
+      exceeds_ul: exceedsUl,
+    });
+  }
+
+  results.sort((a, b) => a.label.localeCompare(b.label));
+
+  return success({
+    life_stage: stage.code,
+    life_stage_label: stage.label,
+    nutrients_compared: results.length,
+    results,
+    ...(skipped.length ? { skipped } : {}),
+  });
 }
 
 /**
@@ -4187,6 +4419,11 @@ function handleRoot(env) {
       ingredients: [
         "POST /ingredients/parse   (public, rate-limited) → body {text}; parses free text like \"2 eggs, 1 cup rice, 100g chicken and ½ avocado\" into ingredients:[{food_name, quantity, unit}] — the exact shape /recipes/calculate and /meals/analyze accept. Groq LLM parse, falls back to a local regex parser if GROQ_API_KEY isn't configured or the LLM call fails. A bare count with no stated unit (\"2 eggs\") comes back as unit:\"serving\", not grams.",
       ],
+      dri: [
+        "GET  /dri/life-stages   (public, rate-limited) → every DRI life-stage group (code, label, sex, age range)",
+        "GET  /dri?nutrient=&life_stage=   OR   ?nutrient=&age=&sex=&life_stage_type=   (public, rate-limited) → EAR/RDA/AI/UL for one nutrient (or every nutrient if 'nutrient' is omitted) at the resolved life stage, plus that life stage's AMDR and sodium CDRR when returning the full set",
+        "POST /dri/compare   (public, rate-limited) → body {age|life_stage, sex?, life_stage_type?, intake:{nutrient_key: amount}}; compares intake (same field names as /recipes/calculate or /meals/analyze's total_nutrients) against RDA/AI, flags UL if exceeded — only nutrients CNR's foods table actually tracks are comparable, see 'trackable' on GET /dri",
+      ],
     },
   });
 }
@@ -5040,6 +5277,19 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
     case "ingredients": {
       if (param === "parse") {
         return await handleIngredientsParse(request, db, env);
+      }
+      return notFound();
+    }
+
+    case "dri": {
+      if (param === "life-stages") {
+        return await handleDriLifeStages(request);
+      }
+      if (param === "compare") {
+        return await handleDriCompare(request);
+      }
+      if (!param) {
+        return await handleDriLookup(request, url);
       }
       return notFound();
     }

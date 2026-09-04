@@ -644,6 +644,28 @@ Adds, on top of the recipe response shape:
 - Primary parse is a Groq LLM call (handles plurals, descriptors like "chopped", word-form quantities like "half"); falls back to a local regex parser if `GROQ_API_KEY` isn't configured or the LLM call/parse fails. The fallback is cruder (numeric quantities only, keeps plurals as-is) but never throws.
 - Pipe the `ingredients[]` straight into `POST /recipes/calculate` or `POST /meals/analyze`.
 
+### Dietary Reference Intakes (DRI)
+
+EAR, RDA, AI, UL, and AMDR by life stage — Food and Nutrition Board (NASEM/IOM) tables, covering infants through >70y, pregnancy, and lactation. Data lives in `src/dri_data.js`; see that file's header for sourcing and what's intentionally left out (a handful of trace-mineral ULs with no clean published number, and Sodium's UL, superseded by the 2019 Chronic Disease Risk Reduction Intake).
+
+**`GET /dri/life-stages`** — the 22 life-stage groups (code, label, sex, age range).
+
+**`GET /dri`** — look up DRI values either by `life_stage` code directly, or by `age`+`sex` (+`life_stage_type=pregnancy|lactation`). Omit `nutrient` to get every nutrient for that life stage plus its AMDR and sodium CDRR; include it for one nutrient only.
+
+```
+GET /dri?age=25&sex=female&nutrient=iron_mg
+→ { "ear": 8.1, "rda": 18, "ai": null, "ul": 45, "target_type": "rda", "target": 18 }
+```
+
+**`POST /dri/compare`** — compares actual intake against RDA/AI, flags UL if exceeded. `intake` uses the same field names as `/recipes/calculate` or `/meals/analyze`'s `total_nutrients`, so either can be piped straight in.
+
+```json
+{ "age": 30, "sex": "female", "intake": { "calcium_mg": 45, "iron_mg": 9.2, "protein_g": 47.95 } }
+```
+
+- Only nutrients CNR's `foods` table actually tracks (`trackable: true` on `GET /dri`) can be compared — protein, carbs, fiber, and 11 vitamins/minerals. Thiamin, riboflavin, niacin, vitamin B6/E/K, and most trace minerals are lookup-only (no intake data exists for them yet); they come back in `skipped` on `/dri/compare` rather than silently dropped.
+- `percent_of_target` is intake ÷ RDA-or-AI × 100 — no clinical interpretation is added (no "deficient"/"adequate" label), since a single day's percentage isn't a diagnosis.
+
 ### Exchange
 
 - `GET /exchange`
