@@ -3,7 +3,24 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.21.0
+ * Version: 1.21.1
+ *
+ * v1.21.1 changes:
+ *  - Fixed a category-vocabulary mismatch that made Meal Analysis's
+ *    food_groups_present/missing wrong: both buildServingSizes() (Tier 3
+ *    fallback) and resolveIngredientsList() were preferring the food row's
+ *    own `category` DB column over classifyCategory(food_name) when
+ *    present. That column uses a different, coarser vocabulary (e.g.
+ *    "Staples", "Baby Foods") than the Grains/Legumes/Protein/Vegetables/
+ *    Fruits/Dairy taxonomy CATEGORY_SERVING_DEFAULTS/CORE_FOOD_GROUPS are
+ *    actually built around — so nsima (DB category "Staples") matched
+ *    neither, and got wrongly reported as "Grains" missing from a meal
+ *    that clearly contained it; "Green beans" likewise came back as
+ *    DB category "Vegetables" rather than the Legumes bucket the keyword
+ *    taxonomy puts beans in. Both call sites now classify from the food
+ *    name unconditionally via classifyCategory(), ignoring food.category.
+ *    Verified: "Nsima (thick, maize)" -> Grains, "Green beans (raw)" ->
+ *    Legumes.
  *
  * v1.21.0 changes:
  *  - Added Meal Analysis: POST /meals/analyze. Body {meal_type?,
@@ -343,7 +360,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.21.0";
+const CNR_VERSION = "1.21.1";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1398,7 +1415,16 @@ function roundServingVal(n) {
 function buildServingSizes(food) {
   if (!food) return [];
   const name = (food.food_name || food.product_name || "").toLowerCase();
-  const category = food.category || classifyCategory(name);
+  // Always classify from the food name via our own keyword taxonomy here —
+  // don't fall back to food.category. The `foods` table's own category
+  // column uses a different, coarser vocabulary (e.g. "Staples", "Baby
+  // Foods") than CATEGORY_SERVING_DEFAULTS/CORE_FOOD_GROUPS below (Grains,
+  // Legumes, Protein, Vegetables, Fruits, Dairy, ...) — trusting it here
+  // caused nsima (DB category "Staples") to match neither "Grains" nor
+  // any other core group, so Meal Analysis wrongly flagged "Grains" as
+  // missing from a nsima-containing meal. classifyCategory() is the
+  // taxonomy this logic is actually built around, so use it unconditionally.
+  const category = classifyCategory(name);
 
   const candidates = [];
 
@@ -1654,7 +1680,10 @@ async function resolveIngredientsList(ingredients, db, env) {
     resolvedIngredients.push({
       food_name: food.food_name || food.product_name || item.food_name || null,
       matched_source: matchedSource,
-      category: food.category || classifyCategory(food.food_name || food.product_name || ""),
+      // Same reasoning as buildServingSizes() above — classify from the
+      // name via our own taxonomy rather than trusting food.category,
+      // which uses a different vocabulary (see comment there).
+      category: classifyCategory(food.food_name || food.product_name || ""),
       quantity,
       unit: item.unit || "g",
       grams: roundServingVal(gramsResult.grams),
