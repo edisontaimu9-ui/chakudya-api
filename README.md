@@ -22,6 +22,7 @@ for AI assisted nutrition tools.
 - **RAG powered nutrition knowledge** (`/rag/ask`, `/rag/retrieve`). Retrieve relevant knowledge or ask a question directly.
 - **Session memory** (`/memory/write`, `/memory/recall`, `/memory/consolidate`). Store, consolidate, and recall contextual information for AI assisted applications like Oasis.
 - **Recipe nutrition calculation** (`/recipes/calculate`). Give it a list of ingredients (name or id, quantity, unit) and it resolves, converts, and sums the nutrition for you — total and per-serving.
+- **Meal analysis** (`/meals/analyze`). Same ingredient resolution as recipes, framed around a single meal: macronutrient % breakdown against the standard adult AMDR range, food-group coverage, and an optional comparison against caller-supplied daily targets.
 
 ## Who it's for
 
@@ -44,7 +45,7 @@ Chakudya can be used to build:
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.20.4`
+- **Current CNR version:** `1.21.0`
 
 ---
 
@@ -597,6 +598,24 @@ Both of the above require `FATSECRET_CONSUMER_KEY`/`FATSECRET_CONSUMER_SECRET` o
 - `unit` defaults to `"g"` if omitted. Accepts plain mass/volume units (`g`, `kg`, `ml`, `l`, `oz`, `lb`, `floz`/`fl_oz`, `pint`, `quart`, `gallon`, ...), `"serving"`/`"servings"`, or a household unit (`cup`, `tbsp`, `tsp`, `piece`, `slice`, `handful`, ...) — household units are matched against *that specific food's* own serving-size candidates first (so "2 cups rice" uses rice's own cup measure), falling back to a generic estimate only if there's no food-specific match. Conversion factors cross-checked against the Nutrition Care Manual (NC Dietetic Association).
 - `servings` (top-level, optional, default `1`) — the recipe yield, used to compute `nutrients_per_serving`.
 - Response includes `total_nutrients`, `nutrients_per_serving`, `total_grams`, `grams_per_serving`, a per-ingredient `ingredients[]` breakdown (with `grams_basis` explaining how each quantity was converted), and `unresolved_ingredients[]` for anything that couldn't be matched or converted — one bad ingredient never fails the whole request.
+
+**`POST /meals/analyze`** *(public, rate-limited)* — same ingredient resolution as `/recipes/calculate` (built on the same shared `resolveIngredientsList()`), but framed around a single eaten meal rather than a recipe yield — no `servings`, since a meal is eaten once.
+
+```json
+{
+  "meal_type": "lunch",
+  "ingredients": [
+    { "food_name": "nsima", "quantity": 1, "unit": "cup" },
+    { "food_name": "beans", "quantity": 1, "unit": "cup" }
+  ],
+  "daily_targets": { "kcal": 2000, "protein_g": 50, "carbs_g": 260, "fat_g": 65 }
+}
+```
+
+Adds, on top of the recipe response shape:
+- `macronutrient_breakdown` — kcal from protein/carbs/fat (Atwater 4/4/9 factors) and each as a % of total meal kcal, plus `within_amdr_adult_reference` (whether each % falls inside the standard adult Institute of Medicine Acceptable Macronutrient Distribution Range: protein 10–35%, carbs 45–65%, fat 20–35%). Purely descriptive — a reference range, not a personalized target.
+- `food_groups_present` / `food_groups_missing` — against a core set (Grains, Legumes, Protein, Vegetables, Fruits, Dairy), reusing the same category classification as Serving-Size Intelligence.
+- `daily_target_comparison` — **only included if you supply `daily_targets`** in the request. This endpoint never invents a personalized target on its own (no age/sex/weight-based EER calculation happens here); pass in a target computed elsewhere (e.g. from the Harris-Benedict tools in `chakudya-mcp-server`) if you want this comparison.
 
 ### Exchange
 

@@ -3,7 +3,26 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.20.4
+ * Version: 1.21.0
+ *
+ * v1.21.0 changes:
+ *  - Added Meal Analysis: POST /meals/analyze. Body {meal_type?,
+ *    ingredients:[{food_id?|food_name, quantity, unit?}], daily_targets?}
+ *    — same ingredient resolution as Recipe Nutrition Calculation (now
+ *    factored into resolveIngredientsList(), shared by both endpoints; no
+ *    behavior change to /recipes/calculate). Adds macronutrient_breakdown
+ *    (kcal from protein/carbs/fat via Atwater 4/4/9, each as % of total,
+ *    compared against the standard adult Institute of Medicine AMDR
+ *    range), food_groups_present/food_groups_missing (against a core
+ *    Grains/Legumes/Protein/Vegetables/Fruits/Dairy set, reusing
+ *    classifyCategory()), and an opt-in daily_target_comparison — only
+ *    included when the caller supplies daily_targets; this endpoint never
+ *    infers a personalized target itself (that should come from a
+ *    clinician or the calling app's own EER/macro calculation, e.g. the
+ *    Harris-Benedict tools in chakudya-mcp-server). Everything returned is
+ *    descriptive (what's in the meal, how it compares to a standard
+ *    reference), not a recommendation. Public, rate-limited like
+ *    /recipes/calculate.
  *
  * v1.20.4 changes:
  *  - Fixed pickBestFoodMatch()'s tiebreak: "shortest food_name wins" was
@@ -324,7 +343,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.20.4";
+const CNR_VERSION = "1.21.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -622,6 +641,7 @@ function routePolicy(resource, method, param, action) {
   const isFavorites = resource === "favorites";
   const isHistory = resource === "history";
   const isRecipesCalculate = resource === "recipes" && param === "calculate" && method === "POST";
+  const isMealsAnalyze = resource === "meals" && param === "analyze" && method === "POST";
 
   // Favorites/history — no admin gate (same public, self-declared-identity
   // model as memory/write and memory/recall: the client supplies its own
@@ -746,7 +766,7 @@ function routePolicy(resource, method, param, action) {
   // (and possibly an external cascade call) per ingredient, so it needs a
   // real cap rather than the generous plain-read default. Same cost class
   // as /rag/ask.
-  if (isRecipesCalculate) {
+  if (isRecipesCalculate || isMealsAnalyze) {
     return { auth: "public", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -1563,26 +1583,19 @@ function pickBestFoodMatch(rows, query) {
 }
 
 /**
- * POST /recipes/calculate
- * Body: { servings?: number, ingredients: [{ food_id? | food_name, quantity, unit? }] }
- * unit defaults to "g" (i.e. quantity is already grams) when omitted.
- * food_name resolution: local `foods` table first (ilike), then the same
- * local->external lookupFoodCascade() used by /foods/lookup — so an
- * ingredient not in the local FCT can still resolve via USDA/OFF/FatSecret.
- * Purely additive/computational — writes nothing, no auth required.
+ * Shared by POST /recipes/calculate and POST /meals/analyze: resolves a
+ * raw ingredients[] array from a request body into scaled-nutrient rows.
+ * See handleRecipesCalculate's doc comment below for the resolution order
+ * (food_id exact / local ilike+pickBestFoodMatch / external cascade
+ * fallback) and unit handling (resolveIngredientGrams). Returns
+ * { resolvedIngredients, unresolvedIngredients } — never throws on a bad
+ * individual ingredient, only on a malformed list (caller's job to check).
  */
-async function handleRecipesCalculate(request, db, env) {
-  const payload = await parseBody(request);
-  if (!payload || !Array.isArray(payload.ingredients) || !payload.ingredients.length) {
-    return err("'ingredients' array is required — each item: {food_name or food_id, quantity, unit?}");
-  }
-  const servingsRaw = Number(payload.servings);
-  const servings = Number.isFinite(servingsRaw) && servingsRaw > 0 ? servingsRaw : 1;
-
+async function resolveIngredientsList(ingredients, db, env) {
   const resolvedIngredients = [];
   const unresolvedIngredients = [];
 
-  for (const item of payload.ingredients) {
+  for (const item of ingredients) {
     const quantity = Number(item?.quantity);
     if (!Number.isFinite(quantity) || quantity <= 0) {
       unresolvedIngredients.push({ input: item, reason: "missing or invalid 'quantity'" });
@@ -1641,6 +1654,7 @@ async function handleRecipesCalculate(request, db, env) {
     resolvedIngredients.push({
       food_name: food.food_name || food.product_name || item.food_name || null,
       matched_source: matchedSource,
+      category: food.category || classifyCategory(food.food_name || food.product_name || ""),
       quantity,
       unit: item.unit || "g",
       grams: roundServingVal(gramsResult.grams),
@@ -1649,13 +1663,41 @@ async function handleRecipesCalculate(request, db, env) {
     });
   }
 
+  return { resolvedIngredients, unresolvedIngredients };
+}
+
+/** Sums a nutrient field across resolved ingredients — null if none contributed a value. */
+function sumNutrientField(resolvedIngredients, field) {
+  let sum = null;
+  for (const ing of resolvedIngredients) {
+    if (ing.nutrients[field] != null) sum = (sum ?? 0) + ing.nutrients[field];
+  }
+  return sum == null ? null : roundServingVal(sum);
+}
+
+/**
+ * POST /recipes/calculate
+ * Body: { servings?: number, ingredients: [{ food_id? | food_name, quantity, unit? }] }
+ * unit defaults to "g" (i.e. quantity is already grams) when omitted.
+ * food_name resolution: local `foods` table first (ilike), then the same
+ * local->external lookupFoodCascade() used by /foods/lookup — so an
+ * ingredient not in the local FCT can still resolve via USDA/OFF/FatSecret.
+ * Purely additive/computational — writes nothing, no auth required.
+ */
+async function handleRecipesCalculate(request, db, env) {
+  const payload = await parseBody(request);
+  if (!payload || !Array.isArray(payload.ingredients) || !payload.ingredients.length) {
+    return err("'ingredients' array is required — each item: {food_name or food_id, quantity, unit?}");
+  }
+  const servingsRaw = Number(payload.servings);
+  const servings = Number.isFinite(servingsRaw) && servingsRaw > 0 ? servingsRaw : 1;
+
+  const { resolvedIngredients, unresolvedIngredients } = await resolveIngredientsList(payload.ingredients, db, env);
+
   const totalNutrients = {};
   for (const field of SERVING_SCALE_FIELDS) {
-    let sum = null;
-    for (const ing of resolvedIngredients) {
-      if (ing.nutrients[field] != null) sum = (sum ?? 0) + ing.nutrients[field];
-    }
-    if (sum != null) totalNutrients[field] = roundServingVal(sum);
+    const sum = sumNutrientField(resolvedIngredients, field);
+    if (sum != null) totalNutrients[field] = sum;
   }
 
   const totalGrams = resolvedIngredients.reduce((s, ing) => s + ing.grams, 0);
@@ -1673,6 +1715,130 @@ async function handleRecipesCalculate(request, db, env) {
     ingredients: resolvedIngredients,
     unresolved_ingredients: unresolvedIngredients,
   });
+}
+
+// ─── MEAL ANALYSIS ──────────────────────────────────────────────────────────
+//
+// Builds on the same ingredient resolution as Recipe Nutrition Calculation,
+// but frames the result around a single eaten meal rather than a recipe
+// yield: macronutrient % of calories, which of the core food groups are
+// present/absent, and — only where the standard Institute of Medicine AMDR
+// ranges or caller-supplied targets are being compared against — how the
+// meal's numbers sit relative to them. Everything here is descriptive
+// (what's in the meal, how it compares to a standard reference range),
+// never a personalized recommendation — an actual EER/macro target should
+// come from a clinician or the calling app's own calculation (e.g. the
+// Harris-Benedict tools in chakudya-mcp-server) and be passed in via
+// `daily_targets`, not inferred here from age/sex/weight.
+
+// Institute of Medicine Acceptable Macronutrient Distribution Range for
+// adults — the standard reference for "is this meal's macro split in a
+// typical/reasonable range", independent of any individual's targets.
+const AMDR_ADULT = {
+  protein: { min_percent: 10, max_percent: 35 },
+  carbs: { min_percent: 45, max_percent: 65 },
+  fat: { min_percent: 20, max_percent: 35 },
+};
+
+// The food groups a "complete" plate is generally built from, for the
+// food_groups_present/missing check — matches the categories already used
+// by classifyCategory()/CATEGORY_SERVING_DEFAULTS above. Fats & Oils,
+// Sweets & Snacks, Beverages, and Nuts & Seeds are tracked in
+// food_groups_present when they occur, but aren't part of this core set —
+// their absence isn't flagged as "missing".
+const CORE_FOOD_GROUPS = ["Grains", "Legumes", "Protein", "Vegetables", "Fruits", "Dairy"];
+
+/**
+ * POST /meals/analyze
+ * Body: { meal_type?: string, ingredients: [{ food_id? | food_name, quantity, unit? }], daily_targets?: {kcal, protein_g, carbs_g, fat_g} }
+ * Same ingredient resolution as /recipes/calculate (resolveIngredientsList)
+ * — no `servings` concept here, a meal is just eaten once. Adds:
+ *   - macronutrient_breakdown: kcal from protein/carbs/fat (Atwater
+ *     4/4/9 kcal-per-gram factors) and each as a % of total meal kcal,
+ *     plus whether each % falls inside AMDR_ADULT (informational only).
+ *   - food_groups_present / food_groups_missing, from CORE_FOOD_GROUPS.
+ *   - daily_target_comparison: only included if the caller supplies
+ *     `daily_targets` — this endpoint never invents personalized targets.
+ * Purely additive/computational — writes nothing, no auth required.
+ */
+async function handleMealsAnalyze(request, db, env) {
+  const payload = await parseBody(request);
+  if (!payload || !Array.isArray(payload.ingredients) || !payload.ingredients.length) {
+    return err("'ingredients' array is required — each item: {food_name or food_id, quantity, unit?}");
+  }
+
+  const { resolvedIngredients, unresolvedIngredients } = await resolveIngredientsList(payload.ingredients, db, env);
+
+  const totalNutrients = {};
+  for (const field of SERVING_SCALE_FIELDS) {
+    const sum = sumNutrientField(resolvedIngredients, field);
+    if (sum != null) totalNutrients[field] = sum;
+  }
+  const totalGrams = resolvedIngredients.reduce((s, ing) => s + ing.grams, 0);
+
+  // Macronutrient breakdown — Atwater factors: 4 kcal/g protein, 4 kcal/g
+  // carbs, 9 kcal/g fat. Falls back to summing these three (rather than
+  // using total_nutrients.kcal directly) so the percentages always sum to
+  // ~100% even if the food rows' own kcal figure was rounded independently.
+  const proteinKcal = (totalNutrients.protein_g ?? 0) * 4;
+  const carbsKcal = (totalNutrients.carbs_g ?? 0) * 4;
+  const fatKcal = (totalNutrients.fat_g ?? 0) * 9;
+  const macroKcalSum = proteinKcal + carbsKcal + fatKcal;
+
+  const percentOf = (kcal) => (macroKcalSum > 0 ? roundServingVal((kcal / macroKcalSum) * 100) : null);
+  const withinAmdr = (percent, range) => (percent == null ? null : percent >= range.min_percent && percent <= range.max_percent);
+
+  const percentProtein = percentOf(proteinKcal);
+  const percentCarbs = percentOf(carbsKcal);
+  const percentFat = percentOf(fatKcal);
+
+  const macronutrientBreakdown = {
+    kcal_from_protein: roundServingVal(proteinKcal),
+    kcal_from_carbs: roundServingVal(carbsKcal),
+    kcal_from_fat: roundServingVal(fatKcal),
+    percent_kcal_from_protein: percentProtein,
+    percent_kcal_from_carbs: percentCarbs,
+    percent_kcal_from_fat: percentFat,
+    within_amdr_adult_reference: {
+      protein: withinAmdr(percentProtein, AMDR_ADULT.protein),
+      carbs: withinAmdr(percentCarbs, AMDR_ADULT.carbs),
+      fat: withinAmdr(percentFat, AMDR_ADULT.fat),
+    },
+  };
+
+  const categoriesPresent = [...new Set(resolvedIngredients.map((ing) => ing.category).filter(Boolean))];
+  const foodGroupsMissing = CORE_FOOD_GROUPS.filter((g) => !categoriesPresent.includes(g));
+
+  const result = {
+    meal_type: payload.meal_type || null,
+    total_grams: roundServingVal(totalGrams),
+    total_nutrients: totalNutrients,
+    macronutrient_breakdown: macronutrientBreakdown,
+    food_groups_present: categoriesPresent,
+    food_groups_missing: foodGroupsMissing,
+    ingredients: resolvedIngredients,
+    unresolved_ingredients: unresolvedIngredients,
+  };
+
+  // daily_target_comparison is opt-in only — this endpoint never invents a
+  // personalized target itself (see block comment above).
+  if (payload.daily_targets && typeof payload.daily_targets === "object") {
+    const comparison = {};
+    for (const field of ["kcal", "protein_g", "carbs_g", "fat_g"]) {
+      const target = Number(payload.daily_targets[field]);
+      if (Number.isFinite(target) && target > 0) {
+        const consumed = totalNutrients[field] ?? 0;
+        comparison[field] = {
+          consumed,
+          target,
+          percent_of_target: roundServingVal((consumed / target) * 100),
+        };
+      }
+    }
+    if (Object.keys(comparison).length) result.daily_target_comparison = comparison;
+  }
+
+  return success(result);
 }
 
 function normalizeFood(source, raw) {
@@ -3539,6 +3705,9 @@ function handleRoot(env) {
       recipes: [
         "POST /recipes/calculate   (public, rate-limited) → body {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]}; resolves each ingredient (local foods, falling back to the same local→external cascade as /foods/lookup), converts quantity/unit to grams (see Serving-Size Intelligence), and returns total_nutrients + nutrients_per_serving + a per-ingredient breakdown + any unresolved_ingredients",
       ],
+      meals: [
+        "POST /meals/analyze   (public, rate-limited) → body {meal_type?, ingredients:[{food_id?|food_name, quantity, unit?}], daily_targets?:{kcal,protein_g,carbs_g,fat_g}}; same ingredient resolution as /recipes/calculate, no servings — returns total_nutrients, macronutrient_breakdown (kcal + % from protein/carbs/fat, Atwater 4/4/9, compared against the standard adult AMDR range), food_groups_present/food_groups_missing (from the core Grains/Legumes/Protein/Vegetables/Fruits/Dairy set), and — only if daily_targets was supplied — daily_target_comparison; purely descriptive, never invents a personalized target itself",
+      ],
     },
   });
 }
@@ -4369,6 +4538,14 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "calculate") {
         if (request.method !== "POST") return err("Only POST is supported for /recipes/calculate", 405);
         return await handleRecipesCalculate(request, db, env);
+      }
+      return notFound();
+    }
+
+    case "meals": {
+      if (param === "analyze") {
+        if (request.method !== "POST") return err("Only POST is supported for /meals/analyze", 405);
+        return await handleMealsAnalyze(request, db, env);
       }
       return notFound();
     }
