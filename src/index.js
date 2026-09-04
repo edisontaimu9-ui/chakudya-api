@@ -3,7 +3,18 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.20.2
+ * Version: 1.20.3
+ *
+ * v1.20.3 changes:
+ *  - Fixed Recipe Nutrition Calculation matching the wrong food for a
+ *    plain ingredient name — e.g. "milk" was matching "Milk scones
+ *    (Sikono ya mkaka)" and "rice" was matching "Rice porridge (Phala la
+ *    mpunga)", since the ilike search just took whatever row came back
+ *    first. Added pickBestFoodMatch(): now fetches up to 25 ilike
+ *    candidates and ranks them (exact name match, then whole-word match,
+ *    then shortest name as a proxy for "the plain ingredient" over a
+ *    compound dish) before picking one. food_id lookups and the external
+ *    lookupFoodCascade() fallback are unaffected.
  *
  * v1.20.2 changes:
  *  - Expanded GENERIC_UNIT_GRAMS (used by Recipe Nutrition Calculation's
@@ -297,7 +308,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.20.2";
+const CNR_VERSION = "1.20.3";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1493,6 +1504,34 @@ function resolveIngredientGrams(food, quantity, unit) {
 }
 
 /**
+ * Given several ilike-matched food rows for a search term, picks the one
+ * most likely to be what was meant — plain "milk" or "rice" over
+ * "Milk scones" or "Rice porridge" just because the substring happens to
+ * appear inside a longer dish name. Three tiers:
+ *   1. Exact case-insensitive match on the whole food_name.
+ *   2. The search term appears as a whole word (word-boundary match) —
+ *      narrows out coincidental substring hits like "rice" inside
+ *      "Apricot".
+ *   3. Among whatever's left, the shortest food_name — a simple proxy for
+ *      "the plain ingredient" over a longer compound-dish name.
+ */
+function pickBestFoodMatch(rows, query) {
+  if (!rows || !rows.length) return null;
+  const q = query.trim().toLowerCase();
+
+  const exact = rows.find((r) => (r.food_name || "").trim().toLowerCase() === q);
+  if (exact) return exact;
+
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const wordBoundary = new RegExp(`\\b${escaped}\\b`, "i");
+  const pool = rows.filter((r) => wordBoundary.test(r.food_name || ""));
+  const candidates = pool.length ? pool : rows;
+
+  candidates.sort((a, b) => (a.food_name || "").length - (b.food_name || "").length);
+  return candidates[0];
+}
+
+/**
  * POST /recipes/calculate
  * Body: { servings?: number, ingredients: [{ food_id? | food_name, quantity, unit? }] }
  * unit defaults to "g" (i.e. quantity is already grams) when omitted.
@@ -1531,10 +1570,11 @@ async function handleRecipesCalculate(request, db, env) {
     } else if (item.food_name) {
       const local = await db.select("foods", {
         filters: { food_name: `ilike.*${escapeLikePattern(item.food_name)}*` },
-        limit: 1,
+        limit: 25,
       });
-      if (local.ok && local.body?.[0]) {
-        food = local.body[0];
+      const bestLocal = local.ok ? pickBestFoodMatch(local.body, item.food_name) : null;
+      if (bestLocal) {
+        food = bestLocal;
         matchedSource = "local";
       } else {
         const cascade = await lookupFoodCascade(db, { query: item.food_name }, env);
