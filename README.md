@@ -617,6 +617,33 @@ Adds, on top of the recipe response shape:
 - `food_groups_present` / `food_groups_missing` — against a core set (Grains, Legumes, Protein, Vegetables, Fruits, Dairy), reusing the same category classification as Serving-Size Intelligence.
 - `daily_target_comparison` — **only included if you supply `daily_targets`** in the request. This endpoint never invents a personalized target on its own (no age/sex/weight-based EER calculation happens here); pass in a target computed elsewhere (e.g. from the Harris-Benedict tools in `chakudya-mcp-server`) if you want this comparison.
 
+**`POST /ingredients/parse`** *(public, rate-limited)* — turns free text into the `ingredients[]` shape `/recipes/calculate` and `/meals/analyze` accept above, so a caller can paste a plain sentence instead of hand-building JSON.
+
+```json
+{ "text": "2 eggs, 1 cup rice, 100g chicken and ½ avocado" }
+```
+
+```json
+{
+  "status": "success",
+  "data": {
+    "text": "2 eggs, 1 cup rice, 100g chicken and ½ avocado",
+    "count": 4,
+    "ingredients": [
+      { "food_name": "eggs", "quantity": 2, "unit": "serving" },
+      { "food_name": "rice", "quantity": 1, "unit": "cup" },
+      { "food_name": "chicken", "quantity": 100, "unit": "g" },
+      { "food_name": "avocado", "quantity": 0.5, "unit": "serving" }
+    ]
+  }
+}
+```
+
+- Handles unicode fractions (`½`, `¼`, `¾`, ...), mixed numbers (`1 1/2`), compact units (`100g`), and comma/`and`/`&`-separated lists.
+- A bare count with no stated unit (`"2 eggs"`) comes back as `unit: "serving"`, not grams — `resolveIngredientGrams()` treats a missing unit as grams, and "serving" is what it already falls back to for count-like foods via each food's own serving-size candidates (see Serving-Size Intelligence above), so "2 eggs" resolves to 2 whole eggs, not 2g of egg.
+- Primary parse is a Groq LLM call (handles plurals, descriptors like "chopped", word-form quantities like "half"); falls back to a local regex parser if `GROQ_API_KEY` isn't configured or the LLM call/parse fails. The fallback is cruder (numeric quantities only, keeps plurals as-is) but never throws.
+- Pipe the `ingredients[]` straight into `POST /recipes/calculate` or `POST /meals/analyze`.
+
 ### Exchange
 
 - `GET /exchange`

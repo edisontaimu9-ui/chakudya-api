@@ -360,7 +360,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.22.0";
+const CNR_VERSION = "1.23.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -660,6 +660,7 @@ function routePolicy(resource, method, param, action) {
   const isLog = resource === "log";
   const isRecipesCalculate = resource === "recipes" && param === "calculate" && method === "POST";
   const isMealsAnalyze = resource === "meals" && param === "analyze" && method === "POST";
+  const isIngredientsParse = resource === "ingredients" && param === "parse" && method === "POST";
 
   // Favorites/history — no admin gate (same public, self-declared-identity
   // model as memory/write and memory/recall: the client supplies its own
@@ -795,6 +796,12 @@ function routePolicy(resource, method, param, action) {
   // as /rag/ask.
   if (isRecipesCalculate || isMealsAnalyze) {
     return { auth: "public", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Ingredient text parsing — costs a Groq call per request (same cost
+  // class as recipes/meals above), no persistence.
+  if (isIngredientsParse) {
+    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
@@ -1831,6 +1838,214 @@ function pickBestFoodMatch(rows, query) {
 
   candidates.sort((a, b) => (a.food_name || "").length - (b.food_name || "").length);
   return candidates[0];
+}
+
+// ─── INGREDIENT TEXT PARSING ─────────────────────────────────────────────────
+//
+// POST /ingredients/parse turns a free-text line like
+// "2 eggs, 1 cup rice, 100g chicken and ½ avocado" into the structured
+// ingredients[] shape resolveIngredientsList() (and therefore
+// /recipes/calculate and /meals/analyze) already accepts:
+// [{food_name, quantity, unit}, ...] — so a caller can paste in a plain
+// sentence instead of hand-building JSON.
+//
+// Two tiers, same pattern as classifyIntent() above:
+//   1. Groq LLM parse (openai/gpt-oss-20b, temperature 0) — handles real
+//      free text well: plurals, "and"/commas mixed, words like "half",
+//      descriptors ("boiled", "chopped") that should be dropped from the
+//      food name.
+//   2. heuristicParseIngredients() — a local regex splitter, used when
+//      GROQ_API_KEY isn't configured or the LLM call/parse fails. Cruder
+//      (keeps plurals as-is, doesn't strip descriptors) but never throws
+//      and needs no API call.
+// A bare count with no unit ("2 eggs", "½ avocado") is emitted with
+// unit: "serving" rather than left null — resolveIngredientGrams() treats
+// a missing unit as grams, which would silently turn "2 eggs" into 2g.
+// "serving" is what that same function already falls back to for
+// count-like items (via each food's own buildServingSizes() candidates),
+// so downstream resolution treats "2 eggs" as 2 whole eggs, not 2g of egg.
+
+const UNICODE_FRACTIONS = {
+  "¼": 0.25, "½": 0.5, "¾": 0.75,
+  "⅓": 1 / 3, "⅔": 2 / 3,
+  "⅕": 0.2, "⅖": 0.4, "⅗": 0.6, "⅘": 0.8,
+  "⅙": 1 / 6, "⅚": 5 / 6,
+  "⅐": 1 / 7,
+  "⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875,
+  "⅑": 1 / 9,
+  "⅒": 0.1,
+};
+const UNICODE_FRACTION_CHARS = Object.keys(UNICODE_FRACTIONS).join("");
+
+// Every unit resolveIngredientGrams() already understands (GENERIC_UNIT_GRAMS
+// + GENERIC_HOUSEHOLD_UNIT_GRAMS, both keyed by the exact surface forms —
+// plurals included — it looks up), plus "piece(s)" as a plain count synonym.
+const KNOWN_INGREDIENT_UNITS = new Set([
+  ...Object.keys(GENERIC_UNIT_GRAMS),
+  ...Object.keys(GENERIC_HOUSEHOLD_UNIT_GRAMS),
+  "serving", "servings", "piece", "pieces",
+]);
+
+/** Parses one quantity token ("2", "1.5", "½", "1/2", "1 1/2") to a number, or null. */
+function parseQuantityToken(tok) {
+  const t = (tok || "").trim();
+  if (!t) return null;
+  if (UNICODE_FRACTIONS[t] != null) return UNICODE_FRACTIONS[t];
+
+  // "1½" / "1 ½" — leading integer plus a unicode fraction char
+  const mixedUnicode = t.match(new RegExp(`^(\\d+)\\s*([${UNICODE_FRACTION_CHARS}])$`));
+  if (mixedUnicode) return Number(mixedUnicode[1]) + UNICODE_FRACTIONS[mixedUnicode[2]];
+
+  // "1 1/2"
+  const mixedSlash = t.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
+  if (mixedSlash) return Number(mixedSlash[1]) + Number(mixedSlash[2]) / Number(mixedSlash[3]);
+
+  // "1/2"
+  const slash = t.match(/^(\d+)\s*\/\s*(\d+)$/);
+  if (slash) return Number(slash[1]) / Number(slash[2]);
+
+  const num = Number(t);
+  return Number.isFinite(num) ? num : null;
+}
+
+/**
+ * Splits one ingredient phrase ("100g chicken", "1 cup rice", "2 eggs",
+ * "½ avocado") into { quantity, unit, food_name }, or null if no leading
+ * quantity could be found at all (e.g. "salt to taste").
+ */
+function parseIngredientPhrase(phrase) {
+  const text = (phrase || "").trim();
+  if (!text) return null;
+
+  const qtyMatch = text.match(
+    new RegExp(`^(\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+(?:\\.\\d+)?\\s*[${UNICODE_FRACTION_CHARS}]|[${UNICODE_FRACTION_CHARS}]|\\d+(?:\\.\\d+)?)`)
+  );
+  if (!qtyMatch) return null;
+
+  const quantity = parseQuantityToken(qtyMatch[1]);
+  if (quantity == null || quantity <= 0) return null;
+
+  let rest = text.slice(qtyMatch[0].length).trim();
+
+  // Two-word unit ("fl oz") checked before the generic single-word match.
+  let unit = null;
+  const flOzMatch = rest.match(/^fl\.?\s*oz\b\.?/i);
+  if (flOzMatch) {
+    unit = "fl_oz";
+    rest = rest.slice(flOzMatch[0].length).trim();
+  } else {
+    const wordMatch = rest.match(/^([a-zA-Z]+)\b\.?/);
+    if (wordMatch && KNOWN_INGREDIENT_UNITS.has(wordMatch[1].toLowerCase())) {
+      unit = wordMatch[1].toLowerCase();
+      rest = rest.slice(wordMatch[0].length).trim();
+    }
+  }
+
+  rest = rest.replace(/^(of\s+)/i, "").trim();
+  if (!rest) return null;
+
+  // No unit stated at all → a bare count ("2 eggs", "½ avocado"); see the
+  // section comment above for why this becomes "serving" rather than null.
+  return { food_name: rest, quantity, unit: unit || "serving" };
+}
+
+/**
+ * Local regex fallback for POST /ingredients/parse — used when
+ * GROQ_API_KEY isn't configured or the LLM parse fails. Splits on commas,
+ * "and", "&", and newlines, then parses each piece with
+ * parseIngredientPhrase(). Segments with no leading quantity (e.g. "salt
+ * to taste") are dropped rather than guessed at.
+ */
+function heuristicParseIngredients(text) {
+  const segments = String(text || "")
+    .split(/,|\n|;|(?:\s+and\s+)|&/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const ingredients = [];
+  for (const segment of segments) {
+    const parsed = parseIngredientPhrase(segment);
+    if (parsed) ingredients.push(parsed);
+  }
+  return ingredients;
+}
+
+/**
+ * Groq LLM parse — handles real free text (plurals, mixed connectors,
+ * word-form quantities like "half", descriptors to drop from the food
+ * name) noticeably better than the regex fallback. Falls back to
+ * heuristicParseIngredients() on any failure — never throws.
+ */
+async function parseIngredientsWithLLM(text, env) {
+  if (!env.GROQ_API_KEY) return heuristicParseIngredients(text);
+
+  const prompt = `Parse this free-text list of food ingredients into a structured JSON array. For each ingredient extract:
+- food_name: the food name only — singular, lowercase, no descriptors like "chopped"/"fresh"/"boiled" unless they're part of the name
+- quantity: a plain number (convert fractions and words like "half"/"a"/"an" to a decimal, e.g. 0.5, 1)
+- unit: one of g, kg, ml, l, oz, lb, cup, tbsp, tsp, slice, handful, pinch, serving — use "serving" if the text gives no unit, just a bare count (e.g. "2 eggs" -> quantity 2, unit "serving")
+
+Text: "${text}"
+
+Respond with ONLY this JSON, no other text: {"ingredients": [{"food_name": "...", "quantity": <number>, "unit": "..."}]}`;
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-20b",
+        temperature: 0,
+        max_completion_tokens: 800,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) throw new Error(`Groq parse failed (${res.status})`);
+
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content?.trim() || "";
+    const parsed = extractJsonObject(raw);
+    const items = Array.isArray(parsed?.ingredients) ? parsed.ingredients : null;
+    if (!items) throw new Error("Groq response missing 'ingredients' array");
+
+    const cleaned = items
+      .map((item) => {
+        const quantity = Number(item?.quantity);
+        const foodName = String(item?.food_name || "").trim();
+        if (!foodName || !Number.isFinite(quantity) || quantity <= 0) return null;
+        const unit = String(item?.unit || "serving").trim().toLowerCase();
+        return { food_name: foodName, quantity, unit: KNOWN_INGREDIENT_UNITS.has(unit) ? unit : "serving" };
+      })
+      .filter(Boolean);
+
+    // An empty/garbled parse is still a failure worth falling back on, not
+    // a legitimately empty ingredient list.
+    if (!cleaned.length) throw new Error("Groq parse produced no usable ingredients");
+    return cleaned;
+  } catch (e) {
+    return heuristicParseIngredients(text);
+  }
+}
+
+/** POST /ingredients/parse — body {text}; see the section comment above. */
+async function handleIngredientsParse(request, db, env) {
+  if (request.method !== "POST") return err("Method not allowed", 405);
+
+  const body = await parseBody(request);
+  const text = (body?.text || "").trim();
+  if (!text) return err("'text' is required, e.g. \"2 eggs, 1 cup rice, 100g chicken and ½ avocado\"");
+
+  const ingredients = await parseIngredientsWithLLM(text, env);
+  if (!ingredients.length) {
+    return success(
+      { text, ingredients: [] },
+      { message: "No ingredients could be identified in that text — try a simpler format like '2 eggs, 1 cup rice'" }
+    );
+  }
+
+  return success({ text, ingredients, count: ingredients.length });
 }
 
 /**
@@ -3969,6 +4184,9 @@ function handleRoot(env) {
       meals: [
         "POST /meals/analyze   (public, rate-limited) → body {meal_type?, ingredients:[{food_id?|food_name, quantity, unit?}], daily_targets?:{kcal,protein_g,carbs_g,fat_g}}; same ingredient resolution as /recipes/calculate, no servings — returns total_nutrients, macronutrient_breakdown (kcal + % from protein/carbs/fat, Atwater 4/4/9, compared against the standard adult AMDR range), food_groups_present/food_groups_missing (from the core Grains/Legumes/Protein/Vegetables/Fruits/Dairy set), and — only if daily_targets was supplied — daily_target_comparison; purely descriptive, never invents a personalized target itself",
       ],
+      ingredients: [
+        "POST /ingredients/parse   (public, rate-limited) → body {text}; parses free text like \"2 eggs, 1 cup rice, 100g chicken and ½ avocado\" into ingredients:[{food_name, quantity, unit}] — the exact shape /recipes/calculate and /meals/analyze accept. Groq LLM parse, falls back to a local regex parser if GROQ_API_KEY isn't configured or the LLM call fails. A bare count with no stated unit (\"2 eggs\") comes back as unit:\"serving\", not grams.",
+      ],
     },
   });
 }
@@ -4815,6 +5033,13 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "analyze") {
         if (request.method !== "POST") return err("Only POST is supported for /meals/analyze", 405);
         return await handleMealsAnalyze(request, db, env);
+      }
+      return notFound();
+    }
+
+    case "ingredients": {
+      if (param === "parse") {
+        return await handleIngredientsParse(request, db, env);
       }
       return notFound();
     }
