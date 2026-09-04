@@ -44,7 +44,7 @@ Chakudya can be used to build:
 - **Database:** Supabase REST (`/rest/v1`)
 - **Embeddings:** Cohere (`embed-multilingual-v3.0`)
 - **Rate limiting:** Cloudflare KV
-- **Current CNR version:** `1.20.3`
+- **Current CNR version:** `1.20.4`
 
 ---
 

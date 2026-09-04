@@ -3,7 +3,23 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.20.3
+ * Version: 1.20.4
+ *
+ * v1.20.4 changes:
+ *  - Fixed pickBestFoodMatch()'s tiebreak: "shortest food_name wins" was
+ *    too naive — "Rice pudding" (12 chars) is literally shorter than
+ *    "Rice (cooked, white)" (21 chars), so "rice" was still resolving to
+ *    the wrong dish after v1.20.3's word-boundary fix. Added a tier
+ *    between word-boundary matching and the length tiebreak: prefer names
+ *    where the matched word is immediately followed by a qualifier
+ *    (parenthesis/comma/dash/slash/end-of-string) rather than straight
+ *    into another bare word — that's what actually distinguishes
+ *    "Rice (cooked, white)" or "Rice, brown, raw" (still just rice, with
+ *    a qualifier) from "Rice pudding" or "Rice porridge" (a different
+ *    dish that happens to start with the same word). Verified against the
+ *    live rice/milk data. Known residual limitation: this still can't
+ *    disambiguate raw vs. cooked when both qualify equally — pass food_id
+ *    instead of food_name when that distinction matters.
  *
  * v1.20.3 changes:
  *  - Fixed Recipe Nutrition Calculation matching the wrong food for a
@@ -308,7 +324,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.20.3";
+const CNR_VERSION = "1.20.4";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1507,13 +1523,24 @@ function resolveIngredientGrams(food, quantity, unit) {
  * Given several ilike-matched food rows for a search term, picks the one
  * most likely to be what was meant — plain "milk" or "rice" over
  * "Milk scones" or "Rice porridge" just because the substring happens to
- * appear inside a longer dish name. Three tiers:
+ * appear inside a longer dish name. Four tiers:
  *   1. Exact case-insensitive match on the whole food_name.
  *   2. The search term appears as a whole word (word-boundary match) —
  *      narrows out coincidental substring hits like "rice" inside
  *      "Apricot".
- *   3. Among whatever's left, the shortest food_name — a simple proxy for
- *      "the plain ingredient" over a longer compound-dish name.
+ *   3. Among those, prefer names where the matched word is immediately
+ *      followed by a qualifier — parenthesis/comma/dash/slash/end-of-
+ *      string — rather than straight into another bare word. This is the
+ *      part that actually distinguishes "Rice (cooked, white)" or
+ *      "Rice, brown, raw" (still just rice, with a qualifier) from
+ *      "Rice pudding" or "Rice porridge" (a different dish that happens to
+ *      start with the same word) — a plain shortest-name tiebreak alone
+ *      gets this wrong, since e.g. "Rice pudding" (12 chars) is literally
+ *      shorter than "Rice (cooked, white)" (21 chars).
+ *   4. Shortest food_name as the final tiebreak within whatever's left.
+ * This still can't disambiguate raw vs. cooked when both qualify equally
+ * (e.g. plain "rice" could mean either) — pass food_id instead of
+ * food_name for exact control when that distinction matters.
  */
 function pickBestFoodMatch(rows, query) {
   if (!rows || !rows.length) return null;
@@ -1524,8 +1551,12 @@ function pickBestFoodMatch(rows, query) {
 
   const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const wordBoundary = new RegExp(`\\b${escaped}\\b`, "i");
-  const pool = rows.filter((r) => wordBoundary.test(r.food_name || ""));
-  const candidates = pool.length ? pool : rows;
+  let pool = rows.filter((r) => wordBoundary.test(r.food_name || ""));
+  if (!pool.length) pool = rows;
+
+  const qualifierAfter = new RegExp(`\\b${escaped}\\b\\s*($|[(),/-])`, "i");
+  const qualified = pool.filter((r) => qualifierAfter.test(r.food_name || ""));
+  const candidates = qualified.length ? qualified : pool;
 
   candidates.sort((a, b) => (a.food_name || "").length - (b.food_name || "").length);
   return candidates[0];
