@@ -3,7 +3,24 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.19.1
+ * Version: 1.20.0
+ *
+ * v1.20.0 changes:
+ *  - Added Recipe Nutrition Calculation: POST /recipes/calculate. Body
+ *    {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]} —
+ *    each ingredient is resolved to a food row (local `foods` table first,
+ *    falling back to the same local→external lookupFoodCascade() used by
+ *    /foods/lookup), its quantity/unit converted to grams via
+ *    resolveIngredientGrams() (built on Serving-Size Intelligence's
+ *    buildServingSizes(), so "2 cups rice" uses rice's own cup measure
+ *    rather than a generic one), then nutrients are scaled and summed
+ *    across the recipe. Returns total_nutrients, nutrients_per_serving
+ *    (divided by `servings`, default 1), a per-ingredient breakdown, and
+ *    unresolved_ingredients for anything that couldn't be matched or
+ *    converted (never fails the whole request over one bad ingredient).
+ *    No persistence — pure calculation on existing data. Public, rate-
+ *    limited like /rag/ask since it can fan out to an external lookup per
+ *    unresolved ingredient.
  *
  * v1.19.1 changes:
  *  - Extended Serving-Size Intelligence's ?with_servings=true to also work
@@ -253,7 +270,7 @@
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.19.1";
+const CNR_VERSION = "1.20.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -550,6 +567,7 @@ function routePolicy(resource, method, param, action) {
     method === "POST";
   const isFavorites = resource === "favorites";
   const isHistory = resource === "history";
+  const isRecipesCalculate = resource === "recipes" && param === "calculate" && method === "POST";
 
   // Favorites/history — no admin gate (same public, self-declared-identity
   // model as memory/write and memory/recall: the client supplies its own
@@ -668,6 +686,14 @@ function routePolicy(resource, method, param, action) {
   // auth) or manually by an admin for testing.
   if (isMemoryConsolidate) {
     return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // Recipe nutrition calculation — no persistence, but fans out a DB lookup
+  // (and possibly an external cascade call) per ingredient, so it needs a
+  // real cap rather than the generous plain-read default. Same cost class
+  // as /rag/ask.
+  if (isRecipesCalculate) {
+    return { auth: "public", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/packaged CRUD): admin only.
@@ -1321,6 +1347,194 @@ function buildServingSizes(food) {
       }
     }
     return { label, grams, source, nutrients };
+  });
+}
+
+// ─── RECIPE NUTRITION CALCULATION ───────────────────────────────────────────
+//
+// Builds on Serving-Size Intelligence above: given a list of ingredients
+// (each a food + quantity + unit), resolves each to a food row, converts
+// its quantity/unit to grams, scales that food's per-100g nutrients, and
+// sums across the recipe — with a per-serving breakdown. POST /recipes/calculate,
+// see handleRecipesCalculate(). No persistence — purely a calculation on
+// top of existing data.
+
+// Unambiguous mass/volume units — exact conversion, doesn't depend on which
+// food it's attached to. ml/l assume ~1g/ml (water-like density) since we
+// don't have per-food density data; fine for the liquids/porridges this is
+// mostly used for, less exact for e.g. oil.
+const GENERIC_UNIT_GRAMS = {
+  g: 1, gram: 1, grams: 1, gm: 1,
+  kg: 1000, kilogram: 1000, kilograms: 1000,
+  mg: 0.001, milligram: 0.001,
+  ml: 1, milliliter: 1, millilitre: 1,
+  l: 1000, liter: 1000, litre: 1000,
+  oz: 28.35, ounce: 28.35, ounces: 28.35,
+  lb: 453.6, pound: 453.6, pounds: 453.6,
+};
+
+// Generic household-unit fallback — used only when the unit couldn't be
+// matched against this specific food's own serving_sizes (see
+// resolveIngredientGrams below), so it's necessarily coarser than a
+// food-specific measure.
+const GENERIC_HOUSEHOLD_UNIT_GRAMS = {
+  cup: 240, cups: 240,
+  tbsp: 15, tablespoon: 15, tablespoons: 15,
+  tsp: 5, teaspoon: 5, teaspoons: 5,
+  slice: 30, slices: 30,
+  handful: 30, handfuls: 30,
+  pinch: 0.5, pinches: 0.5,
+};
+
+/**
+ * Converts one ingredient's {quantity, unit} to grams for a given food row.
+ * Three tiers, most accurate first:
+ *   1. Unambiguous mass/volume unit (g, kg, ml, oz, ...) — exact.
+ *   2. "serving"/"servings", or a household unit (cup, tbsp, piece, ...)
+ *      matched against THIS food's own buildServingSizes() candidates —
+ *      e.g. "2 cups rice" resolves via rice's own "1 cup cooked rice
+ *      (150g)" entry, not a generic cup.
+ *   3. Generic household-unit fallback (GENERIC_HOUSEHOLD_UNIT_GRAMS) when
+ *      no food-specific match exists — coarser, same rationale as
+ *      CATEGORY_SERVING_DEFAULTS above.
+ * Returns { grams, basis } on success, or { grams: null, reason } when the
+ * unit can't be resolved at all.
+ */
+function resolveIngredientGrams(food, quantity, unit) {
+  const u = String(unit || "g").trim().toLowerCase();
+
+  if (GENERIC_UNIT_GRAMS[u] != null) {
+    return { grams: quantity * GENERIC_UNIT_GRAMS[u], basis: `${u} (direct mass/volume conversion)` };
+  }
+
+  const candidates = buildServingSizes(food);
+
+  if (u === "serving" || u === "servings") {
+    const best = candidates.find((c) => c.source !== "reference") || candidates[0];
+    if (best) return { grams: quantity * best.grams, basis: best.label };
+  }
+
+  const candidateMatch = candidates.find((c) => c.label.toLowerCase().includes(u));
+  if (candidateMatch) {
+    return { grams: quantity * candidateMatch.grams, basis: candidateMatch.label };
+  }
+
+  if (GENERIC_HOUSEHOLD_UNIT_GRAMS[u] != null) {
+    return { grams: quantity * GENERIC_HOUSEHOLD_UNIT_GRAMS[u], basis: `generic '${u}' estimate (not food-specific)` };
+  }
+
+  return { grams: null, reason: `unrecognized unit '${unit}' — use g/kg/ml/l/oz/lb, a household unit (cup/tbsp/tsp/piece/slice/handful/serving), or a food-specific label` };
+}
+
+/**
+ * POST /recipes/calculate
+ * Body: { servings?: number, ingredients: [{ food_id? | food_name, quantity, unit? }] }
+ * unit defaults to "g" (i.e. quantity is already grams) when omitted.
+ * food_name resolution: local `foods` table first (ilike), then the same
+ * local->external lookupFoodCascade() used by /foods/lookup — so an
+ * ingredient not in the local FCT can still resolve via USDA/OFF/FatSecret.
+ * Purely additive/computational — writes nothing, no auth required.
+ */
+async function handleRecipesCalculate(request, db, env) {
+  const payload = await parseBody(request);
+  if (!payload || !Array.isArray(payload.ingredients) || !payload.ingredients.length) {
+    return err("'ingredients' array is required — each item: {food_name or food_id, quantity, unit?}");
+  }
+  const servingsRaw = Number(payload.servings);
+  const servings = Number.isFinite(servingsRaw) && servingsRaw > 0 ? servingsRaw : 1;
+
+  const resolvedIngredients = [];
+  const unresolvedIngredients = [];
+
+  for (const item of payload.ingredients) {
+    const quantity = Number(item?.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      unresolvedIngredients.push({ input: item, reason: "missing or invalid 'quantity'" });
+      continue;
+    }
+
+    let food = null;
+    let matchedSource = null;
+
+    if (item.food_id != null) {
+      const { ok, body } = await db.selectOne("foods", item.food_id);
+      if (ok && body) {
+        food = body;
+        matchedSource = "food_id";
+      }
+    } else if (item.food_name) {
+      const local = await db.select("foods", {
+        filters: { food_name: `ilike.*${escapeLikePattern(item.food_name)}*` },
+        limit: 1,
+      });
+      if (local.ok && local.body?.[0]) {
+        food = local.body[0];
+        matchedSource = "local";
+      } else {
+        const cascade = await lookupFoodCascade(db, { query: item.food_name }, env);
+        if (cascade?.food) {
+          food = cascade.food;
+          matchedSource = cascade.source;
+        }
+      }
+    } else {
+      unresolvedIngredients.push({ input: item, reason: "provide either 'food_id' or 'food_name'" });
+      continue;
+    }
+
+    if (!food) {
+      unresolvedIngredients.push({ input: item, reason: "food not found (checked local data and external sources)" });
+      continue;
+    }
+
+    const gramsResult = resolveIngredientGrams(food, quantity, item.unit);
+    if (gramsResult.grams == null) {
+      unresolvedIngredients.push({ input: item, reason: gramsResult.reason });
+      continue;
+    }
+
+    const scale = gramsResult.grams / 100;
+    const nutrients = {};
+    for (const field of SERVING_SCALE_FIELDS) {
+      if (food[field] != null && food[field] !== "") {
+        nutrients[field] = roundServingVal(Number(food[field]) * scale);
+      }
+    }
+
+    resolvedIngredients.push({
+      food_name: food.food_name || food.product_name || item.food_name || null,
+      matched_source: matchedSource,
+      quantity,
+      unit: item.unit || "g",
+      grams: roundServingVal(gramsResult.grams),
+      grams_basis: gramsResult.basis,
+      nutrients,
+    });
+  }
+
+  const totalNutrients = {};
+  for (const field of SERVING_SCALE_FIELDS) {
+    let sum = null;
+    for (const ing of resolvedIngredients) {
+      if (ing.nutrients[field] != null) sum = (sum ?? 0) + ing.nutrients[field];
+    }
+    if (sum != null) totalNutrients[field] = roundServingVal(sum);
+  }
+
+  const totalGrams = resolvedIngredients.reduce((s, ing) => s + ing.grams, 0);
+  const nutrientsPerServing = {};
+  for (const [field, value] of Object.entries(totalNutrients)) {
+    nutrientsPerServing[field] = roundServingVal(value / servings);
+  }
+
+  return success({
+    servings,
+    total_grams: roundServingVal(totalGrams),
+    grams_per_serving: roundServingVal(totalGrams / servings),
+    total_nutrients: totalNutrients,
+    nutrients_per_serving: nutrientsPerServing,
+    ingredients: resolvedIngredients,
+    unresolved_ingredients: unresolvedIngredients,
   });
 }
 
@@ -3185,6 +3399,9 @@ function handleRoot(env) {
         "GET  /history?user_id=...&resource_type=...   (public, rate-limited) → recently viewed, viewed_at desc",
         "POST /history   (public, rate-limited) → body {user_id, resource_type, resource_id}, upserts viewed_at",
       ],
+      recipes: [
+        "POST /recipes/calculate   (public, rate-limited) → body {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]}; resolves each ingredient (local foods, falling back to the same local→external cascade as /foods/lookup), converts quantity/unit to grams (see Serving-Size Intelligence), and returns total_nutrients + nutrients_per_serving + a per-ingredient breakdown + any unresolved_ingredients",
+      ],
     },
   });
 }
@@ -4009,6 +4226,14 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "history": {
       return await handleHistory(request, url, db);
+    }
+
+    case "recipes": {
+      if (param === "calculate") {
+        if (request.method !== "POST") return err("Only POST is supported for /recipes/calculate", 405);
+        return await handleRecipesCalculate(request, db, env);
+      }
+      return notFound();
     }
 
     default:
