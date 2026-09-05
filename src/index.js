@@ -545,6 +545,9 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "autocomplete") {
     return { ttl: 3600 }; // 1 hour — repeat partial-query lookups are common while typing
   }
+  if (resource === "foods" && param === "substitutes") {
+    return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
+  }
   if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data
   }
@@ -658,6 +661,7 @@ function routePolicy(resource, method, param, action) {
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
   const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
+  const isFoodSubstitutes = resource === "foods" && param === "substitutes" && method === "GET";
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
@@ -830,6 +834,13 @@ function routePolicy(resource, method, param, action) {
   // capped by scan_limit), so it gets its own moderate cap rather than the
   // generous plain-read default.
   if (isDrugInteractionsSearch) {
+    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Food substitutes — fans out one ilike query per keyword in the matched
+  // substitution group (multiKeywordFoodSearch), same cost class as the
+  // scans above.
+  if (isFoodSubstitutes) {
     return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -1543,7 +1554,11 @@ async function embedText(text, env, inputType = "search_query") {
 const CATEGORY_KEYWORDS = [
   ["Protein", ["chicken", "beef", "pork", "turkey", "lamb", "goat", "fish", "salmon",
     "tuna", "tilapia", "sardine", "shrimp", "prawn", "egg", "bacon", "sausage",
-    "wagyu", "steak", "meat", "poultry", "mince", "liver"]],
+    "wagyu", "steak", "meat", "poultry", "mince", "liver",
+    // Lake Malawi / local fish names — none of these contain "fish" in the
+    // name they're actually stored/searched under, so without this they'd
+    // silently fall through both classification and keyword-based search.
+    "chambo", "usipa", "kapenta", "matemba", "mbaba", "chisawasawa", "ntchila"]],
   ["Dairy", ["milk", "cheese", "yogurt", "yoghurt", "butter", "cream", "whey"]],
   ["Grains", ["rice", "maize", "wheat", "bread", "pasta", "oat", "cereal", "flour",
     "cornmeal", "nsima", "noodle", "barley"]],
@@ -1581,6 +1596,141 @@ function classifyCategory(foodName) {
     if (keywords.some((kw) => name.includes(kw))) return category;
   }
   return null;
+}
+
+// ─── FOOD SUBSTITUTIONS ─────────────────────────────────────────────────────
+//
+// "I don't have chicken, what can I use instead?" — deliberately NOT just
+// "same CATEGORY_KEYWORDS category", because that taxonomy splits chicken
+// (Protein) from beans/soya/groundnuts (Legumes) even though a Malawian
+// household or clinician treats all of them as interchangeable protein
+// sources. The groups below override that split for the categories where
+// it matters; anything else falls back to its own CATEGORY_KEYWORDS
+// category (see getSubstitutionGroup below).
+const CATEGORY_KEYWORD_MAP = new Map(CATEGORY_KEYWORDS);
+
+const SUBSTITUTION_GROUP_OVERRIDES = {
+  Protein: {
+    label: "Protein / body-building foods",
+    primaryNutrient: "protein_g",
+    keywords: [...(CATEGORY_KEYWORD_MAP.get("Protein") || []), ...(CATEGORY_KEYWORD_MAP.get("Legumes") || [])],
+  },
+  Grains: {
+    label: "Starches / staples",
+    primaryNutrient: "carbs_g",
+    // Cassava/potatoes sit under Vegetables in CATEGORY_KEYWORDS, but
+    // they're staples in a Malawian diet, not relish — grouped with grains here.
+    keywords: [...(CATEGORY_KEYWORD_MAP.get("Grains") || []), "cassava", "sweet potato", "irish potato", "potato"],
+  },
+};
+SUBSTITUTION_GROUP_OVERRIDES.Legumes = SUBSTITUTION_GROUP_OVERRIDES.Protein;
+
+const SUBSTITUTION_PRIMARY_NUTRIENT_LABEL = {
+  protein_g: "protein",
+  carbs_g: "carbohydrate",
+  fiber_g: "fiber",
+  vitc_mg: "vitamin C",
+  calcium_mg: "calcium",
+  kcal: "calories",
+};
+
+function getSubstitutionGroup(category) {
+  if (SUBSTITUTION_GROUP_OVERRIDES[category]) return SUBSTITUTION_GROUP_OVERRIDES[category];
+  const keywords = CATEGORY_KEYWORD_MAP.get(category) || [];
+  if (!keywords.length) return null;
+  const primaryByCategory = { Vegetables: "fiber_g", Fruits: "vitc_mg", Dairy: "calcium_mg" };
+  return { label: category, primaryNutrient: primaryByCategory[category] || "kcal", keywords };
+}
+
+/**
+ * GET /foods/substitutes?food_name=chicken&limit=5
+ * Resolves the food (same local-ilike-then-external-cascade lookup /meals/
+ * analyze uses per ingredient), works out its substitution group (see
+ * SUBSTITUTION_GROUP_OVERRIDES above), gathers candidates from `foods` via
+ * the group's keyword list (multiKeywordFoodSearch — one ilike query per
+ * keyword, merged/deduped), then ranks by closeness to the original on the
+ * group's primary nutrient per 100g (closest first). Every candidate also
+ * gets a full comparison table (kcal/protein/carbs/fat/iron/calcium) vs the
+ * original, not just the ranking nutrient.
+ * Purely computational — no auth required, no writes, nothing persisted.
+ */
+async function handleFoodSubstitutes(request, url, db, env) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const foodName = (url.searchParams.get("food_name") || url.searchParams.get("food") || "").trim();
+  if (!foodName) return err("'food_name' query param is required");
+  const limit = Math.min(Math.max(intParam(url, "limit", 5), 1), 15);
+
+  const local = await db.select("foods", {
+    filters: { food_name: `ilike.*${escapeLikePattern(foodName)}*` },
+    limit: 25,
+  });
+  let food = local.ok ? pickBestFoodMatch(local.body, foodName) : null;
+  let matchedSource = food ? "local" : null;
+  if (!food) {
+    const cascade = await lookupFoodCascade(db, { query: foodName }, env);
+    if (cascade?.food) {
+      food = cascade.food;
+      matchedSource = cascade.source;
+    }
+  }
+  if (!food) return notFound(`Food matching '${foodName}'`);
+
+  const originalName = food.food_name || food.product_name || foodName;
+  const category = classifyCategory(originalName);
+  const group = category ? getSubstitutionGroup(category) : null;
+  if (!group) {
+    return success({
+      original: { food_name: originalName, matched_source: matchedSource, category: null },
+      substitution_group: null,
+      substitutes: [],
+      note: `Couldn't classify '${originalName}' into a known food category, so no substitution group applies.`,
+    });
+  }
+
+  const candidates = await multiKeywordFoodSearch(searchFoodsExact, db, originalName, group.keywords, 60);
+  const originalNameLower = originalName.toLowerCase();
+  const pool = candidates.filter((c) => (c.food_name || "").toLowerCase() !== originalNameLower);
+
+  const comparisonFields = ["kcal", "protein_g", "carbs_g", "fat_g", "iron_mg", "calcium_mg"];
+  const originalNutrients = {};
+  for (const f of comparisonFields) originalNutrients[f] = food[f] != null && food[f] !== "" ? Number(food[f]) : null;
+  const originalPrimary = originalNutrients[group.primaryNutrient];
+
+  const ranked = pool
+    .map((c) => {
+      const nutrients = {};
+      for (const f of comparisonFields) nutrients[f] = c[f] != null && c[f] !== "" ? Number(c[f]) : null;
+      const candidatePrimary = nutrients[group.primaryNutrient];
+      const distance = originalPrimary != null && candidatePrimary != null ? Math.abs(candidatePrimary - originalPrimary) : Infinity;
+
+      const comparisonVsOriginal = {};
+      for (const f of comparisonFields) {
+        comparisonVsOriginal[f] =
+          originalNutrients[f] == null || nutrients[f] == null
+            ? null
+            : { substitute: nutrients[f], original: originalNutrients[f], difference: roundServingVal(nutrients[f] - originalNutrients[f]) };
+      }
+
+      return {
+        food_name: c.food_name,
+        category: classifyCategory(c.food_name),
+        per_100g: nutrients,
+        comparison_vs_original: comparisonVsOriginal,
+        _distance: distance,
+      };
+    })
+    .sort((a, b) => a._distance - b._distance)
+    .slice(0, limit)
+    .map(({ _distance, ...rest }) => rest);
+
+  return success({
+    original: { food_name: originalName, matched_source: matchedSource, category, per_100g: originalNutrients },
+    substitution_group: group.label,
+    ranked_by: `closeness in ${SUBSTITUTION_PRIMARY_NUTRIENT_LABEL[group.primaryNutrient] || group.primaryNutrient} per 100g`,
+    substitutes: ranked,
+    note: "Values are per 100g (Malawi FCT convention). Ranked purely on nutritional closeness within a Malawi-relevant substitution group — doesn't know about cost, local availability, taste, or portion size, and 'closeness' is a single primary nutrient, not a full dietary equivalence.",
+  });
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -1632,7 +1782,7 @@ const SERVING_SIZE_KEYWORDS = [
   [["egg"], { label: "1 medium egg (50g)", grams: 50 }],
   [["bread"], { label: "1 slice (35g)", grams: 35 }],
   [["mango", "orange", "papaya", "guava", "apple"], { label: "1 medium piece (150g)", grams: 150 }],
-  [["fish", "sardine", "tilapia", "salmon", "tuna"], { label: "1 medium piece (80g)", grams: 80 }],
+  [["fish", "sardine", "tilapia", "salmon", "tuna", "chambo", "usipa", "kapenta", "matemba", "mbaba", "chisawasawa", "ntchila"], { label: "1 medium piece (80g)", grams: 80 }],
   [["chicken", "beef", "pork", "goat", "turkey", "meat", "liver", "mince"], { label: "1 palm-sized portion (90g)", grams: 90 }],
   [["rape", "mustard", "pumpkin leaves", "cabbage", "spinach", "kale"], { label: "1 cup cooked relish (95g)", grams: 95 }],
   [["tomato"], { label: "1 medium tomato (90g)", grams: 90 }],
@@ -4758,6 +4908,7 @@ function handleRoot(env) {
         "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above",
         "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
+        "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
         "POST /foods            (admin)",
         "POST /foods/bulk       (admin) → body {items:[...]}, max 500, batch insert in one request",
         "PUT  /foods/:id        (admin)",
@@ -5700,6 +5851,9 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       }
       if (param === "categories") {
         return await handleFoodsCategories(request, env);
+      }
+      if (param === "substitutes") {
+        return await handleFoodSubstitutes(request, url, db, env);
       }
       if (param === "bulk") {
         if (request.method !== "POST") return err("Method not allowed", 405);

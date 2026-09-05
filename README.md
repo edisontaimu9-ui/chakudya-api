@@ -18,6 +18,7 @@ for AI assisted nutrition tools.
 - **Renal nutrition data** (`/renal`). Foods and nutrition information relevant to renal dietary planning.
 - **Enteral formulas** (`/formulas`). Structured information for clinical nutrition applications.
 - **Drug-nutrient interactions** (`/drug-interactions`). 117-entry reference DB (migrated from Oasis CNST) with keyword search, shared across the ecosystem instead of bundled per-app.
+- **Food substitutions** (`/foods/substitutes`). Malawi-specific "what can I use instead" suggestions ranked by nutritional closeness (e.g. chicken → soya pieces → chambo → groundnuts), spanning categories the way people actually substitute rather than a strict taxonomy match.
 - **Packaged and branded foods** (`/packaged`). Barcode lookup, community product submission, OCR assisted data capture, and an admin review workflow.
 - **External food lookup** (`/foods/lookup`, `/foods/autocomplete`, `/foods/categories`). Additional food information from USDA FoodData Central, Open Food Facts, and FatSecret when a food isn't in the local database.
 - **RAG powered nutrition knowledge** (`/rag/ask`, `/rag/retrieve`). Retrieve relevant knowledge or ask a question directly.
@@ -525,6 +526,7 @@ curl -X POST https://your-worker-url/foods/bulk \
 - `GET /foods/lookup` — see below
 - `GET /foods/autocomplete` — see below
 - `GET /foods/categories` — see below
+- `GET /foods/substitutes` — see below
 - `POST /foods` *(admin)*
 - `POST /foods/bulk` *(admin)* — see [Bulk insert](#bulk-insert)
 - `PUT /foods/:id` *(admin)*
@@ -579,6 +581,34 @@ GET /foods/45?with_servings=true
 ```
 
 Both of the above require `FATSECRET_CONSUMER_KEY`/`FATSECRET_CONSUMER_SECRET` on a **Premier or Premier Free** plan — a Basic/free-tier key returns FatSecret error 14 ("Missing scope"), which surfaces here as a `503` ("not configured on this deployment"). See [Required Environment Variables](#required-environment-variables--bindings).
+
+**`GET /foods/substitutes?food_name=chicken&limit=`** *(public, rate-limited, cached 1h)* — Malawi-specific substitution suggestions, entirely local (no FatSecret dependency). Resolves `food_name` the same way a `/meals/analyze` ingredient resolves (local `foods` match, falling back to the external lookup cascade), classifies it into a substitution group, then ranks candidates from `foods` by nutritional closeness on that group's primary nutrient.
+
+The grouping deliberately overrides the plain category taxonomy where it matters for how people actually substitute: chicken/fish/eggs (category `Protein`) and beans/soya/groundnuts (category `Legumes`) are treated as one combined "Protein / body-building foods" group, ranked by protein per 100g; grains plus cassava/potatoes are one "Starches / staples" group, ranked by carbohydrate. Everything else falls back to its own plain category. `limit` defaults to `5`, capped at `15`.
+
+```json
+{ "food_name": "chicken", "limit": 5 }
+```
+```json
+{
+  "status": "success",
+  "data": {
+    "original": { "food_name": "Chicken breast, roasted", "matched_source": "local", "category": "Protein", "per_100g": { "kcal": 165, "protein_g": 31, "carbs_g": 0, "fat_g": 3.6, "iron_mg": 1, "calcium_mg": 15 } },
+    "substitution_group": "Protein / body-building foods",
+    "ranked_by": "closeness in protein per 100g",
+    "substitutes": [
+      { "food_name": "Soya pieces, rehydrated", "category": "Legumes", "per_100g": { "protein_g": 34, "...": "..." }, "comparison_vs_original": { "protein_g": { "substitute": 34, "original": 31, "difference": 3 }, "...": "..." } },
+      { "food_name": "Chambo, grilled", "category": "Protein", "...": "..." },
+      { "food_name": "Groundnuts, roasted", "category": "Legumes", "...": "..." }
+    ],
+    "note": "Values are per 100g (Malawi FCT convention)..."
+  }
+}
+```
+
+`classifyCategory`'s keyword list includes common Lake Malawi fish names (chambo, usipa, kapenta, matemba, mbaba, chisawasawa, ntchila) specifically so they classify as `Protein` and turn up as substitutes/candidates — without that, a food named "Chambo, grilled" would silently fall through both classification and the keyword-based candidate search, since it doesn't contain the word "fish".
+
+Ranking is a single primary nutrient's closeness, not a full dietary-equivalence judgment — it doesn't know about cost, local availability, taste, or realistic portion size, and every candidate's full `comparison_vs_original` (kcal/protein/carbs/fat/iron/calcium) is included precisely so a clinician or cook can see *how* it differs, not just that it's "close".
 
 ### Recipes
 
