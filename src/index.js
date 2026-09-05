@@ -3,7 +3,27 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.21.1
+ * Version: 1.22.0
+ *
+ * v1.22.0 changes:
+ *  - Added typo-tolerant fuzzy search over public.foods: GET /foods/search
+ *    (new, public, rate-limited) and a new fallback tier in
+ *    lookupFoodCascade (used by /foods/lookup and everything built on it —
+ *    /recipes/calculate, /meals/analyze, the WhatsApp bot's bare-food-name
+ *    lookup, etc.) that runs between the exact-ilike local match and the
+ *    external-cache/API steps. Previously a misspelled Malawian food name
+ *    (e.g. "Chinagwa" for "Chinangwa") found nothing locally — ilike
+ *    requires an exact substring — and fell straight through to USDA/OFF/
+ *    FatSecret, which don't index Chichewa names either, so it just failed.
+ *    Implementation: sql/008_add_fuzzy_food_search.sql adds a
+ *    fuzzy_food_search() Postgres function (pg_trgm's word_similarity(),
+ *    NOT plain similarity() — food_name values are full FCT descriptions
+ *    like "Cassava, tuber, raw, (Chinangwa chachiwisi)", and comparing a
+ *    short query against that whole string scores too low even for a
+ *    near-perfect partial match; word_similarity finds the best-matching
+ *    substring instead) to shortlist via the new GIN trigram index on
+ *    food_name, then levenshtein() edit distance to break ties. Wrapped by
+ *    fuzzyFoodSearch() in this file.
  *
  * v1.21.1 changes:
  *  - Fixed a category-vocabulary mismatch that made Meal Analysis's
@@ -548,6 +568,9 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "substitutes") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
+  if (resource === "foods" && param === "search") {
+    return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
+  }
   if (["foods", "exchange", "renal", "formulas", "glycaemic-index"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
@@ -659,6 +682,7 @@ function routePolicy(resource, method, param, action) {
   const isRagDeleteSource = resource === "rag" && param === "source" && method === "DELETE";
   const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
+  const isFoodsSearch = resource === "foods" && param === "search" && method === "GET";
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
   const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
   const isFoodSubstitutes = resource === "foods" && param === "substitutes" && method === "GET";
@@ -724,6 +748,12 @@ function routePolicy(resource, method, param, action) {
   // but capped to protect those quotas, separate from plain local reads.
   if (isFoodsLookup) {
     return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Fuzzy search — a single indexed Postgres RPC call (pg_trgm + levenshtein),
+  // no external API cost, so it gets the same generous headroom as autocomplete.
+  if (isFoodsSearch) {
+    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
 
   // Autocomplete — a type-ahead UX fires one request per keystroke pause,
@@ -3911,6 +3941,28 @@ async function handleFoodsAutocomplete(request, url, env) {
   return success(suggestions);
 }
 
+// GET /foods/search?q=...&max_results=...&min_similarity=...
+// Typo-tolerant search over the local Malawi FCT foods table — see
+// fuzzyFoodSearch(). Unlike /foods/lookup, this never falls back to
+// external APIs and never caches an external result; it's purely a local,
+// ranked "closest matches" list, so callers can show a "did you mean...?"
+// picker or just take the top result.
+async function handleFoodsSearch(request, url, db, env) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const q = (url.searchParams.get("q") || "").trim();
+  if (!q) return err("'q' query param is required");
+
+  const maxResults = Math.min(Math.max(intParam(url, "max_results", 8), 1), 25);
+  const minSimilarityParam = url.searchParams.get("min_similarity");
+  const minSimilarity = minSimilarityParam !== null
+    ? Math.min(Math.max(parseFloat(minSimilarityParam), 0), 1)
+    : 0.3;
+
+  const results = await fuzzyFoodSearch(db, q, { maxResults, minSimilarity: Number.isNaN(minSimilarity) ? 0.3 : minSimilarity });
+  return success(results, { count: results.length, query: q });
+}
+
 // GET /foods/categories
 async function handleFoodsCategories(request, env) {
   if (request.method !== "GET") return err("Method not allowed", 405);
@@ -4212,6 +4264,17 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
         source: "local_packaged",
         cached: false,
       };
+    }
+  }
+
+  // 1.5 Fuzzy/typo-tolerant match against local curated data — catches a
+  // misspelled Malawian food name (e.g. "Chinagwa" for "Chinangwa") before
+  // falling through to external APIs that don't index Chichewa names
+  // anyway. See fuzzyFoodSearch/sql/008_add_fuzzy_food_search.sql.
+  if (query) {
+    const fuzzy = await fuzzyFoodSearch(db, query, { maxResults: 1 });
+    if (fuzzy[0]) {
+      return { food: withExternalShape(fuzzy[0], "local_fuzzy"), source: "local_fuzzy", cached: false };
     }
   }
 
@@ -4606,6 +4669,25 @@ async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 
     }
   }
   return merged;
+}
+
+/**
+ * Typo-tolerant search over public.foods (Malawi FCT) — see
+ * sql/008_add_fuzzy_food_search.sql for the fuzzy_food_search() Postgres
+ * function this wraps (pg_trgm word_similarity to shortlist via the GIN
+ * trigram index, levenshtein() edit distance to rank ties). Used by
+ * GET /foods/search directly, and as a fallback tier in lookupFoodCascade
+ * when the exact ilike match misses — catches misspelled Malawian food
+ * names before falling through to external APIs that don't have them.
+ */
+async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.3 } = {}) {
+  if (!query) return [];
+  const { ok, body } = await db.rpc("fuzzy_food_search", {
+    search_term: query,
+    max_results: maxResults,
+    min_similarity: minSimilarity,
+  });
+  return ok && Array.isArray(body) ? body : [];
 }
 
 /** Malawi FCT / curated foods table — exact ilike search on food_name. */
@@ -5316,6 +5398,7 @@ function handleRoot(env) {
         "GET  /foods?with_servings=true",
         "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
         "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
+        "GET  /foods/search?q=...&max_results=&min_similarity=  (public, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql); no external API calls, never caches an external result — purely local 'closest matches'. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
         "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
@@ -6299,6 +6382,9 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
     case "foods": {
       if (param === "lookup") {
         return await handleFoodsLookup(request, url, db, env);
+      }
+      if (param === "search") {
+        return await handleFoodsSearch(request, url, db, env);
       }
       if (param === "autocomplete") {
         return await handleFoodsAutocomplete(request, url, env);
