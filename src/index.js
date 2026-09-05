@@ -3609,6 +3609,7 @@ async function handleRAG(request, url, db, env, param, ctx) {
 //            - Diabetes Exchange List          -> scanTableByKeywords (exchange_lists)
 //            - Renal Exchange List             -> scanTableByKeywords (renal_foods)
 //            - Enteral Formula Database        -> scanTableByKeywords (enteral_formulas)
+//            - Drug-Nutrient Interactions      -> scanTableByKeywords (drug_nutrient_interactions)
 //            - Barcode Lookup                  -> lookupFoodCascade (barcode branch)
 //            - USDA FDC / Open Food Facts /
 //              FatSecret (fallback only)       -> lookupFoodCascade (query branch)
@@ -3616,13 +3617,13 @@ async function handleRAG(request, url, db, env, param, ctx) {
 //       -> Build Context                 (numbered, tagged snippet block)
 //       -> LLM (Groq)                    (answerWithLLM) -> grounded answer + citations
 //
-// Intent detection decides which of the 8 sources above are actually worth
+// Intent detection decides which of the 9 sources above are actually worth
 // querying for this particular question — e.g. a greeting doesn't need an
 // enteral-formula table scan, and a specific-food question doesn't need the
 // diabetes exchange list. This keeps the orchestrator's per-request cost
 // (Cohere embed, Cohere rerank, Groq classify, Groq answer, N Supabase
 // queries) proportional to what the question actually needs instead of
-// always hitting all 8 sources on every request.
+// always hitting all 9 sources on every request.
 
 const ASK_CACHE_TTL_SECONDS = 300; // 5 min — shorter than RAG_CACHE_TTL_SECONDS since this caches a full generated answer, not just raw chunks
 
@@ -3632,6 +3633,7 @@ const RAG_ASK_INTENTS = [
   "nutrition_question",
   "exchange_list",
   "enteral_formula",
+  "drug_interaction",
   "general_chat",
 ];
 
@@ -3639,12 +3641,13 @@ const RAG_ASK_INTENTS = [
 // only fires when the local structured sources (foods/packaged/barcode) came
 // back completely empty — see handleRagAsk.
 const INTENT_SOURCE_PLAN = {
-  food_search: { semantic: true, foods: true, packaged: true, exchange: false, renal: false, formulas: false, externalFallback: true },
-  barcode_search: { semantic: true, foods: true, packaged: true, exchange: false, renal: false, formulas: false, externalFallback: true },
-  nutrition_question: { semantic: true, foods: true, packaged: false, exchange: false, renal: false, formulas: false, externalFallback: false },
-  exchange_list: { semantic: true, foods: true, packaged: false, exchange: true, renal: true, formulas: false, externalFallback: false },
-  enteral_formula: { semantic: true, foods: true, packaged: false, exchange: false, renal: false, formulas: true, externalFallback: false },
-  general_chat: { semantic: true, foods: false, packaged: false, exchange: false, renal: false, formulas: false, externalFallback: false },
+  food_search: { semantic: true, foods: true, packaged: true, exchange: false, renal: false, formulas: false, drugInteractions: false, externalFallback: true },
+  barcode_search: { semantic: true, foods: true, packaged: true, exchange: false, renal: false, formulas: false, drugInteractions: false, externalFallback: true },
+  nutrition_question: { semantic: true, foods: true, packaged: false, exchange: false, renal: false, formulas: false, drugInteractions: false, externalFallback: false },
+  exchange_list: { semantic: true, foods: true, packaged: false, exchange: true, renal: true, formulas: false, drugInteractions: false, externalFallback: false },
+  enteral_formula: { semantic: true, foods: true, packaged: false, exchange: false, renal: false, formulas: true, drugInteractions: false, externalFallback: false },
+  drug_interaction: { semantic: true, foods: false, packaged: false, exchange: false, renal: false, formulas: false, drugInteractions: true, externalFallback: false },
+  general_chat: { semantic: true, foods: false, packaged: false, exchange: false, renal: false, formulas: false, drugInteractions: false, externalFallback: false },
 };
 
 /** Finds the first 8-14 digit run in free text — a plausible barcode/EAN/UPC. */
@@ -3673,6 +3676,10 @@ function extractKeywords(text) {
 function heuristicIntent(query) {
   const q = query.toLowerCase().trim();
   if (extractBarcode(query)) return "barcode_search";
+  const mentionsDrugWord = /\b(drug|medication|medicine|pill|tablet|warfarin|metformin|aspirin|antibiotic)s?\b/.test(q);
+  const mentionsInteractionAngle = /\b(interact|interaction|take with|eat with|avoid while|food effect|side effect)\b|\btake\b[\s\S]*\bwith\b/.test(q);
+  if (mentionsDrugWord && mentionsInteractionAngle) return "drug_interaction";
+  if (/\b(drug.?nutrient|drug.?food)\s*interaction/.test(q)) return "drug_interaction";
   if (/\b(renal|kidney|dialysis|ckd)\b/.test(q)) return "exchange_list";
   if (/\b(exchange|diabet|carb counting|glycaemic|glycemic)\b/.test(q)) return "exchange_list";
   if (/\b(enteral|tube.?feed|parenteral|\btpn\b|formula)\b/.test(q)) return "enteral_formula";
@@ -3693,13 +3700,14 @@ async function classifyIntent(query, env) {
     return { intent: heuristicIntent(query), barcode: extractBarcode(query) };
   }
 
-  const prompt = `Classify this nutrition-app user query into exactly one intent label: food_search, barcode_search, nutrition_question, exchange_list, enteral_formula, general_chat.
+  const prompt = `Classify this nutrition-app user query into exactly one intent label: food_search, barcode_search, nutrition_question, exchange_list, enteral_formula, drug_interaction, general_chat.
 
 - food_search: looking up a specific food/ingredient/product's nutrition info
 - barcode_search: the query is or contains a product barcode number
 - nutrition_question: a general nutrition/clinical knowledge question, not about one specific food
 - exchange_list: about diabetic or renal food exchange/portion lists
 - enteral_formula: about tube-feeding/enteral/parenteral formulas
+- drug_interaction: about a medication/drug interacting with food, nutrients, or supplements (e.g. "can I take X with grapefruit", "does warfarin interact with vitamin K")
 - general_chat: greetings, thanks, small talk, anything not nutrition-related
 
 Query: "${query}"
@@ -4024,6 +4032,7 @@ async function handleRagAsk(request, url, db, env, ctx, body) {
   if (plan.exchange) tasks.exchange = scanTableByKeywords(db, "exchange_lists", keywords);
   if (plan.renal) tasks.renal = scanTableByKeywords(db, "renal_foods", keywords);
   if (plan.formulas) tasks.formulas = scanTableByKeywords(db, "enteral_formulas", keywords);
+  if (plan.drugInteractions) tasks.drugInteractions = scanTableByKeywords(db, "drug_nutrient_interactions", keywords);
   if (barcode) tasks.barcode = lookupFoodCascade(db, { query: "", barcode }, env);
 
   const taskKeys = Object.keys(tasks);
@@ -4087,6 +4096,14 @@ async function handleRagAsk(request, url, db, env, ctx, body) {
   }
   for (const { row } of results.formulas || []) {
     candidates.push({ source: "enteral_formula", title: row.formula_name || row.name || "Formula", text: rowToText(row), score: null });
+  }
+  for (const { row } of results.drugInteractions || []) {
+    candidates.push({
+      source: "drug_nutrient_interaction",
+      title: row.severity ? `${row.drug} — ${row.severity}` : row.drug || "Drug-nutrient interaction",
+      text: rowToText(row),
+      score: null,
+    });
   }
   if (results.barcode) {
     candidates.push({

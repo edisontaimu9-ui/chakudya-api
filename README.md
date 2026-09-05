@@ -1038,6 +1038,7 @@ Sources it can draw from, depending on intent:
 | Diabetes Exchange List | `exchange_lists` (keyword scan) |
 | Renal Exchange List | `renal_foods` (keyword scan) |
 | Enteral Formula Database | `enteral_formulas` (keyword scan) |
+| Drug-Nutrient Interactions | `drug_nutrient_interactions` (keyword scan) |
 | Barcode Lookup | `lookupFoodCascade` (local → cache → Open Food Facts) |
 | USDA FDC / Open Food Facts / FatSecret | `lookupFoodCascade`, **fallback only** — fires when the local sources above returned nothing |
 | Session memory *(optional)* | `assistant_memory` via `match_memory`, only when `session_id` is passed |
@@ -1058,7 +1059,7 @@ Response `data`:
 ```json
 {
   "answer": "string — grounded answer with [n] citations",
-  "intent": "food_search | barcode_search | nutrition_question | exchange_list | enteral_formula | general_chat",
+  "intent": "food_search | barcode_search | nutrition_question | exchange_list | enteral_formula | drug_interaction | general_chat",
   "barcode_detected": "string | null",
   "sources": [{ "id": 1, "source": "malawi_fct", "title": "..." }]
 }
