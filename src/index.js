@@ -3415,7 +3415,15 @@ async function handleMealsAnalyze(request, db, env) {
 
 function normalizeFood(source, raw) {
   // Produces the common shape stored in external_foods_cache and returned
-  // to the client, regardless of which upstream API it came from.
+  // to the client, regardless of which upstream API it came from. Micros
+  // use the same field names as public.foods (vita_rae_mcg, vitc_mg, etc.)
+  // so downstream code (labels, /foods/compare) can treat a cached external
+  // hit the same as a local row. Not every source can populate every
+  // field — see the source-specific extraction in fetchFromUSDA/
+  // fetchFromOpenFoodFacts/fetchFromFatSecretBarcode for what's actually
+  // available and why (e.g. FatSecret's vitamin_a/vitamin_c/calcium/iron
+  // are %DV, not absolute values, so those are deliberately left null for
+  // FatSecret-sourced foods rather than storing a misleading number).
   return {
     food_name: raw.food_name ?? "",
     category: raw.category ?? classifyCategory(raw.food_name),
@@ -3423,6 +3431,18 @@ function normalizeFood(source, raw) {
     protein_g: raw.protein_g ?? null,
     fat_g: raw.fat_g ?? null,
     carbs_g: raw.carbs_g ?? null,
+    fiber_g: raw.fiber_g ?? null,
+    vita_rae_mcg: raw.vita_rae_mcg ?? null,
+    vitc_mg: raw.vitc_mg ?? null,
+    vitd_mcg: raw.vitd_mcg ?? null,
+    vitb12_mcg: raw.vitb12_mcg ?? null,
+    folate_mcg: raw.folate_mcg ?? null,
+    calcium_mg: raw.calcium_mg ?? null,
+    iron_mg: raw.iron_mg ?? null,
+    zinc_mg: raw.zinc_mg ?? null,
+    magnesium_mg: raw.magnesium_mg ?? null,
+    potassium_mg: raw.potassium_mg ?? null,
+    sodium_mg: raw.sodium_mg ?? null,
     barcode: raw.barcode ?? null,
     source,
     external_id: raw.external_id ?? null,
@@ -3497,6 +3517,18 @@ async function fetchFromUSDA(query, env) {
     protein_g: getNutrient("Protein"),
     fat_g: getNutrient("Total lipid (fat)"),
     carbs_g: getNutrient("Carbohydrate, by difference"),
+    fiber_g: getNutrient("Fiber, total dietary"),
+    vita_rae_mcg: getNutrient("Vitamin A, RAE"),
+    vitc_mg: getNutrient("Vitamin C, total ascorbic acid"),
+    vitd_mcg: getNutrient("Vitamin D (D2 + D3)"),
+    vitb12_mcg: getNutrient("Vitamin B-12"),
+    folate_mcg: getNutrient("Folate, total"),
+    calcium_mg: getNutrient("Calcium, Ca"),
+    iron_mg: getNutrient("Iron, Fe"),
+    zinc_mg: getNutrient("Zinc, Zn"),
+    magnesium_mg: getNutrient("Magnesium, Mg"),
+    potassium_mg: getNutrient("Potassium, K"),
+    sodium_mg: getNutrient("Sodium, Na"),
     external_id: String(food.fdcId),
     raw_data: {
       fdcId: food.fdcId,
@@ -3505,6 +3537,18 @@ async function fetchFromUSDA(query, env) {
       nutrients: trimmedNutrients,
     },
   });
+}
+
+// Open Food Facts' nutriments object expresses EVERY nutrient in grams as
+// its base unit (docs: https://openfoodfacts.github.io/openfoodfacts-server/api/ref-nutrients/),
+// including vitamins/minerals that are conventionally mg or mcg elsewhere
+// (e.g. "vitamin-a_100g": 0.0000015 for 1.5 mcg). Converts a raw gram value
+// to mg or mcg so it lines up with the same units public.foods uses.
+function offGramsTo(value, unit) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return unit === "mcg" ? n * 1e6 : n * 1000; // unit: "mg" | "mcg"
 }
 
 async function fetchFromOpenFoodFacts(barcode, env) {
@@ -3529,6 +3573,20 @@ async function fetchFromOpenFoodFacts(barcode, env) {
     protein_g: n["proteins_100g"] ?? null,
     fat_g: n["fat_100g"] ?? null,
     carbs_g: n["carbohydrates_100g"] ?? null,
+    fiber_g: n["fiber_100g"] ?? null,
+    // OFF rarely populates the vitamin fields for packaged products, but
+    // when it does they're grams — convert to the mg/mcg public.foods uses.
+    vita_rae_mcg: offGramsTo(n["vitamin-a_100g"], "mcg"),
+    vitc_mg: offGramsTo(n["vitamin-c_100g"], "mg"),
+    vitd_mcg: offGramsTo(n["vitamin-d_100g"], "mcg"),
+    vitb12_mcg: offGramsTo(n["vitamin-b12_100g"], "mcg"),
+    folate_mcg: offGramsTo(n["folates_100g"], "mcg"),
+    calcium_mg: offGramsTo(n["calcium_100g"], "mg"),
+    iron_mg: offGramsTo(n["iron_100g"], "mg"),
+    zinc_mg: offGramsTo(n["zinc_100g"], "mg"),
+    magnesium_mg: offGramsTo(n["magnesium_100g"], "mg"),
+    potassium_mg: offGramsTo(n["potassium_100g"], "mg"),
+    sodium_mg: offGramsTo(n["sodium_100g"], "mg"),
     barcode,
     external_id: p.code,
     raw_data: {
@@ -3678,6 +3736,18 @@ async function fetchFromFatSecretBarcode(barcode, env) {
     protein_g: scaleVal(serving.protein),
     fat_g: scaleVal(serving.fat),
     carbs_g: scaleVal(serving.carbohydrate),
+    fiber_g: scaleVal(serving.fiber),
+    sodium_mg: scaleVal(serving.sodium),
+    potassium_mg: scaleVal(serving.potassium),
+    // FatSecret's classic serving object reports vitamin_a, vitamin_c,
+    // calcium, and iron as %DV strings (e.g. "10" meaning 10% of a daily
+    // value), not absolute mg/mcg amounts — unlike fiber/sodium/potassium
+    // above, which are genuine absolute values. Converting a %DV to mg/mcg
+    // needs a reference DV that isn't given in the response and varies by
+    // regulatory region, so rather than guess (and risk a wrong number in
+    // a clinical nutrition tool) these are left null for FatSecret-sourced
+    // foods. USDA and Open Food Facts both give absolute values and are
+    // populated normally.
     barcode,
     external_id: food.food_id,
     raw_data: {
@@ -3687,6 +3757,10 @@ async function fetchFromFatSecretBarcode(barcode, env) {
       food_url: food.food_url ?? null,
       serving_basis: `${serving.metric_serving_amount}${serving.metric_serving_unit}`,
       scaled_to_100: scale !== 1,
+      vitamin_a_pct_dv: serving.vitamin_a ?? null,
+      vitamin_c_pct_dv: serving.vitamin_c ?? null,
+      calcium_pct_dv: serving.calcium ?? null,
+      iron_pct_dv: serving.iron ?? null,
     },
   });
 }
@@ -5241,7 +5315,7 @@ function handleRoot(env) {
         "GET  /foods?search=...&category=...  → list/search results are trimmed to identity + amount (measure/weight_g) + energy + macros + micros (see FOODS_SEARCH_FIELDS); GET /foods/:id still returns the full row incl. mfct_code/moisture_g/etc.",
         "GET  /foods?with_servings=true",
         "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
-        "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above",
+        "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
         "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
