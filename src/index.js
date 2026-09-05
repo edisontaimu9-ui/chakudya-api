@@ -2588,7 +2588,7 @@ const CONDITION_EVALUATORS = {
   pregnancy: (ctx) => evaluatePregnancy(ctx.totalNutrients, ctx.age),
   paediatric: (ctx) => evaluatePaediatric(ctx.totalNutrients, ctx.age, ctx.sex),
   anaemia: (ctx) => evaluateAnaemia(ctx.totalNutrients, ctx.age, ctx.sex),
-  food_allergy: (ctx) => evaluateFoodAllergy(ctx.resolvedIngredients, ctx.allergens),
+  food_allergy: (ctx) => evaluateFoodAllergy(ctx.resolvedIngredients, ctx.unresolvedIngredients, ctx.allergens),
 };
 
 // ── Adequacy screening (pregnancy / paediatric / anaemia) ──────────────────
@@ -2760,18 +2760,25 @@ const ALLERGEN_KEYWORDS = {
   sesame: ["sesame", "tahini"],
 };
 
-function evaluateFoodAllergy(resolvedIngredients, allergens) {
+function evaluateFoodAllergy(resolvedIngredients, unresolvedIngredients, allergens) {
+  // Checks both — a food that failed to resolve (no nutrient match found)
+  // still has a name, and that name can still contain an allergen. Silently
+  // skipping unresolved ingredients here would be a real safety gap, not
+  // just a data gap, so they're scanned by name and called out separately
+  // in the reason when they're the only match.
+  const namedItems = [
+    ...(resolvedIngredients || []).map((ing) => ({ name: ing.food_name, resolved: true })),
+    ...(unresolvedIngredients || []).map((ing) => ({ name: ing.input?.food_name || ing.input?.food_id, resolved: false })),
+  ].filter((i) => i.name);
+
   const results = [];
   for (const allergen of allergens) {
     const keywords = ALLERGEN_KEYWORDS[allergen] || [];
-    const matched = (resolvedIngredients || []).filter((ing) => {
-      const name = (ing.food_name || "").toLowerCase();
-      return keywords.some((kw) => name.includes(kw));
-    });
+    const matched = namedItems.filter((item) => keywords.some((kw) => String(item.name).toLowerCase().includes(kw)));
     results.push({
       allergen,
       detected: matched.length > 0,
-      matched_ingredients: matched.map((m) => m.food_name),
+      matched_ingredients: matched.map((m) => (m.resolved ? m.name : `${m.name} (unresolved — nutrient data unavailable, matched by name only)`)),
     });
   }
 
@@ -2781,6 +2788,9 @@ function evaluateFoodAllergy(resolvedIngredients, allergens) {
       ? `${r.allergen}: detected in ${r.matched_ingredients.join(", ")}.`
       : `${r.allergen}: not detected by name in this meal's ingredients.`
   );
+  if ((unresolvedIngredients || []).length) {
+    reasons.push(`${unresolvedIngredients.length} ingredient(s) didn't resolve to a nutrient match but were still checked by name for allergens.`);
+  }
 
   return {
     condition: "food_allergy",
@@ -2920,6 +2930,7 @@ async function handleMealsAnalyze(request, db, env) {
     const ctx = {
       totalNutrients,
       resolvedIngredients,
+      unresolvedIngredients,
       age: payload.age,
       sex: payload.sex,
       allergens: payload.allergens,
