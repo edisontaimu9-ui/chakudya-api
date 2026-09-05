@@ -2,8 +2,16 @@
   "items": [
     {
       "food_name": "Maize stiff porridge (nsima), whole maize flour",
-      "match_keywords": ["nsima", "maize", "cornmeal", "corn meal", "stiff porridge"],
+      "match_keywords": [
+        "nsima",
+        "maize",
+        "cornmeal",
+        "corn meal",
+        "stiff porridge"
+      ],
       "gi_value": 94.06,
+      "gi_low": null,
+      "gi_high": null,
       "gi_category": "high",
       "gl_value": 47.03,
       "reference_carb_g": 50,
@@ -14,8 +22,17 @@
     },
     {
       "food_name": "Maize stiff porridge (nsima), maize grits",
-      "match_keywords": ["nsima", "maize", "cornmeal", "corn meal", "maize grits", "stiff porridge"],
+      "match_keywords": [
+        "nsima",
+        "maize",
+        "cornmeal",
+        "corn meal",
+        "maize grits",
+        "stiff porridge"
+      ],
       "gi_value": 109.64,
+      "gi_low": null,
+      "gi_high": null,
       "gi_category": "high",
       "gl_value": 54.82,
       "reference_carb_g": 50,
@@ -26,8 +43,17 @@
     },
     {
       "food_name": "Maize stiff porridge (nsima), fermented maize grits",
-      "match_keywords": ["nsima", "maize", "cornmeal", "corn meal", "fermented maize", "stiff porridge"],
+      "match_keywords": [
+        "nsima",
+        "maize",
+        "cornmeal",
+        "corn meal",
+        "fermented maize",
+        "stiff porridge"
+      ],
       "gi_value": 65.49,
+      "gi_low": null,
+      "gi_high": null,
       "gi_category": "medium",
       "gl_value": 32.75,
       "reference_carb_g": 50,
@@ -38,11 +64,16 @@
     },
     {
       "food_name": "White rice, boiled",
-      "match_keywords": ["rice", "white rice"],
+      "match_keywords": [
+        "rice",
+        "white rice"
+      ],
       "gi_value": 73,
       "gi_low": 65,
       "gi_high": 94,
       "gi_category": "high",
+      "gl_value": null,
+      "reference_carb_g": null,
       "population": "general/international",
       "method": "ISO 26642:2010",
       "source": "Atkinson FS, Brand-Miller JC, Foster-Powell K, Buyken AE, Goletzke J. 2021. \"International tables of glycemic index and glycemic load values 2021: a systematic review.\" Am J Clin Nutr 114(5):1625-1632.",
@@ -50,9 +81,15 @@
     },
     {
       "food_name": "Brown rice, boiled",
-      "match_keywords": ["brown rice"],
+      "match_keywords": [
+        "brown rice"
+      ],
       "gi_value": 68,
+      "gi_low": null,
+      "gi_high": null,
       "gi_category": "medium",
+      "gl_value": null,
+      "reference_carb_g": null,
       "population": "general/international",
       "method": "ISO 26642:2010",
       "source": "Atkinson FS, Brand-Miller JC, Foster-Powell K, Buyken AE, Goletzke J. 2021. \"International tables of glycemic index and glycemic load values 2021: a systematic review.\" Am J Clin Nutr 114(5):1625-1632.",
@@ -60,9 +97,17 @@
     },
     {
       "food_name": "Potato, white, boiled",
-      "match_keywords": ["potato", "irish potato", "white potato"],
+      "match_keywords": [
+        "potato",
+        "irish potato",
+        "white potato"
+      ],
       "gi_value": 73,
+      "gi_low": null,
+      "gi_high": null,
       "gi_category": "high",
+      "gl_value": null,
+      "reference_carb_g": null,
       "population": "general/international",
       "method": "ISO 26642:2010 (pooled)",
       "source": "Foster-Powell K, Holt SH, Brand-Miller JC. 2002. \"International table of glycemic index and glycemic load values.\" Am J Clin Nutr 76(1):5-56; updated in Atkinson et al. 2021 (as above).",
@@ -70,9 +115,16 @@
     },
     {
       "food_name": "Potato, white, mashed",
-      "match_keywords": ["mashed potato", "potato"],
+      "match_keywords": [
+        "mashed potato",
+        "potato"
+      ],
       "gi_value": 79,
+      "gi_low": null,
+      "gi_high": null,
       "gi_category": "high",
+      "gl_value": null,
+      "reference_carb_g": null,
       "population": "general/international (average across studies)",
       "method": "ISO 26642:2010 (pooled)",
       "source": "Atkinson FS, Brand-Miller JC, Foster-Powell K, Buyken AE, Goletzke J. 2021. \"International tables of glycemic index and glycemic load values 2021: a systematic review.\" Am J Clin Nutr 114(5):1625-1632.",
@@ -80,9 +132,15 @@
     },
     {
       "food_name": "Sweet potato, boiled",
-      "match_keywords": ["sweet potato"],
+      "match_keywords": [
+        "sweet potato"
+      ],
       "gi_value": 46,
+      "gi_low": null,
+      "gi_high": null,
       "gi_category": "low",
+      "gl_value": null,
+      "reference_carb_g": null,
       "population": "general/international",
       "method": "ISO 26642:2010 (pooled)",
       "source": "Foster-Powell K, Holt SH, Brand-Miller JC. 2002. \"International table of glycemic index and glycemic load values.\" Am J Clin Nutr 76(1):5-56; updated in Atkinson et al. 2021 (as above).",
@@ -90,10 +148,15 @@
     },
     {
       "food_name": "Cassava, boiled",
-      "match_keywords": ["cassava"],
+      "match_keywords": [
+        "cassava"
+      ],
+      "gi_value": null,
       "gi_low": 46,
       "gi_high": 94,
       "gi_category": "variable — insufficient consensus",
+      "gl_value": null,
+      "reference_carb_g": null,
       "population": "mixed (Kenya, general/international)",
       "method": "mixed — ISO and non-ISO studies pooled",
       "source": "International Tables of Glycemic Index Values (as compiled in Atkinson et al. 2021); British Journal of Nutrition (cassava, peeled/boiled/frozen/thawed/reheated, 94±11); regional study reporting boiled cassava with salt (Kenya) at 46.",
