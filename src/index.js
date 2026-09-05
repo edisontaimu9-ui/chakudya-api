@@ -2052,10 +2052,67 @@ const CATEGORY_SERVING_DEFAULTS = {
 // /foods/lookup. Missing fields on a given food are simply skipped.
 const SERVING_SCALE_FIELDS = [
   "kcal", "energy_kcal", "kj", "protein_g", "carbs_g", "fat_g", "fiber_g",
+  "safa_g", "sugar_total_g",
   "vita_rae_mcg", "vitc_mg", "vitd_mcg", "vitb12_mcg", "folate_mcg",
   "calcium_mg", "iron_mg", "zinc_mg", "magnesium_mg", "potassium_mg",
   "sodium_mg", "iodine_mcg",
 ];
+
+// Human-readable names for the vitamins/minerals block on a nutrition
+// label (buildNutritionLabel below) — every micronutrient SERVING_SCALE_FIELDS
+// carries except sodium, which gets its own mandatory top-level field.
+const LABEL_MICRONUTRIENT_NAMES = {
+  vita_rae_mcg: "Vitamin A (mcg RAE)",
+  vitc_mg: "Vitamin C (mg)",
+  vitd_mcg: "Vitamin D (mcg)",
+  vitb12_mcg: "Vitamin B12 (mcg)",
+  folate_mcg: "Folate (mcg)",
+  calcium_mg: "Calcium (mg)",
+  iron_mg: "Iron (mg)",
+  zinc_mg: "Zinc (mg)",
+  magnesium_mg: "Magnesium (mg)",
+  potassium_mg: "Potassium (mg)",
+  iodine_mcg: "Iodine (mcg)",
+};
+
+/**
+ * Reshapes an already-scaled nutrients object (the `nutrients` field from a
+ * buildServingSizes() entry, or /recipes/calculate's nutrients_per_serving)
+ * into a standardized Codex-style nutrition label. Codex STAN 1-1985 (as
+ * amended) mandates energy, protein, available carbohydrate, fat, saturated
+ * fat, sodium, and total sugars; fibre and vitamins/minerals are included
+ * here too since producers generally want them shown even though Codex
+ * itself only requires them when a nutrition claim is made about them.
+ * `missing_fields` flags which mandatory values this food/recipe doesn't
+ * have data for yet, rather than silently rendering them blank.
+ */
+function buildNutritionLabel(nutrients, servingLabel, servingGrams) {
+  const vitaminsMinerals = {};
+  for (const [field, label] of Object.entries(LABEL_MICRONUTRIENT_NAMES)) {
+    if (nutrients[field] != null) vitaminsMinerals[label] = nutrients[field];
+  }
+
+  const label = {
+    serving_size: servingLabel,
+    serving_grams: servingGrams,
+    calories: nutrients.kcal ?? nutrients.energy_kcal ?? null,
+    total_fat_g: nutrients.fat_g ?? null,
+    saturated_fat_g: nutrients.safa_g ?? null,
+    carbohydrates_g: nutrients.carbs_g ?? null,
+    fiber_g: nutrients.fiber_g ?? null,
+    sugars_g: nutrients.sugar_total_g ?? null,
+    protein_g: nutrients.protein_g ?? null,
+    sodium_mg: nutrients.sodium_mg ?? null,
+    vitamins_minerals: vitaminsMinerals,
+    standard: "codex_stan_1-1985",
+  };
+
+  const mandatory = ["calories", "total_fat_g", "saturated_fat_g", "carbohydrates_g", "sugars_g", "protein_g", "sodium_mg"];
+  const missing = mandatory.filter((f) => label[f] == null);
+  if (missing.length) label.missing_fields = missing;
+
+  return label;
+}
 
 function roundServingVal(n) {
   return n == null || n === "" || isNaN(n) ? null : Math.round(Number(n) * 100) / 100;
@@ -2809,12 +2866,17 @@ async function handleRecipesCalculate(request, db, env) {
     nutrientsPerServing[field] = roundServingVal(value / servings);
   }
 
+  const gramsPerServing = roundServingVal(totalGrams / servings);
+
   return success({
     servings,
     total_grams: roundServingVal(totalGrams),
-    grams_per_serving: roundServingVal(totalGrams / servings),
+    grams_per_serving: gramsPerServing,
     total_nutrients: totalNutrients,
     nutrients_per_serving: nutrientsPerServing,
+    // Same Codex-style shape as GET /foods/:id/label, built from this
+    // recipe's own per-serving totals rather than a single food row.
+    nutrition_label: buildNutritionLabel(nutrientsPerServing, `1 serving (${gramsPerServing}g)`, gramsPerServing),
     ingredients: resolvedIngredients,
     unresolved_ingredients: unresolvedIngredients,
   });
@@ -5152,6 +5214,7 @@ function handleRoot(env) {
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
         "GET  /foods/compare?foods=nsima,rice,potatoes  (public, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
+        "GET  /foods/:id/label?serving=  (public, rate-limited, cached 1h) → standardized Codex STAN 1-1985 nutrition label (serving_size, calories, total_fat_g, saturated_fat_g, carbohydrates_g, fiber_g, sugars_g, protein_g, sodium_mg, vitamins_minerals) for one food; defaults to the most specific serving Serving-Size Intelligence has, ?serving= picks another by label text (e.g. ?serving=100g); missing_fields flags any mandatory value this food doesn't have data for; POST /recipes/calculate returns the same shape as nutrition_label for a whole recipe",
         "POST /foods            (admin)",
         "POST /foods/bulk       (admin) → body {items:[...]}, max 500, batch insert in one request",
         "PUT  /foods/:id        (admin)",
@@ -5283,6 +5346,38 @@ async function handleFoodsLookup(request, url, db, env) {
     source: result.source,
     cached: result.cached,
     freshly_cached: !!result.freshly_cached,
+  });
+}
+
+/**
+ * GET /foods/:id/label?serving=<label substring>
+ * Standardized Codex-style nutrition label for one food. Defaults to the
+ * most specific serving Serving-Size Intelligence has for this food (tier
+ * 1/2/3 — see buildServingSizes); pass ?serving= to match a different one
+ * by (partial, case-insensitive) label text, e.g. ?serving=100g for the raw
+ * per-100g reference basis. `alternate_servings` lists the others so a
+ * caller can offer a picker without a second request.
+ */
+async function handleFoodsLabel(request, url, db, id) {
+  if (request.method !== "GET") return err("Only GET is supported for /foods/:id/label", 405);
+
+  const { ok, status, body } = await db.selectOne("foods", id);
+  if (status === 404) return notFound("Food");
+  if (!ok) return err(body?.message || "Query failed", status);
+
+  const servingSizes = buildServingSizes(body);
+  if (!servingSizes.length) return err("No serving-size data available to build a label from", 422);
+
+  const requested = (url.searchParams.get("serving") || "").toLowerCase();
+  const chosen = (requested && servingSizes.find((s) => s.label.toLowerCase().includes(requested))) || servingSizes[0];
+
+  const label = buildNutritionLabel(chosen.nutrients, chosen.label, chosen.grams);
+
+  return success(label, {
+    food_id: body.id,
+    food_name: body.food_name,
+    serving_source: chosen.source,
+    alternate_servings: servingSizes.filter((s) => s !== chosen).map(({ label, grams, source }) => ({ label, grams, source })),
   });
 }
 
@@ -6113,6 +6208,9 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "bulk") {
         if (request.method !== "POST") return err("Method not allowed", 405);
         return await handleBulkInsert(request, db, "foods", { requiredField: "food_name", label: "foods" });
+      }
+      if (param && action === "label") {
+        return await handleFoodsLabel(request, url, db, param);
       }
       const id = param || null;
       return await handleFoods(request, url, db, id);
