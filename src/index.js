@@ -2483,7 +2483,7 @@ const CORE_FOOD_GROUPS = ["Grains", "Legumes", "Protein", "Vegetables", "Fruits"
 //     the flag here is "this meal's protein/potassium looks high relative to
 //     a *typical* restricted diet", not a per-patient verdict.
 
-const CLINICAL_CONDITIONS = ["diabetes", "hypertension", "kidney_disease"];
+const CLINICAL_CONDITIONS = ["diabetes", "hypertension", "kidney_disease", "pregnancy", "paediatric", "anaemia", "food_allergy"];
 
 // Three-tier flag from a single nutrient value against caution/avoid
 // cutoffs — null propagates (missing data means "can't say", not "fine").
@@ -2582,14 +2582,217 @@ function evaluateKidneyDisease(totalNutrients) {
 }
 
 const CONDITION_EVALUATORS = {
-  diabetes: evaluateDiabetes,
-  hypertension: evaluateHypertension,
-  kidney_disease: evaluateKidneyDisease,
+  diabetes: (ctx) => evaluateDiabetes(ctx.totalNutrients),
+  hypertension: (ctx) => evaluateHypertension(ctx.totalNutrients),
+  kidney_disease: (ctx) => evaluateKidneyDisease(ctx.totalNutrients),
+  pregnancy: (ctx) => evaluatePregnancy(ctx.totalNutrients, ctx.age),
+  paediatric: (ctx) => evaluatePaediatric(ctx.totalNutrients, ctx.age, ctx.sex),
+  anaemia: (ctx) => evaluateAnaemia(ctx.totalNutrients, ctx.age, ctx.sex),
+  food_allergy: (ctx) => evaluateFoodAllergy(ctx.resolvedIngredients, ctx.allergens),
 };
+
+// ── Adequacy screening (pregnancy / paediatric / anaemia) ──────────────────
+//
+// Different shape from the diabetes/hypertension/kidney-disease flags above:
+// those ask "is this meal too much of something", these ask "does this meal
+// meaningfully contribute toward a nutrient the person needs more of" — so
+// they get their own three-tier vocabulary (good/low/very_low) rather than
+// reusing appropriate/caution/avoid, which would misleadingly imply a low-X
+// meal is somehow unsafe rather than just not a big contributor.
+//
+// All three reuse Chakudya's own DRI system (src/dri_data.js — the same
+// data GET /dri and POST /dri/compare already serve) rather than
+// hand-picked numbers, so "per-meal share" here is always the actual
+// NASEM/IOM RDA/AI for the resolved life stage, divided evenly across 3
+// meals/day. That "÷3" is a simplification — real days include snacks, and
+// prenatal/paediatric vitamins aren't accounted for at all — spelled out in
+// each flag's `note` rather than presented as a precise daily read.
+
+function adequacyLevel(percentOfPerMealShare) {
+  if (percentOfPerMealShare == null) return null;
+  if (percentOfPerMealShare >= 80) return "good";
+  if (percentOfPerMealShare >= 40) return "low";
+  return "very_low";
+}
+
+const ADEQUACY_RANK = { very_low: 0, low: 1, good: 2 };
+
+/** Shared per-nutrient adequacy check against a resolved DRI life stage's RDA/AI, split 3 ways. */
+function checkAdequacy(totalNutrients, stage, nutrientKeys) {
+  const nutrientMap = DRI_VALUES[stage.code] || {};
+  const reasons = [];
+  const levels = [];
+
+  for (const key of nutrientKeys) {
+    const meta = DRI_NUTRIENT_META[key];
+    const values = nutrientMap[key];
+    const target = values?.rda ?? values?.ai ?? null;
+    if (target == null) {
+      reasons.push(`No RDA/AI established for ${meta?.label || key} at this life stage — skipped.`);
+      continue;
+    }
+    const perMealShare = target / 3;
+    const amount = totalNutrients[key] ?? 0;
+    const percent = perMealShare > 0 ? roundServingVal((amount / perMealShare) * 100) : null;
+    const level = adequacyLevel(percent);
+    if (level) levels.push(level);
+    reasons.push(
+      `${meta?.label || key}: ${roundServingVal(amount)}${(meta?.unit || "").replace("/d", "")} — ${percent}% of a per-meal share of the ${stage.label} target (${target}${meta?.unit || ""} ÷ 3 meals/day).`
+    );
+  }
+
+  const overall = levels.length ? levels.reduce((worst, l) => (ADEQUACY_RANK[l] < ADEQUACY_RANK[worst] ? l : worst)) : null;
+  return { overall, reasons };
+}
+
+function evaluatePregnancy(totalNutrients, ageInput) {
+  const assumedAge = ageInput == null;
+  const age = assumedAge ? 24 : Number(ageInput);
+  const stage = resolveDriLifeStage(age, "female", "pregnancy");
+  if (!stage) {
+    return {
+      condition: "pregnancy",
+      flag: null,
+      reasons: [`Could not resolve a pregnancy DRI life stage for age ${age} — pregnancy DRI values are only defined from age 14 up.`],
+      note: "Pass 'age' (14+) in the request body for an age-matched life stage.",
+    };
+  }
+
+  const { overall, reasons } = checkAdequacy(totalNutrients, stage, ["iron_mg", "folate_mcg", "calcium_mg", "protein_g"]);
+  if (assumedAge) reasons.unshift(`No 'age' supplied — assumed ${age} (${stage.label}); pass 'age' for a precise match.`);
+
+  return {
+    condition: "pregnancy",
+    flag: overall,
+    reasons,
+    note: "Screens this one meal's contribution toward iron/folate/calcium/protein needs in pregnancy, evenly split across 3 meals/day — a single low-scoring meal isn't itself a problem if the rest of the day makes up for it, and this doesn't account for prenatal vitamin supplementation, which covers most of the gap in practice.",
+  };
+}
+
+function evaluatePaediatric(totalNutrients, ageInput, sexInput) {
+  if (ageInput == null) {
+    return {
+      condition: "paediatric",
+      flag: null,
+      reasons: ["'age' is required for paediatric screening — nutrient needs vary hugely between a toddler and a teenager."],
+      note: "Pass 'age' (years) — and 'sex' ('male'/'female') for age 9 and up — in the request body.",
+    };
+  }
+  const age = Number(ageInput);
+  if (age >= 18) {
+    return {
+      condition: "paediatric",
+      flag: null,
+      reasons: [`Paediatric screening covers ages under 18 — for age ${age}, use GET/POST /dri directly for adult reference values.`],
+      note: "Not applicable at this age.",
+    };
+  }
+  const stage = resolveDriLifeStage(age, sexInput, "normal");
+  if (!stage) {
+    return {
+      condition: "paediatric",
+      flag: null,
+      reasons: [`Could not resolve a life stage for age ${age}${sexInput ? `, sex ${sexInput}` : ""} — for ages 9 and up, 'sex' ('male' or 'female') is required.`],
+      note: "Pass 'sex' in the request body.",
+    };
+  }
+
+  const { overall, reasons } = checkAdequacy(totalNutrients, stage, ["protein_g", "iron_mg", "calcium_mg", "vitd_mcg"]);
+
+  return {
+    condition: "paediatric",
+    flag: overall,
+    reasons,
+    note: `Screens this one meal against ${stage.label} targets (protein/iron/calcium/vitamin D), evenly split across 3 meals/day — younger children often eat smaller, more frequent meals plus snacks, so treat this as a rough share rather than a strict per-meal rule.`,
+  };
+}
+
+function evaluateAnaemia(totalNutrients, ageInput, sexInput) {
+  const assumedSex = !sexInput;
+  const sex = sexInput === "male" ? "male" : "female"; // default to the higher (female) iron requirement — the more sensitive assumption when sex isn't given
+  const assumedAge = ageInput == null;
+  const age = assumedAge ? 30 : Number(ageInput);
+  const stage = resolveDriLifeStage(age, sex, "normal") || resolveDriLifeStage(30, sex, "normal");
+
+  const { overall, reasons } = checkAdequacy(totalNutrients, stage, ["iron_mg", "vitb12_mcg", "folate_mcg"]);
+  if (assumedAge || assumedSex) {
+    reasons.unshift(
+      `${assumedSex ? "No 'sex' supplied — assumed female (higher iron requirement)." : ""}${assumedSex && assumedAge ? " " : ""}${assumedAge ? `No 'age' supplied — assumed ${age} (${stage.label}).` : ""}`.trim()
+    );
+  }
+
+  const vitc = totalNutrients.vitc_mg ?? null;
+  const iron = totalNutrients.iron_mg ?? null;
+  if (iron != null && iron > 0) {
+    reasons.push(
+      vitc != null && vitc >= 20
+        ? `${roundServingVal(vitc)}mg vitamin C alongside the iron helps non-heme iron absorption.`
+        : "No meaningful vitamin C in this meal — pairing iron-rich foods with a vitamin-C source (citrus, tomato, etc.) improves non-heme iron absorption."
+    );
+  }
+
+  return {
+    condition: "anaemia",
+    flag: overall,
+    reasons,
+    note: "Anaemia has multiple causes (iron deficiency is the most diet-modifiable, but B12/folate deficiency, chronic disease, and other non-dietary causes also apply) — this only screens one meal's iron/B12/folate contribution against standard adult DRI values. Not a diagnosis, and doesn't replace a CBC/ferritin workup.",
+  };
+}
+
+// ── Food allergy screening ──────────────────────────────────────────────────
+//
+// No allergen-tag column exists on `foods`/`packaged_foods` yet (see the
+// gap called out in /drug-interactions' kidney-disease note's sibling
+// discussion), so this is a best-effort keyword match against each resolved
+// ingredient's food_name — not a verified allergen database. It will miss
+// allergens hidden inside a composite/packaged product's actual ingredient
+// list and can't catch cross-contamination.
+
+const ALLERGEN_KEYWORDS = {
+  peanut: ["peanut", "peanuts", "groundnut", "groundnuts"],
+  tree_nut: ["cashew", "almond", "walnut", "pecan", "pistachio", "hazelnut", "macadamia"],
+  dairy: ["milk", "cheese", "yogurt", "yoghurt", "butter", "cream", "whey", "casein", "ghee"],
+  egg: ["egg", "eggs", "mayonnaise"],
+  soy: ["soy", "soya", "soybean", "tofu"],
+  wheat_gluten: ["wheat", "flour", "bread", "pasta", "macaroni", "semolina", "barley", "rye", "gluten"],
+  fish: ["fish", "tuna", "salmon", "sardine", "chambo", "usipa", "kapenta", "mackerel", "tilapia"],
+  shellfish: ["shrimp", "prawn", "crab", "lobster", "crayfish", "mussel", "oyster", "clam", "squid", "calamari"],
+  sesame: ["sesame", "tahini"],
+};
+
+function evaluateFoodAllergy(resolvedIngredients, allergens) {
+  const results = [];
+  for (const allergen of allergens) {
+    const keywords = ALLERGEN_KEYWORDS[allergen] || [];
+    const matched = (resolvedIngredients || []).filter((ing) => {
+      const name = (ing.food_name || "").toLowerCase();
+      return keywords.some((kw) => name.includes(kw));
+    });
+    results.push({
+      allergen,
+      detected: matched.length > 0,
+      matched_ingredients: matched.map((m) => m.food_name),
+    });
+  }
+
+  const anyDetected = results.some((r) => r.detected);
+  const reasons = results.map((r) =>
+    r.detected
+      ? `${r.allergen}: detected in ${r.matched_ingredients.join(", ")}.`
+      : `${r.allergen}: not detected by name in this meal's ingredients.`
+  );
+
+  return {
+    condition: "food_allergy",
+    flag: anyDetected ? "avoid" : "appropriate",
+    reasons,
+    note: "Name-based keyword matching against ingredient names only — not a verified allergen database. Can't catch hidden allergens inside composite/packaged products, cross-contamination, or allergens outside the tracked list. Always check the product label directly for packaged foods.",
+  };
+}
 
 /**
  * POST /meals/analyze
- * Body: { meal_type?: string, ingredients: [{ food_id? | food_name, quantity, unit? }], daily_targets?: {kcal, protein_g, carbs_g, fat_g}, conditions?: string[] }
+ * Body: { meal_type?: string, ingredients: [{ food_id? | food_name, quantity, unit? }], daily_targets?: {kcal, protein_g, carbs_g, fat_g}, conditions?: string[], age?: number, sex?: "male"|"female", allergens?: string[] }
  * Same ingredient resolution as /recipes/calculate (resolveIngredientsList)
  * — no `servings` concept here, a meal is just eaten once. Adds:
  *   - macronutrient_breakdown: kcal from protein/carbs/fat (Atwater
@@ -2598,10 +2801,20 @@ const CONDITION_EVALUATORS = {
  *   - food_groups_present / food_groups_missing, from CORE_FOOD_GROUPS.
  *   - daily_target_comparison: only included if the caller supplies
  *     `daily_targets` — this endpoint never invents personalized targets.
- *   - clinical_flags: only included if the caller supplies `conditions`
- *     (subset of "diabetes", "hypertension", "kidney_disease") — per-meal
- *     screening flags, see CONDITION_EVALUATORS above. Screening, not a
- *     diagnosis or a personalized prescription.
+ *   - clinical_flags: only included if the caller supplies `conditions`,
+ *     any subset of:
+ *       "diabetes" | "hypertension" | "kidney_disease" — excess-focused
+ *         (appropriate/caution/avoid), meal-level thresholds only.
+ *       "pregnancy" | "paediatric" | "anaemia" — adequacy-focused
+ *         (good/low/very_low), driven by Chakudya's own DRI system
+ *         (src/dri_data.js). Optional shared `age`/`sex` fields narrow the
+ *         life stage used; `paediatric` requires `age` (and `sex` for 9+).
+ *       "food_allergy" — requires an `allergens` array (see
+ *         ALLERGEN_KEYWORDS for the supported list); name-based keyword
+ *         match against resolved ingredient names, not a verified
+ *         allergen database.
+ *     See CONDITION_EVALUATORS above. Screening, not a diagnosis or a
+ *     personalized prescription.
  * Purely additive/computational — writes nothing, no auth required.
  */
 async function handleMealsAnalyze(request, db, env) {
@@ -2620,6 +2833,16 @@ async function handleMealsAnalyze(request, db, env) {
       return err(`Unknown condition(s): ${invalid.join(", ")} — supported: ${CLINICAL_CONDITIONS.join(", ")}`);
     }
     requestedConditions = [...new Set(payload.conditions)];
+  }
+
+  if (requestedConditions.includes("food_allergy")) {
+    if (!Array.isArray(payload.allergens) || !payload.allergens.length) {
+      return err(`'allergens' array is required when 'conditions' includes 'food_allergy' — supported: ${Object.keys(ALLERGEN_KEYWORDS).join(", ")}`);
+    }
+    const invalidAllergens = payload.allergens.filter((a) => !ALLERGEN_KEYWORDS[a]);
+    if (invalidAllergens.length) {
+      return err(`Unknown allergen(s): ${invalidAllergens.join(", ")} — supported: ${Object.keys(ALLERGEN_KEYWORDS).join(", ")}`);
+    }
   }
 
   const { resolvedIngredients, unresolvedIngredients } = await resolveIngredientsList(payload.ingredients, db, env);
@@ -2694,7 +2917,14 @@ async function handleMealsAnalyze(request, db, env) {
   }
 
   if (requestedConditions.length) {
-    result.clinical_flags = requestedConditions.map((c) => CONDITION_EVALUATORS[c](totalNutrients));
+    const ctx = {
+      totalNutrients,
+      resolvedIngredients,
+      age: payload.age,
+      sex: payload.sex,
+      allergens: payload.allergens,
+    };
+    result.clinical_flags = requestedConditions.map((c) => CONDITION_EVALUATORS[c](ctx));
   }
 
   return success(result);
