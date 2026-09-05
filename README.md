@@ -307,7 +307,8 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index` | ✅ | 1 hour |
+| `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
 | `GET /foods/categories` | ✅ | 24 hours |
@@ -486,8 +487,8 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 
 ## Bulk insert
 
-`POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`, and
-`/drug-interactions/bulk` *(all admin)* accept a batch
+`POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
+`/drug-interactions/bulk`, and `/glycaemic-index/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
 
@@ -508,10 +509,14 @@ curl -X POST https://your-worker-url/foods/bulk \
 ```
 
 - Max **500 items** per request — split larger loads into multiple calls.
-- `food_name` is required on every item for `/foods/bulk` (mirrors the
-  single-row `POST /foods` validation), `drug` for `/drug-interactions/bulk`;
-  the other four resources have no required-field check beyond a non-empty
-  array, matching their single-row endpoints today.
+- `food_name` is required on every item for `/foods/bulk` and
+  `/glycaemic-index/bulk` (mirrors each resource's single-row `POST`
+  validation), `drug` for `/drug-interactions/bulk`; the other three
+  resources have no required-field check beyond a non-empty array, matching
+  their single-row endpoints today. Note `/glycaemic-index/bulk` does *not*
+  enforce `match_keywords`/`source` per-item the way the single-row `POST`
+  does — a bulk seed file with a missing citation will insert silently, so
+  check your seed JSON before running it.
 - **All-or-nothing:** this is one PostgREST batch insert, not N sequential
   inserts. If any row in the batch violates a constraint (e.g. a duplicate
   unique key), the *entire* batch is rejected and nothing is inserted —
@@ -609,6 +614,53 @@ The grouping deliberately overrides the plain category taxonomy where it matters
 `classifyCategory`'s keyword list includes common Lake Malawi fish names (chambo, usipa, kapenta, matemba, mbaba, chisawasawa, ntchila) specifically so they classify as `Protein` and turn up as substitutes/candidates — without that, a food named "Chambo, grilled" would silently fall through both classification and the keyword-based candidate search, since it doesn't contain the word "fish".
 
 Ranking is a single primary nutrient's closeness, not a full dietary-equivalence judgment — it doesn't know about cost, local availability, taste, or realistic portion size, and every candidate's full `comparison_vs_original` (kcal/protein/carbs/fat/iron/calcium) is included precisely so a clinician or cook can see *how* it differs, not just that it's "close".
+
+**`GET /foods/compare?foods=nsima,rice,potatoes`** *(public, rate-limited, cached 1h)* — Nutrient Comparison: lines up 2-6 foods side by side. Resolves each name the same way `/foods/substitutes` does (local match, falling back to the external lookup cascade), then returns per-100g energy, protein, carbohydrate, fiber, fat, and the full micronutrient panel for each — plus `nutrient_comparison`, the same fields pivoted per-nutrient with the highest/lowest food flagged, so "which has more iron" doesn't need re-deriving client-side.
+
+Glycaemic considerations are included **only where a published, sourced value exists** — nothing is estimated or guessed. Each food gets either a `glycaemic.entries[]` (measured GI/GL with citation, from the `glycaemic_index_data` reference table — see below) or `glycaemic: null` plus a clearly-labelled `glycaemic_note` heuristic (fiber-to-carbohydrate ratio only, explicitly not presented as a GI value).
+
+```json
+GET /foods/compare?foods=nsima,rice,potatoes
+{
+  "status": "success",
+  "data": {
+    "foods": [
+      {
+        "requested_as": "nsima", "food_name": "Nsima (thick, maize)", "matched_source": "local", "category": "Grains",
+        "per_100g": { "energy_kcal": 130, "protein_g": 2.8, "carbs_g": 28.6, "fiber_g": 1.2, "...": "..." },
+        "glycaemic": {
+          "entries": [
+            { "matched_as": "Maize stiff porridge (nsima), whole maize flour", "gi_value": 94.06, "gl_value": 47.03, "gi_category": "high", "source": "Mlotha V, et al. 2016...", "...": "..." },
+            { "matched_as": "Maize stiff porridge (nsima), fermented maize grits", "gi_value": 65.49, "gl_value": 32.75, "gi_category": "medium", "source": "Mlotha V, et al. 2016...", "...": "..." }
+          ]
+        },
+        "glycaemic_note": "Measured GI/GL from published sources — see entries[].source. Multiple entries mean multiple processing methods/studies exist..."
+      },
+      { "requested_as": "rice", "food_name": "Rice, white, cooked", "...": "...", "glycaemic": { "entries": [{ "gi_value": 73, "source": "Atkinson et al. 2021", "...": "..." }] } },
+      { "requested_as": "potatoes", "food_name": "Potato, Irish, boiled", "...": "...", "glycaemic": null, "glycaemic_note": "No published GI/GL data on file for this food... Fiber is low relative to carbohydrate..." }
+    ],
+    "nutrient_comparison": {
+      "protein_g": { "label": "Protein (g)", "values": { "Nsima (thick, maize)": 2.8, "Rice, white, cooked": 2.7, "Potato, Irish, boiled": 2.0 }, "highest": "Nsima (thick, maize)", "lowest": "Potato, Irish, boiled" },
+      "...": "..."
+    },
+    "note": "Values are per 100g... Glycaemic figures are only shown where a published, sourced value exists..."
+  }
+}
+```
+
+Note the Malawi-specific nsima entries above come from an actual local study (Mlotha et al. 2016) that tested three processing variants (whole maize flour, maize grits, fermented maize grits) — all three surface if `foods=nsima` matches, since which one applies depends on how it was actually milled/prepared, not something CNR can infer from a food name alone.
+
+### Glycaemic Index / Load Reference (`/glycaemic-index`)
+
+Standalone reference table backing the `glycaemic` block on `GET /foods/compare` (see [`sql/004_add_glycaemic_index.sql`](sql/004_add_glycaemic_index.sql)). Kept separate from `foods` because GI/GL is measured per specific preparation/variety and rarely lines up 1:1 with an FCT row — rows are matched to a food name by keyword (`match_keywords`, e.g. `["nsima", "maize", "cornmeal"]`) at query time instead of a foreign key.
+
+- `GET /glycaemic-index` — `search` (matches `food_name`), standard pagination
+- `GET /glycaemic-index/:id`
+- `POST /glycaemic-index` *(admin)* — requires `food_name`, `match_keywords` (non-empty array), and `source` (citation) — GI/GL values are never accepted without a traceable source
+- `POST /glycaemic-index/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/glycaemic_index_seed.json`](scripts/glycaemic_index_seed.json)
+- `PUT` / `PATCH` / `DELETE /glycaemic-index/:id` *(admin)*
+
+The bundled seed covers Malawi's three nsima processing variants (Mlotha et al. 2016 — the only Malawi-specific GI study found), white/brown rice, boiled/mashed potato, boiled sweet potato, and cassava (flagged as high-variance/no regional consensus rather than given a single confident number). Extend it the same way as `drug_nutrient_interactions_seed.json` — add rows with a real citation, then `POST /glycaemic-index/bulk`.
 
 ### Recipes
 

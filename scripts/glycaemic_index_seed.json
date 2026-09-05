@@ -1,0 +1,103 @@
+{
+  "items": [
+    {
+      "food_name": "Maize stiff porridge (nsima), whole maize flour",
+      "match_keywords": ["nsima", "maize", "cornmeal", "corn meal", "stiff porridge"],
+      "gi_value": 94.06,
+      "gi_category": "high",
+      "gl_value": 47.03,
+      "reference_carb_g": 50,
+      "population": "Malawi",
+      "method": "non-ISO (11 healthy adult volunteers, glucose reference, 3-week protocol)",
+      "source": "Mlotha V, et al. 2016. \"Glycemic responses to maize flour stiff porridges prepared using local recipes in Malawi.\" Food Science & Nutrition. DOI: 10.1002/fsn3.293",
+      "notes": "Traditional whole-maize-flour nsima as consumed in Malawi. High GI attributed to traditional processing, preparation, and cooking methods."
+    },
+    {
+      "food_name": "Maize stiff porridge (nsima), maize grits",
+      "match_keywords": ["nsima", "maize", "cornmeal", "corn meal", "maize grits", "stiff porridge"],
+      "gi_value": 109.64,
+      "gi_category": "high",
+      "gl_value": 54.82,
+      "reference_carb_g": 50,
+      "population": "Malawi",
+      "method": "non-ISO (11 healthy adult volunteers, glucose reference, 3-week protocol)",
+      "source": "Mlotha V, et al. 2016. \"Glycemic responses to maize flour stiff porridges prepared using local recipes in Malawi.\" Food Science & Nutrition. DOI: 10.1002/fsn3.293",
+      "notes": "GI above the 100 glucose reference is possible with this test-food methodology and is reported as-is in the source; treat as 'very high' rather than a literal >100% comparison."
+    },
+    {
+      "food_name": "Maize stiff porridge (nsima), fermented maize grits",
+      "match_keywords": ["nsima", "maize", "cornmeal", "corn meal", "fermented maize", "stiff porridge"],
+      "gi_value": 65.49,
+      "gi_category": "medium",
+      "gl_value": 32.75,
+      "reference_carb_g": 50,
+      "population": "Malawi",
+      "method": "non-ISO (11 healthy adult volunteers, glucose reference, 3-week protocol)",
+      "source": "Mlotha V, et al. 2016. \"Glycemic responses to maize flour stiff porridges prepared using local recipes in Malawi.\" Food Science & Nutrition. DOI: 10.1002/fsn3.293",
+      "notes": "Lowest-GI nsima variant tested — fermentation before milling into grits moderated the glycaemic response relative to whole-flour or unfermented-grits nsima."
+    },
+    {
+      "food_name": "White rice, boiled",
+      "match_keywords": ["rice", "white rice"],
+      "gi_value": 73,
+      "gi_low": 65,
+      "gi_high": 94,
+      "gi_category": "high",
+      "population": "general/international",
+      "method": "ISO 26642:2010",
+      "source": "Atkinson FS, Brand-Miller JC, Foster-Powell K, Buyken AE, Goletzke J. 2021. \"International tables of glycemic index and glycemic load values 2021: a systematic review.\" Am J Clin Nutr 114(5):1625-1632.",
+      "notes": "73±4 is the ISO-standard point estimate; wide variety/region-dependent range (65-94) is well documented — jasmine and short-grain varieties trend higher, basmati and parboiled trend lower."
+    },
+    {
+      "food_name": "Brown rice, boiled",
+      "match_keywords": ["brown rice"],
+      "gi_value": 68,
+      "gi_category": "medium",
+      "population": "general/international",
+      "method": "ISO 26642:2010",
+      "source": "Atkinson FS, Brand-Miller JC, Foster-Powell K, Buyken AE, Goletzke J. 2021. \"International tables of glycemic index and glycemic load values 2021: a systematic review.\" Am J Clin Nutr 114(5):1625-1632.",
+      "notes": "68±4. Consistently lower than white rice across studies, attributed to intact bran/fiber slowing starch digestion."
+    },
+    {
+      "food_name": "Potato, white, boiled",
+      "match_keywords": ["potato", "irish potato", "white potato"],
+      "gi_value": 73,
+      "gi_category": "high",
+      "population": "general/international",
+      "method": "ISO 26642:2010 (pooled)",
+      "source": "Foster-Powell K, Holt SH, Brand-Miller JC. 2002. \"International table of glycemic index and glycemic load values.\" Am J Clin Nutr 76(1):5-56; updated in Atkinson et al. 2021 (as above).",
+      "notes": "Potato GI varies widely by variety, cooking method, and whether served hot or cooled (cooked-and-cooled potato can drop to ~49 due to resistant starch formation)."
+    },
+    {
+      "food_name": "Potato, white, mashed",
+      "match_keywords": ["mashed potato", "potato"],
+      "gi_value": 79,
+      "gi_category": "high",
+      "population": "general/international (average across studies)",
+      "method": "ISO 26642:2010 (pooled)",
+      "source": "Atkinson FS, Brand-Miller JC, Foster-Powell K, Buyken AE, Goletzke J. 2021. \"International tables of glycemic index and glycemic load values 2021: a systematic review.\" Am J Clin Nutr 114(5):1625-1632.",
+      "notes": "Mashing/instant preparation raises GI further versus plain boiled — instant mashed potato averages higher still (~84)."
+    },
+    {
+      "food_name": "Sweet potato, boiled",
+      "match_keywords": ["sweet potato"],
+      "gi_value": 46,
+      "gi_category": "low",
+      "population": "general/international",
+      "method": "ISO 26642:2010 (pooled)",
+      "source": "Foster-Powell K, Holt SH, Brand-Miller JC. 2002. \"International table of glycemic index and glycemic load values.\" Am J Clin Nutr 76(1):5-56; updated in Atkinson et al. 2021 (as above).",
+      "notes": "Cooking method matters a lot here: baked or roasted sweet potato is reported considerably higher (~86-88) than boiled."
+    },
+    {
+      "food_name": "Cassava, boiled",
+      "match_keywords": ["cassava"],
+      "gi_low": 46,
+      "gi_high": 94,
+      "gi_category": "variable — insufficient consensus",
+      "population": "mixed (Kenya, general/international)",
+      "method": "mixed — ISO and non-ISO studies pooled",
+      "source": "International Tables of Glycemic Index Values (as compiled in Atkinson et al. 2021); British Journal of Nutrition (cassava, peeled/boiled/frozen/thawed/reheated, 94±11); regional study reporting boiled cassava with salt (Kenya) at 46.",
+      "notes": "No Malawi-specific cassava GI study found. Published values swing from low to very high depending on variety, cooking method, and whether the sample was frozen/reheated — treat any single number for cassava with real caution until a Malawi/regional study exists."
+    }
+  ]
+}

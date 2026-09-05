@@ -371,7 +371,7 @@ import {
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.24.0";
+const CNR_VERSION = "1.25.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -548,8 +548,8 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "substitutes") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas"].includes(resource) && param !== "lookup") {
-    return { ttl: 3600 }; // 1 hour — static reference data
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index"].includes(resource) && param !== "lookup") {
+    return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
     return { ttl: 1800 }; // 30 min — external lookups, already deduped server-side
@@ -662,12 +662,13 @@ function routePolicy(resource, method, param, action) {
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
   const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
   const isFoodSubstitutes = resource === "foods" && param === "substitutes" && method === "GET";
+  const isFoodsCompare = resource === "foods" && param === "compare" && method === "GET";
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -842,6 +843,13 @@ function routePolicy(resource, method, param, action) {
   // scans above.
   if (isFoodSubstitutes) {
     return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Nutrient comparison — resolves 2-6 foods per request, each potentially
+  // falling back to the external lookup cascade, plus a small reference-
+  // table read. Same cost class as substitutes.
+  if (isFoodsCompare) {
+    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/drug-interactions/packaged CRUD): admin only.
@@ -1731,6 +1739,240 @@ async function handleFoodSubstitutes(request, url, db, env) {
     substitutes: ranked,
     note: "Values are per 100g (Malawi FCT convention). Ranked purely on nutritional closeness within a Malawi-relevant substitution group — doesn't know about cost, local availability, taste, or portion size, and 'closeness' is a single primary nutrient, not a full dietary equivalence.",
   });
+}
+
+// ─── NUTRIENT COMPARISON (GET /foods/compare) ──────────────────────────────
+//
+// "Compare nsima vs rice vs potatoes" — resolves 2-6 foods the same way
+// /foods/substitutes does (local ilike + pickBestFoodMatch, falling back to
+// the external lookup cascade), then lines them up side by side across
+// energy/macros/fiber/full micronutrient panel plus, where data exists,
+// published glycaemic index/load figures from `glycaemic_index_data`.
+//
+// GI/GL is NEVER estimated or guessed here — CNR has no way to measure it
+// and un-sourced numbers would be actively dangerous in a clinical tool.
+// A food only gets a `glycaemic` block if a matching row exists in
+// glycaemic_index_data (see matchGlycaemicIndexRows below); otherwise it
+// gets `glycaemic: null` plus a fiber/carb-ratio *qualitative* note that is
+// explicitly labelled as a heuristic, never presented as a GI value.
+
+const COMPARE_MACRO_FIELDS = ["kcal", "energy_kcal", "protein_g", "carbs_g", "fiber_g", "fat_g"];
+const COMPARE_MICRONUTRIENT_FIELDS = [
+  "vita_rae_mcg", "vitc_mg", "vitd_mcg", "vitb12_mcg", "folate_mcg",
+  "calcium_mg", "iron_mg", "zinc_mg", "magnesium_mg", "potassium_mg",
+  "sodium_mg", "iodine_mcg",
+];
+const COMPARE_NUTRIENT_LABELS = {
+  kcal: "Energy (kcal)", energy_kcal: "Energy (kcal)", protein_g: "Protein (g)",
+  carbs_g: "Carbohydrate (g)", fiber_g: "Fiber (g)", fat_g: "Fat (g)",
+  vita_rae_mcg: "Vitamin A (µg RAE)", vitc_mg: "Vitamin C (mg)", vitd_mcg: "Vitamin D (µg)",
+  vitb12_mcg: "Vitamin B12 (µg)", folate_mcg: "Folate (µg)", calcium_mg: "Calcium (mg)",
+  iron_mg: "Iron (mg)", zinc_mg: "Zinc (mg)", magnesium_mg: "Magnesium (mg)",
+  potassium_mg: "Potassium (mg)", sodium_mg: "Sodium (mg)", iodine_mcg: "Iodine (µg)",
+};
+
+/**
+ * Matches a resolved food's name against every glycaemic_index_data row's
+ * match_keywords (simple substring test, same spirit as classifyCategory).
+ * A food can legitimately match several rows (e.g. "nsima" matches all
+ * three maize-porridge processing variants) — that's returned as-is rather
+ * than collapsed to one number, since which processing method applies is
+ * exactly the kind of thing CNR can't know from a food name alone.
+ */
+function matchGlycaemicIndexRows(giRows, foodName) {
+  const name = (foodName || "").toLowerCase();
+  if (!name) return [];
+  return giRows.filter((row) =>
+    (row.match_keywords || []).some((kw) => kw && name.includes(String(kw).toLowerCase()))
+  );
+}
+
+/**
+ * Qualitative, non-numeric glycaemic note for a food with no matching
+ * glycaemic_index_data row. Deliberately mirrors the wording style of
+ * evaluateDiabetes's fiber/carb heuristic (see CONDITION_EVALUATORS above)
+ * but is clearly scoped as a heuristic, not a GI/GL substitute.
+ */
+function heuristicGlycaemicNote(carbs, fiber) {
+  if (carbs == null) return "No GI/GL data on file, and carbohydrate content is unknown, so no glycaemic comment can be made.";
+  if (carbs === 0) return "No GI/GL data on file, but this food carries no carbohydrate per 100g, so glycaemic impact is negligible.";
+  const base = "No published GI/GL data on file for this food (see /glycaemic-index for what is covered).";
+  if (fiber == null) return `${base} Fiber content is also unknown, so even a fiber-based heuristic isn't possible.`;
+  const ratio = fiber / carbs;
+  const heuristic =
+    ratio < 0.1
+      ? `Fiber is low relative to carbohydrate (${roundServingVal(fiber)}g fiber / ${roundServingVal(carbs)}g carb per 100g) — foods like this tend toward a faster glycaemic response, but this is a general heuristic, not a measured GI.`
+      : `Fiber is reasonable relative to carbohydrate (${roundServingVal(fiber)}g fiber / ${roundServingVal(carbs)}g carb per 100g), which tends to blunt glycaemic response — again, a heuristic, not a measured GI.`;
+  return `${base} ${heuristic}`;
+}
+
+/**
+ * GET /foods/compare?foods=nsima,rice,potatoes
+ * Resolves each comma-separated name (2-6 foods) the same way
+ * /foods/substitutes resolves a single one, then returns:
+ *  - foods[]: per-food per-100g energy/protein/carbs/fiber/fat/full
+ *    micronutrient panel, plus a `glycaemic` block (measured, sourced
+ *    GI/GL entries if any exist in glycaemic_index_data) or `null` with a
+ *    clearly-labelled fiber/carb heuristic note instead.
+ *  - nutrient_comparison: the same fields pivoted per-nutrient across all
+ *    resolved foods, with the highest/lowest food flagged for each —
+ *    convenient for "which has more X" without the caller re-deriving it.
+ * Purely computational plus one small reference-table read — no writes.
+ */
+async function handleFoodsCompare(request, url, db, env) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const rawList = url.searchParams.get("foods") || url.searchParams.get("food_names") || "";
+  const names = rawList.split(",").map((s) => s.trim()).filter(Boolean);
+  if (names.length < 2) return err("'foods' query param is required — a comma-separated list of 2-6 food names, e.g. ?foods=nsima,rice,potatoes");
+  if (names.length > 6) return err("Maximum 6 foods per comparison");
+
+  const giResult = await db.select("glycaemic_index_data", { limit: 200 });
+  const giRows = giResult.ok ? giResult.body : [];
+
+  const resolved = [];
+  const unresolved = [];
+
+  for (const requestedName of names) {
+    const local = await db.select("foods", {
+      filters: { food_name: `ilike.*${escapeLikePattern(requestedName)}*` },
+      limit: 25,
+    });
+    let food = local.ok ? pickBestFoodMatch(local.body, requestedName) : null;
+    let matchedSource = food ? "local" : null;
+    if (!food) {
+      const cascade = await lookupFoodCascade(db, { query: requestedName }, env);
+      if (cascade?.food) {
+        food = cascade.food;
+        matchedSource = cascade.source;
+      }
+    }
+    if (!food) {
+      unresolved.push(requestedName);
+      continue;
+    }
+
+    const foodName = food.food_name || food.product_name || requestedName;
+    const per100g = {};
+    for (const field of [...COMPARE_MACRO_FIELDS, ...COMPARE_MICRONUTRIENT_FIELDS]) {
+      per100g[field] = food[field] != null && food[field] !== "" ? roundServingVal(Number(food[field])) : null;
+    }
+    // Fold kcal/energy_kcal into one 'energy_kcal' figure for display so
+    // local (kcal) and external (energy_kcal) sourced foods compare cleanly.
+    per100g.energy_kcal = per100g.energy_kcal ?? per100g.kcal ?? null;
+    delete per100g.kcal;
+
+    const giMatches = matchGlycaemicIndexRows(giRows, foodName);
+    const glycaemic = giMatches.length
+      ? {
+          entries: giMatches.map((m) => ({
+            matched_as: m.food_name,
+            gi_value: m.gi_value ?? null,
+            gi_range: m.gi_low != null || m.gi_high != null ? { low: m.gi_low ?? null, high: m.gi_high ?? null } : null,
+            gi_category: m.gi_category ?? null,
+            gl_value: m.gl_value ?? null,
+            reference_carb_g: m.reference_carb_g ?? null,
+            population: m.population ?? null,
+            method: m.method ?? null,
+            source: m.source,
+            notes: m.notes ?? null,
+          })),
+        }
+      : null;
+
+    resolved.push({
+      requested_as: requestedName,
+      food_name: foodName,
+      matched_source: matchedSource,
+      category: classifyCategory(foodName),
+      per_100g: per100g,
+      glycaemic,
+      glycaemic_note: glycaemic
+        ? "Measured GI/GL from published sources — see entries[].source. Multiple entries mean multiple processing methods/studies exist; pick the one that matches how the food is actually prepared."
+        : heuristicGlycaemicNote(per100g.carbs_g, per100g.fiber_g),
+    });
+  }
+
+  if (resolved.length < 2) {
+    return err(
+      `Could not resolve enough foods to compare (resolved: ${resolved.map((f) => f.food_name).join(", ") || "none"}; unresolved: ${unresolved.join(", ") || "none"}) — need at least 2`
+    );
+  }
+
+  const nutrientComparison = {};
+  for (const field of ["energy_kcal", "protein_g", "carbs_g", "fiber_g", "fat_g", ...COMPARE_MICRONUTRIENT_FIELDS]) {
+    const values = {};
+    for (const f of resolved) values[f.food_name] = f.per_100g[field] ?? null;
+    const known = Object.entries(values).filter(([, v]) => v != null);
+    nutrientComparison[field] = {
+      label: COMPARE_NUTRIENT_LABELS[field] || field,
+      values,
+      highest: known.length ? known.reduce((a, b) => (b[1] > a[1] ? b : a))[0] : null,
+      lowest: known.length ? known.reduce((a, b) => (b[1] < a[1] ? b : a))[0] : null,
+    };
+  }
+
+  return success({
+    foods: resolved,
+    nutrient_comparison: nutrientComparison,
+    ...(unresolved.length ? { unresolved } : {}),
+    note: "Values are per 100g (Malawi FCT convention where locally sourced; per 100g/100ml as normalized for external-lookup results otherwise). Glycaemic figures are only shown where a published, sourced value exists in glycaemic_index_data — see GET /glycaemic-index to browse what's covered and POST /glycaemic-index/bulk (admin) to add more.",
+  });
+}
+
+// ─── GLYCAEMIC INDEX / LOAD REFERENCE (/glycaemic-index) ───────────────────
+//
+// Standalone reference table (see sql/004_add_glycaemic_index.sql) — GI/GL
+// is measured per specific preparation/variety and rarely lines up 1:1 with
+// a `foods` row, so this is matched by keyword at query time (see
+// matchGlycaemicIndexRows) rather than joined by foreign key. Every row
+// must cite a real source; nothing here is estimated. Same CRUD shape as
+// /exchange, /renal, /formulas — plain reads public, writes admin-only.
+async function handleGlycaemicIndex(request, url, db, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    if (id) {
+      const { ok, status, body } = await db.selectOne("glycaemic_index_data", id);
+      if (status === 404) return notFound("Glycaemic index entry");
+      if (!ok) return err(body?.message || "Query failed", status);
+      return success(body);
+    }
+    const search = url.searchParams.get("search") || "";
+    const filters = {};
+    if (search) filters["food_name"] = `ilike.*${escapeLikePattern(search)}*`;
+    return await paginatedList(db, "glycaemic_index_data", url, { filters, order: "food_name.asc" });
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    if (!payload || !payload.food_name) return err("'food_name' is required");
+    if (!payload.match_keywords || !Array.isArray(payload.match_keywords) || !payload.match_keywords.length) {
+      return err("'match_keywords' is required — a non-empty array of lowercase keywords to match this entry against food names");
+    }
+    if (!payload.source) return err("'source' (citation) is required — GI/GL values are never accepted without a traceable source");
+    const { ok, status, body } = await db.insert("glycaemic_index_data", payload);
+    if (!ok) return err(body?.message || "Insert failed", status);
+    return success(body, { message: "Glycaemic index entry created" });
+  }
+
+  if (!id) return err("ID required for this method");
+
+  if (method === "PUT" || method === "PATCH") {
+    const payload = await parseBody(request);
+    if (!payload) return err("Request body required");
+    const { ok, status, body } = await db.update("glycaemic_index_data", id, payload, method);
+    if (!ok) return err(body?.message || "Update failed", status);
+    return success(body, { message: "Glycaemic index entry updated" });
+  }
+
+  if (method === "DELETE") {
+    const { ok, status } = await db.remove("glycaemic_index_data", id);
+    if (!ok) return err("Delete failed", status);
+    return success(null, { message: `Glycaemic index entry ${id} deleted` });
+  }
+
+  return err("Method not allowed", 405);
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -4909,11 +5151,21 @@ function handleRoot(env) {
         "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
+        "GET  /foods/compare?foods=nsima,rice,potatoes  (public, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
         "POST /foods            (admin)",
         "POST /foods/bulk       (admin) → body {items:[...]}, max 500, batch insert in one request",
         "PUT  /foods/:id        (admin)",
         "PATCH /foods/:id       (admin)",
         "DELETE /foods/:id      (admin)",
+      ],
+      glycaemic_index: [
+        "GET  /glycaemic-index?search=...      → published GI/GL reference rows (see sql/004_add_glycaemic_index.sql); backs the glycaemic block on GET /foods/compare",
+        "GET  /glycaemic-index/:id",
+        "POST /glycaemic-index         (admin) → requires food_name, match_keywords[], source (citation) — no GI/GL value accepted without a traceable source",
+        "POST /glycaemic-index/bulk    (admin) → body {items:[...]}, max 500; seed file: scripts/glycaemic_index_seed.json",
+        "PUT  /glycaemic-index/:id     (admin)",
+        "PATCH /glycaemic-index/:id    (admin)",
+        "DELETE /glycaemic-index/:id   (admin)",
       ],
       exchange_lists: [
         "GET  /exchange",
@@ -5855,12 +6107,27 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "substitutes") {
         return await handleFoodSubstitutes(request, url, db, env);
       }
+      if (param === "compare") {
+        return await handleFoodsCompare(request, url, db, env);
+      }
       if (param === "bulk") {
         if (request.method !== "POST") return err("Method not allowed", 405);
         return await handleBulkInsert(request, db, "foods", { requiredField: "food_name", label: "foods" });
       }
       const id = param || null;
       return await handleFoods(request, url, db, id);
+    }
+
+    case "glycaemic-index": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "glycaemic_index_data", {
+          requiredField: "food_name",
+          label: "glycaemic index entries",
+        });
+      }
+      const id = param || null;
+      return await handleGlycaemicIndex(request, url, db, id);
     }
 
     case "exchange": {
