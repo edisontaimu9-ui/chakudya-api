@@ -4627,7 +4627,7 @@ async function answerWithLLM(query, contextBlock, env) {
     return "I found relevant information below, but I can't generate a written answer right now (GROQ_API_KEY not configured on the server) — see the numbered sources for the raw matches.";
   }
 
-  const systemPrompt = `You are Chakudya AI, a grounded nutrition assistant for Malawi's Chakudya Nutrition Registry. Answer ONLY using the numbered context snippets provided by the user. Cite the snippet number(s) you used inline in plain ASCII square brackets only — [1] or [2][3], using the standard "[" and "]" characters, never full-width or other Unicode bracket variants — that bracketed number is the only attribution you should ever give. Never write phrases like "based on the context", "according to the source/document/snippet", "the text states", "as shown in", or similar attribution wording in the body of the answer; state facts directly and naturally, as though they were your own knowledge, and let the bracketed citation do the attribution work. If the snippets don't contain enough information to answer confidently, say so plainly instead of guessing — do not invent nutrient values, brand details, or clinical guidance that isn't in the context. Keep answers concise and clinically accurate for a Malawian dietetics context.`;
+  const systemPrompt = `You are Chakudya AI, a grounded nutrition assistant for Malawi's Chakudya Nutrition Registry. Answer ONLY using the numbered context snippets provided by the user. When a numeric nutrient or serving-size value is available from a malawi_fct or packaged_foods snippet AND a knowledge_base snippet disagrees with it, use the malawi_fct/packaged_foods value and ignore the conflicting knowledge_base figure — malawi_fct/packaged_foods come from Chakudya's own structured registry (any "Household serving(s)" figures on a malawi_fct snippet are already correctly computed for that food's real serving weight), while knowledge_base snippets are unstructured reference documents that may define a household measure differently. Only fall back to a knowledge_base value when no malawi_fct/packaged_foods snippet covers that food at all. Cite the snippet number(s) you used inline in plain ASCII square brackets only — [1] or [2][3], using the standard "[" and "]" characters, never full-width or other Unicode bracket variants — that bracketed number is the only attribution you should ever give. Never write phrases like "based on the context", "according to the source/document/snippet", "the text states", "as shown in", or similar attribution wording in the body of the answer; state facts directly and naturally, as though they were your own knowledge, and let the bracketed citation do the attribution work. If the snippets don't contain enough information to answer confidently, say so plainly instead of guessing — do not invent nutrient values, brand details, or clinical guidance that isn't in the context. Keep answers concise and clinically accurate for a Malawian dietetics context.`;
   const userPrompt = `Context:\n${contextBlock}\n\nQuestion: ${query}`;
 
   const messages = [
@@ -4778,7 +4778,20 @@ async function handleRagAsk(request, url, db, env, ctx, body) {
     });
   }
   for (const row of results.foods || []) {
-    candidates.push({ source: "malawi_fct", title: row.food_name || "Food", text: rowToText(row), score: null });
+    // Append pre-computed household-serving figures (Serving-Size
+    // Intelligence — buildServingSizes()) alongside the raw per-100g row,
+    // so the LLM has a ready, correct "1 chunk (200g) = X kcal" number for
+    // this exact food instead of doing its own arithmetic from per-100g
+    // columns, or reaching for a differently-defined serving weight out of
+    // a knowledge_base document (see v1.20.1's weight_g/measure trust fix —
+    // this is what makes that fix actually reach RAG answers, not just the
+    // structured /foods endpoints).
+    const servingLines = buildServingSizes(row)
+      .filter((s) => s.source !== "reference")
+      .map((s) => `${s.label} = ${Object.entries(s.nutrients).map(([k, v]) => `${k}: ${v}`).join(", ")}`)
+      .join(" | ");
+    const text = servingLines ? `${rowToText(row)}. Household serving(s) — ${servingLines}` : rowToText(row);
+    candidates.push({ source: "malawi_fct", title: row.food_name || "Food", text, score: null });
   }
   for (const row of results.packaged || []) {
     candidates.push({ source: "packaged_foods", title: row.product_name || "Packaged food", text: rowToText(row), score: null });
