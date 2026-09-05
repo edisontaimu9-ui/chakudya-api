@@ -894,8 +894,8 @@ function supabase(env) {
   }
 
   return {
-    async select(table, { filters = {}, limit = 50, offset = 0, order } = {}) {
-      const url = buildUrl(table, { filters, order });
+    async select(table, { filters = {}, limit = 50, offset = 0, order, select } = {}) {
+      const url = buildUrl(table, { filters, order, select });
       const rangeStart = offset;
       const rangeEnd = offset + limit - 1;
       const res = await fetch(url, {
@@ -1051,7 +1051,7 @@ function limitParam(url, fallback = 50, max = 100) {
  * shift between pages as data is inserted/deleted); cursor pagination
  * doesn't have that problem, which is the whole reason to offer it.
  */
-async function paginatedList(db, table, url, { filters = {}, order, enrichRow } = {}) {
+async function paginatedList(db, table, url, { filters = {}, order, enrichRow, select } = {}) {
   const limit = limitParam(url);
   const cursorParam = url.searchParams.get("cursor");
 
@@ -1072,6 +1072,7 @@ async function paginatedList(db, table, url, { filters = {}, order, enrichRow } 
       limit: limit + 1,
       offset: 0,
       order: "id.asc",
+      select,
     });
     if (!ok) return err(body?.message || "Query failed", status);
 
@@ -1089,7 +1090,7 @@ async function paginatedList(db, table, url, { filters = {}, order, enrichRow } 
   }
 
   const offset = intParam(url, "offset", 0);
-  const { ok, status, body, total } = await db.select(table, { filters, limit, offset, order });
+  const { ok, status, body, total } = await db.select(table, { filters, limit, offset, order, select });
   if (!ok) return err(body?.message || "Query failed", status);
   const rows = enrichRow && Array.isArray(body) ? body.map(enrichRow) : body;
   return listSuccess(rows, { count: total, limit, offset });
@@ -2057,6 +2058,23 @@ const SERVING_SCALE_FIELDS = [
   "calcium_mg", "iron_mg", "zinc_mg", "magnesium_mg", "potassium_mg",
   "sodium_mg", "iodine_mcg",
 ];
+
+/**
+ * Lean column set for GET /foods list/search results (see handleFoods) —
+ * identity + amount + energy + the same macro/micro panel SERVING_SCALE_FIELDS
+ * already treats as "the ones that matter" for a serving/label. Deliberately
+ * excludes the provenance/extended-panel columns added by
+ * sql/006_expand_foods_full_fct.sql (mfct_code, moisture_g, ash_g, the
+ * secondary vitamin/mineral columns, data_quality_flags, etc.) — those stay
+ * available via GET /foods/:id (full row, unchanged) for anything that needs
+ * the raw source data, but a search result list shouldn't be that heavy.
+ * "energy_kcal" isn't a foods column (only relevant for packaged/product
+ * rows elsewhere that reuse SERVING_SCALE_FIELDS), so it's dropped here.
+ */
+const FOODS_SEARCH_FIELDS = [
+  "id", "food_name", "category", "measure", "weight_g",
+  ...SERVING_SCALE_FIELDS.filter((f) => f !== "energy_kcal"),
+].join(",");
 
 // Human-readable names for the vitamins/minerals block on a nutrition
 // label (buildNutritionLabel below) — every micronutrient SERVING_SCALE_FIELDS
@@ -5220,6 +5238,7 @@ function handleRoot(env) {
         "DELETE /admin/keys/:id   (root key only) → revoke (soft — sets revoked_at, doesn't delete the row)",
       ],
       foods: [
+        "GET  /foods?search=...&category=...  → list/search results are trimmed to identity + amount (measure/weight_g) + energy + macros + micros (see FOODS_SEARCH_FIELDS); GET /foods/:id still returns the full row incl. mfct_code/moisture_g/etc.",
         "GET  /foods?with_servings=true",
         "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
         "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above",
@@ -5419,6 +5438,7 @@ async function handleFoods(request, url, db, id) {
     return await paginatedList(db, "foods", url, {
       filters,
       order: "food_name.asc",
+      select: FOODS_SEARCH_FIELDS,
       enrichRow: withServings ? (row) => ({ ...row, serving_sizes: buildServingSizes(row) }) : undefined,
     });
   }
