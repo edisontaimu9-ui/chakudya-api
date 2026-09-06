@@ -3,7 +3,26 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.22.0
+ * Version: 1.22.1
+ *
+ * v1.22.1 changes:
+ *  - Fixed a false-positive in fuzzy_food_search() (v1.22.0): scoring the
+ *    whole query as one string let a common word dominate and mask an
+ *    unrelated word matching nothing — "Boiled rice" scored higher against
+ *    "Beans, boiled, (Nyemba zowilitsa)" than against any real rice entry,
+ *    because "boiled" appears verbatim in dozens of foods while "rice" had
+ *    zero overlap with "Beans...". Caught via live WhatsApp testing.
+ *    Fix: score each word of the query independently and require the
+ *    WEAKEST word to still clear min_similarity, so a food only qualifies
+ *    if every word in the query is genuinely represented in it. "Boiled
+ *    rice" now correctly falls through to the next tier instead of
+ *    confidently returning beans — Malawi FCT says "Rice, ..., cooked", not
+ *    "Boiled rice", so there's no real match to make. Default
+ *    min_similarity raised 0.3 -> 0.35 (now a per-word floor, not a
+ *    whole-query score, so the semantics changed along with the number).
+ *    All 5 original typo test cases (Chinagwa, Rice poridge, Nsima ya
+ *    Kondewole, Ufa woera, bananna) still resolve correctly. See
+ *    sql/008_add_fuzzy_food_search.sql for details and reasoning.
  *
  * v1.22.0 changes:
  *  - Added typo-tolerant fuzzy search over public.foods: GET /foods/search
@@ -3957,9 +3976,9 @@ async function handleFoodsSearch(request, url, db, env) {
   const minSimilarityParam = url.searchParams.get("min_similarity");
   const minSimilarity = minSimilarityParam !== null
     ? Math.min(Math.max(parseFloat(minSimilarityParam), 0), 1)
-    : 0.3;
+    : 0.35;
 
-  const results = await fuzzyFoodSearch(db, q, { maxResults, minSimilarity: Number.isNaN(minSimilarity) ? 0.3 : minSimilarity });
+  const results = await fuzzyFoodSearch(db, q, { maxResults, minSimilarity: Number.isNaN(minSimilarity) ? 0.35 : minSimilarity });
   return success(results, { count: results.length, query: q });
 }
 
@@ -4680,7 +4699,7 @@ async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 
  * when the exact ilike match misses — catches misspelled Malawian food
  * names before falling through to external APIs that don't have them.
  */
-async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.3 } = {}) {
+async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35 } = {}) {
   if (!query) return [];
   const { ok, body } = await db.rpc("fuzzy_food_search", {
     search_term: query,

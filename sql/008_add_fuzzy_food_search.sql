@@ -25,42 +25,67 @@ create index if not exists foods_food_name_trgm_idx
   on public.foods using gin (food_name gin_trgm_ops);
 
 -- fuzzy_food_search(search_term, max_results, min_similarity)
--- Returns foods rows ranked by word similarity first, Levenshtein distance
--- as the tiebreaker, for a fast + intuitive "closest match" order.
+-- Returns foods rows ranked by per-word similarity, Levenshtein distance as
+-- the tiebreaker, for a fast + intuitive "closest match" order.
 --
--- Uses word_similarity()/the <% operator rather than plain similarity()/%.
--- food_name values here are full FCT descriptions, e.g.
--- "Cassava, tuber, raw, (Chinangwa chachiwisi)" — a short query like
--- "Chinagwa" is nowhere near similar to that WHOLE string (plain similarity
--- scores it ~0.19, below any sane threshold), even though it's a
--- near-perfect match for the "Chinangwa" part. word_similarity finds the
--- best-matching substring/extent within the longer string instead of
--- comparing the two strings as wholes, which is what this data actually
--- needs. min_similarity is pg_trgm's 0–1 score (higher = closer); 0.3 is a
--- permissive default that still tolerates a couple of typos/missing
--- letters in short Chichewa/English food names.
+-- Why per-word, not whole-query, similarity:
+-- An earlier version scored the whole query against food_name with a
+-- single word_similarity() call. That broke on multi-word queries where
+-- one word is common across many foods — "Boiled rice" scored HIGHER
+-- against "Beans, boiled, (Nyemba zowilitsa)" (0.58) than against any
+-- actual rice entry (0.42), because "boiled" appears verbatim in dozens of
+-- foods and dominated the score while "rice" (0 overlap with "Beans...")
+-- was ignored. In production this meant the bot would confidently return
+-- beans for a rice query instead of admitting it didn't have a good match.
+--
+-- Fix: split the query into words, score each word against food_name
+-- independently, and require the WEAKEST word's score to still clear
+-- min_similarity. A food only qualifies if every word in the query is
+-- actually represented in it — "Boiled rice" then correctly matches
+-- nothing (Malawi FCT says "Rice, ..., cooked", not "Boiled rice", so
+-- there's no real match — the query falls through to the next tier
+-- instead of guessing) while single-word typos and multi-word phrases
+-- where every word genuinely belongs still resolve correctly:
+--   "Chinagwa"            -> Cassava, tuber, raw, (Chinangwa chachiwisi)
+--   "Rice poridge"        -> Rice porridge, (Phala la mpunga)
+--   "Nsima ya Kondewole"  -> Cassava thick porridge, (Nsima ya kondowole)
+--   "Ufa woera"           -> Flour, ..., (Ufa woyera)
+--   "bananna"             -> Milkshake, banana / Banana fritters / ...
+-- min_similarity is pg_trgm's 0–1 word_similarity score (higher = closer);
+-- 0.35 tolerates a missing/swapped letter per word without letting an
+-- unrelated word sneak through on a different word's high score.
 create or replace function public.fuzzy_food_search(
   search_term text,
   max_results int default 8,
-  min_similarity real default 0.3
+  min_similarity real default 0.35
 )
 returns setof public.foods
 language plpgsql
 as $$
 begin
   -- SET LOCAL scopes pg_trgm's word-similarity threshold to this
-  -- transaction only, so the <% operator below (which is what lets the
-  -- planner use the GIN trigram index instead of scanning the whole table)
-  -- honours min_similarity instead of pg_trgm's default 0.6 cutoff. EXECUTE
-  -- is required because SET doesn't accept a bound parameter directly.
-  execute format('set local pg_trgm.word_similarity_threshold = %L', min_similarity);
+  -- transaction only. It's set to (at most) min_similarity so the <%
+  -- operator below — which is what lets the planner use the GIN trigram
+  -- index instead of scanning the whole table — doesn't pre-filter out
+  -- rows before the real per-word check runs. The per-word MIN check
+  -- afterwards is what actually enforces min_similarity precisely.
+  execute format('set local pg_trgm.word_similarity_threshold = %L', least(min_similarity, 0.3));
 
   return query
     select f.*
     from public.foods f
     where search_term <% f.food_name
+      and (
+        select min(word_similarity(tok, f.food_name))
+        from regexp_split_to_table(lower(trim(search_term)), '\s+') as tok
+        where length(tok) > 0
+      ) >= min_similarity
     order by
-      word_similarity(search_term, f.food_name) desc,
+      (
+        select min(word_similarity(tok, f.food_name))
+        from regexp_split_to_table(lower(trim(search_term)), '\s+') as tok
+        where length(tok) > 0
+      ) desc,
       levenshtein(lower(f.food_name), lower(search_term)) asc
     limit max_results;
 end;
