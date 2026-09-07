@@ -3,7 +3,40 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.26.0
+ * Version: 1.27.0
+ *
+ * v1.27.0 changes:
+ *  - Advanced food search + autocomplete (sql/009_add_advanced_food_search.sql):
+ *    - GET /foods/search gained category=, brand=, and ingredient= params.
+ *      category= filters the existing typo-tolerant public.foods search to
+ *      one category (fuzzy_food_search() gained an optional category_filter
+ *      arg; search_term itself is now optional too, so category= alone is a
+ *      "browse this category" query). brand= and ingredient= run the new
+ *      fuzzy_packaged_search() over packaged_foods.brand /
+ *      .ingredients_text instead. Every result in the response is now
+ *      tagged with _source ("foods" | "packaged_foods") and _match_type
+ *      ("fuzzy" | "synonym" | "brand" | "ingredient") — additive fields, so
+ *      existing callers reading the old flat foods-row shape are unaffected.
+ *    - Query expansion via the new food_synonyms table: a search for
+ *      "chinangwa" now also searches "cassava" (and vice versa), same for
+ *      ~60 other seeded Chichewa<->English staple/local-name pairs (see
+ *      expandSynonyms()). expanded_terms is returned alongside data so
+ *      callers can show "also searched: cassava".
+ *    - GET /foods/autocomplete now checks the local Malawi FCT + packaged
+ *      foods tables FIRST (new autocomplete_food_names()/
+ *      autocomplete_packaged_names() RPCs — cheap substring match, ranked
+ *      so a whole-name-prefix beats a mid-string one), backfills with
+ *      fuzzy_food_search() if that's short on results (typo tolerance
+ *      while typing — "nsim" -> Nsima, Nsima ya chimanga, Nsima ya
+ *      kondowole, ...), then expands synonyms, and only THEN falls back to
+ *      the existing FatSecret suggestions for terms with no local coverage.
+ *      Previously this endpoint was 100% FatSecret and returned nothing
+ *      Malawi/Chichewa-specific at all. FatSecret absence (no credentials
+ *      configured) is no longer fatal — local results still return; only
+ *      the external tier is skipped.
+ *    - New GET /foods/by-category?category=...&max_results=... — plain
+ *      category browse (no query text needed), thin wrapper over
+ *      fuzzy_food_search(null, ..., category_filter).
  *
  * v1.26.0 changes:
  *  - Added POST /batch — lets one HTTP round trip carry several sub-requests
@@ -726,6 +759,7 @@ function routePolicy(resource, method, param, action) {
   const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
   const isFoodsSearch = resource === "foods" && param === "search" && method === "GET";
+  const isFoodsByCategory = resource === "foods" && param === "by-category" && method === "GET";
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
   const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
   const isFoodSubstitutes = resource === "foods" && param === "substitutes" && method === "GET";
@@ -805,13 +839,16 @@ function routePolicy(resource, method, param, action) {
 
   // Fuzzy search — a single indexed Postgres RPC call (pg_trgm + levenshtein),
   // no external API cost, so it gets the same generous headroom as autocomplete.
-  if (isFoodsSearch) {
+  // by-category is the same cost profile (one local RPC call), same limit.
+  if (isFoodsSearch || isFoodsByCategory) {
     return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
 
   // Autocomplete — a type-ahead UX fires one request per keystroke pause,
-  // so this needs more headroom than a single lookup, but each hit still
-  // costs a FatSecret Premier call, hence not as generous as plain reads.
+  // so this needs more headroom than a single lookup. Local-first (Malawi
+  // FCT + packaged foods substring/fuzzy match, no external cost) since
+  // v1.27.0; only falls through to a FatSecret Premier call when local
+  // coverage is thin, so the same limit as plain local reads is fine now.
   if (isFoodsAutocomplete) {
     return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
@@ -4187,7 +4224,14 @@ async function fetchFatSecretCategories(env) {
 }
 
 // GET /foods/autocomplete?q=...&max_results=...
-async function handleFoodsAutocomplete(request, url, env) {
+// Local-first as-you-type suggestions: Malawi FCT + packaged foods
+// (brand/product) substring match (cheap, every keystroke), backfilled with
+// fuzzy_food_search for typo tolerance if that's short on results, then
+// Chichewa<->English synonym expansion, and only THEN — if there's still
+// room — FatSecret's global suggestions to cover anything with no local
+// entry. Missing FatSecret credentials no longer fail the whole request;
+// local + synonym results still return, just without the external tier.
+async function handleFoodsAutocomplete(request, url, db, env) {
   if (request.method !== "GET") return err("Method not allowed", 405);
 
   const expression = (url.searchParams.get("q") || url.searchParams.get("expression") || "").trim();
@@ -4195,33 +4239,145 @@ async function handleFoodsAutocomplete(request, url, env) {
 
   const maxResults = Math.min(Math.max(intParam(url, "max_results", 4), 1), 10);
 
-  const suggestions = await fetchFatSecretAutocomplete(expression, maxResults, env);
-  if (suggestions === null) {
-    return err("Autocomplete isn't configured on this deployment (FatSecret credentials missing)", 503);
+  const suggestions = [];
+  const seen = new Set();
+  const addSuggestion = (name, matchType, extra = {}) => {
+    if (typeof name !== "string" || !name.trim()) return;
+    const key = name.trim().toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    suggestions.push({ name: name.trim(), _match_type: matchType, ...extra });
+  };
+
+  const localFoods = await autocompleteFoodsLocal(db, expression, maxResults);
+  for (const f of localFoods) addSuggestion(f.food_name, "local_fct", { id: f.id, category: f.category ?? null });
+
+  if (suggestions.length < maxResults) {
+    const localPackaged = await autocompletePackagedLocal(db, expression, maxResults - suggestions.length);
+    for (const p of localPackaged) {
+      addSuggestion(p.packaged_food?.product_name, "local_packaged", {
+        id: p.packaged_food?.id ?? null,
+        brand: p.packaged_food?.brand ?? null,
+        matched_field: p.matched_field,
+      });
+    }
   }
-  return success(suggestions);
+
+  const expandedTerms = await expandSynonyms(db, expression);
+  for (const term of expandedTerms) {
+    if (suggestions.length >= maxResults) break;
+    const synFoods = await autocompleteFoodsLocal(db, term, maxResults - suggestions.length);
+    for (const f of synFoods) addSuggestion(f.food_name, "synonym", { id: f.id, category: f.category ?? null, matched_term: term });
+  }
+
+  let note;
+  if (suggestions.length < maxResults) {
+    const external = await fetchFatSecretAutocomplete(expression, maxResults - suggestions.length, env);
+    if (external === null) {
+      note = "FatSecret credentials not configured on this deployment — external suggestions skipped; local results only.";
+    } else {
+      for (const name of external) addSuggestion(name, "fatsecret");
+    }
+  }
+
+  return success(suggestions.slice(0, maxResults), {
+    query: expression,
+    ...(expandedTerms.length ? { expanded_terms: expandedTerms } : {}),
+    ...(note ? { note } : {}),
+  });
 }
 
-// GET /foods/search?q=...&max_results=...&min_similarity=...
-// Typo-tolerant search over the local Malawi FCT foods table — see
-// fuzzyFoodSearch(). Unlike /foods/lookup, this never falls back to
-// external APIs and never caches an external result; it's purely a local,
-// ranked "closest matches" list, so callers can show a "did you mean...?"
-// picker or just take the top result.
+// GET /foods/search?q=...&max_results=...&min_similarity=...&category=...&brand=...&ingredient=...
+// Typo-tolerant search, now spanning more than just public.foods.food_name:
+//   - q (optional if category/brand/ingredient given): fuzzy search over
+//     public.foods, expanded through food_synonyms (Chichewa<->English and
+//     other local-name aliases) so e.g. "chinangwa" also searches "cassava".
+//   - category: restricts the q search (or, with no q, browses) foods.category.
+//   - brand: fuzzy search over packaged_foods.brand — brand search.
+//   - ingredient: fuzzy search over packaged_foods.ingredients_text — search
+//     by ingredient.
+// brand=/ingredient= run independently of the foods-table search and are
+// merged into the same results array, each row tagged _source/_match_type
+// so a caller can tell what matched. Like before, this never falls back to
+// external APIs and never caches an external result — purely local.
 async function handleFoodsSearch(request, url, db, env) {
   if (request.method !== "GET") return err("Method not allowed", 405);
 
   const q = (url.searchParams.get("q") || "").trim();
-  if (!q) return err("'q' query param is required");
+  const category = (url.searchParams.get("category") || "").trim();
+  const brand = (url.searchParams.get("brand") || "").trim();
+  const ingredient = (url.searchParams.get("ingredient") || "").trim();
+  if (!q && !category && !brand && !ingredient) {
+    return err("At least one of 'q', 'category', 'brand', or 'ingredient' is required");
+  }
 
   const maxResults = Math.min(Math.max(intParam(url, "max_results", 8), 1), 25);
   const minSimilarityParam = url.searchParams.get("min_similarity");
-  const minSimilarity = minSimilarityParam !== null
-    ? Math.min(Math.max(parseFloat(minSimilarityParam), 0), 1)
-    : 0.35;
+  const minSimilarityRaw = minSimilarityParam !== null ? parseFloat(minSimilarityParam) : 0.35;
+  const minSimilarity = Number.isNaN(minSimilarityRaw) ? 0.35 : Math.min(Math.max(minSimilarityRaw, 0), 1);
 
-  const results = await fuzzyFoodSearch(db, q, { maxResults, minSimilarity: Number.isNaN(minSimilarity) ? 0.35 : minSimilarity });
-  return success(results, { count: results.length, query: q });
+  const results = [];
+  let expandedTerms = [];
+
+  if (q || category) {
+    const primary = await fuzzyFoodSearch(db, q, { maxResults, minSimilarity, category });
+    for (const row of primary) results.push({ ...row, _source: "foods", _match_type: q ? "fuzzy" : "category" });
+
+    if (q && results.length < maxResults) {
+      expandedTerms = await expandSynonyms(db, q);
+      const seenIds = new Set(results.map((r) => r.id));
+      for (const term of expandedTerms) {
+        if (results.length >= maxResults) break;
+        const synRows = await fuzzyFoodSearch(db, term, { maxResults: maxResults - results.length, minSimilarity, category });
+        for (const row of synRows) {
+          if (seenIds.has(row.id)) continue;
+          seenIds.add(row.id);
+          results.push({ ...row, _source: "foods", _match_type: "synonym", _matched_term: term });
+        }
+      }
+    }
+  }
+
+  if (brand) {
+    const brandMatches = await fuzzyPackagedSearch(db, brand, { maxResults, minSimilarity, field: "brand" });
+    for (const m of brandMatches) results.push({ ...m.packaged_food, _source: "packaged_foods", _match_type: "brand", _score: m.score });
+  }
+
+  if (ingredient) {
+    const ingredientMatches = await fuzzyPackagedSearch(db, ingredient, { maxResults, minSimilarity, field: "ingredients" });
+    for (const m of ingredientMatches) results.push({ ...m.packaged_food, _source: "packaged_foods", _match_type: "ingredient", _score: m.score });
+  }
+
+  // Each source above is already capped at maxResults individually; when
+  // more than one of q/category/brand/ingredient is given at once, results
+  // combine across sources rather than truncating to a single maxResults
+  // total, so a brand=+ingredient= combo (say) doesn't starve one tier of
+  // the other's budget.
+  return success(results, {
+    count: results.length,
+    ...(q ? { query: q } : {}),
+    ...(category ? { category } : {}),
+    ...(brand ? { brand } : {}),
+    ...(ingredient ? { ingredient } : {}),
+    ...(expandedTerms.length ? { expanded_terms: expandedTerms } : {}),
+  });
+}
+
+// GET /foods/by-category?category=...&max_results=...
+// Plain category browse — no query text needed. Thin wrapper over
+// fuzzy_food_search(null, ..., category_filter) via fuzzyFoodSearch(db, "").
+async function handleFoodsByCategory(request, url, db) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const category = (url.searchParams.get("category") || "").trim();
+  if (!category) return err("'category' query param is required");
+
+  const maxResults = Math.min(Math.max(intParam(url, "max_results", 20), 1), 100);
+  const results = await fuzzyFoodSearch(db, "", { maxResults, category });
+  return success(
+    results.map((row) => ({ ...row, _source: "foods", _match_type: "category" })),
+    { count: results.length, category }
+  );
 }
 
 // GET /foods/categories
@@ -4941,22 +5097,115 @@ async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 
 }
 
 /**
- * Typo-tolerant search over public.foods (Malawi FCT) — see
- * sql/008_add_fuzzy_food_search.sql for the fuzzy_food_search() Postgres
+ * Typo-tolerant + category-filterable search over public.foods (Malawi FCT)
+ * — see sql/008_add_fuzzy_food_search.sql and
+ * sql/009_add_advanced_food_search.sql for the fuzzy_food_search() Postgres
  * function this wraps (pg_trgm word_similarity to shortlist via the GIN
- * trigram index, levenshtein() edit distance to rank ties). Used by
- * GET /foods/search directly, and as a fallback tier in lookupFoodCascade
- * when the exact ilike match misses — catches misspelled Malawian food
- * names before falling through to external APIs that don't have them.
+ * trigram index, levenshtein() edit distance to rank ties; category_filter
+ * and an optional query as of 009). Used by GET /foods/search and
+ * GET /foods/by-category directly, and as a fallback tier in
+ * lookupFoodCascade when the exact ilike match misses — catches misspelled
+ * Malawian food names before falling through to external APIs that don't
+ * have them. Pass an empty query with a category to browse that category
+ * with no text match.
  */
-async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35 } = {}) {
-  if (!query) return [];
+async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35, category = "" } = {}) {
+  if (!query && !category) return [];
   const { ok, body } = await db.rpc("fuzzy_food_search", {
+    search_term: query || null,
+    max_results: maxResults,
+    min_similarity: minSimilarity,
+    category_filter: category || null,
+  });
+  return ok && Array.isArray(body) ? body : [];
+}
+
+/**
+ * Typo-tolerant search over public.packaged_foods (brand name, product
+ * name, or ingredients text) — see fuzzy_packaged_search() in
+ * sql/009_add_advanced_food_search.sql. Returns
+ * [{ packaged_food, matched_field, score }, ...]; approved rows only.
+ * Used by GET /foods/search's brand= and ingredient= params.
+ */
+async function fuzzyPackagedSearch(db, query, { maxResults = 8, minSimilarity = 0.3, field = "all" } = {}) {
+  if (!query) return [];
+  const { ok, body } = await db.rpc("fuzzy_packaged_search", {
     search_term: query,
     max_results: maxResults,
     min_similarity: minSimilarity,
+    search_field: field,
   });
   return ok && Array.isArray(body) ? body : [];
+}
+
+/**
+ * Cheap as-you-type substring match over public.foods.food_name (see
+ * autocomplete_food_names() in sql/009_add_advanced_food_search.sql), with
+ * a fuzzy_food_search() backfill for typo tolerance when the substring
+ * match alone falls short of maxResults — e.g. "chikondi" mistyped as
+ * "chikondy" still surfaces something once the substring tier comes up empty.
+ */
+async function autocompleteFoodsLocal(db, prefix, maxResults) {
+  if (!prefix) return [];
+  const { ok, body } = await db.rpc("autocomplete_food_names", { prefix, max_results: maxResults });
+  const substringMatches = ok && Array.isArray(body) ? body : [];
+  if (substringMatches.length >= maxResults) return substringMatches;
+
+  const seenIds = new Set(substringMatches.map((r) => r.id));
+  const fuzzyMatches = await fuzzyFoodSearch(db, prefix, { maxResults: maxResults - substringMatches.length, minSimilarity: 0.3 });
+  for (const row of fuzzyMatches) {
+    if (!seenIds.has(row.id)) {
+      seenIds.add(row.id);
+      substringMatches.push(row);
+    }
+  }
+  return substringMatches;
+}
+
+/**
+ * Cheap as-you-type substring match over packaged_foods.product_name/
+ * brand (see autocomplete_packaged_names() in
+ * sql/009_add_advanced_food_search.sql). Approved rows only. Returns
+ * [{ packaged_food, matched_field }, ...].
+ */
+async function autocompletePackagedLocal(db, prefix, maxResults) {
+  if (!prefix || maxResults <= 0) return [];
+  const { ok, body } = await db.rpc("autocomplete_packaged_names", { prefix, max_results: maxResults });
+  return ok && Array.isArray(body) ? body : [];
+}
+
+/**
+ * Looks up which food_synonyms group(s) `term` belongs to and returns every
+ * OTHER term in those groups (deduped, original term excluded) — see the
+ * food_synonyms table comment in sql/009_add_advanced_food_search.sql for
+ * why this is a plain query-expansion table rather than a foods.id link.
+ * Used to bridge Chichewa<->English and other local-name searches: a query
+ * for "chinangwa" also re-runs the search for "cassava", and vice versa.
+ */
+async function expandSynonyms(db, term) {
+  if (!term) return [];
+  const normalized = term.trim().toLowerCase();
+  if (!normalized) return [];
+
+  const { ok: groupsOk, body: groupRows } = await db.select("food_synonyms", {
+    filters: { term: `ilike.*${escapeLikePattern(normalized)}*` },
+    select: "group_key",
+    limit: 10,
+  });
+  if (!groupsOk || !Array.isArray(groupRows) || !groupRows.length) return [];
+
+  const groupKeys = [...new Set(groupRows.map((r) => r.group_key))];
+  const { ok: termsOk, body: termRows } = await db.select("food_synonyms", {
+    filters: { group_key: `in.(${groupKeys.map((g) => `"${g}"`).join(",")})` },
+    select: "term",
+    limit: 100,
+  });
+  if (!termsOk || !Array.isArray(termRows)) return [];
+
+  const related = [...new Set(termRows.map((r) => r.term.trim().toLowerCase()))].filter(
+    (t) => t && t !== normalized
+  );
+  return related;
 }
 
 /** Malawi FCT / curated foods table — exact ilike search on food_name. */
@@ -5667,8 +5916,9 @@ function handleRoot(env) {
         "GET  /foods?with_servings=true",
         "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
         "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → external cascade: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
-        "GET  /foods/search?q=...&max_results=&min_similarity=  (public, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql); no external API calls, never caches an external result — purely local 'closest matches'. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
-        "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → FatSecret Premier autocomplete suggestions",
+        "GET  /foods/search?q=&max_results=&min_similarity=&category=&brand=&ingredient=  (public, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql + sql/009_add_advanced_food_search.sql), expanded through food_synonyms (Chichewa<->English + local-name aliases — a search for 'chinangwa' also searches 'cassava'). category= filters/narrows the q search (or, with no q, browses that category). brand= and ingredient= search packaged_foods.brand/.ingredients_text instead (brand search, search-by-ingredient) and merge into the same results array. Every result is tagged _source ('foods'|'packaged_foods') and _match_type ('fuzzy'|'synonym'|'category'|'brand'|'ingredient'). No external API calls, never caches an external result — purely local. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
+        "GET  /foods/by-category?category=...&max_results=  (public, rate-limited) → plain category browse over public.foods, no query text needed",
+        "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → local-first as-you-type suggestions: Malawi FCT + packaged foods (brand/product) substring match, backfilled with fuzzy search for typo tolerance ('nsim' -> Nsima, Nsima ya chimanga, Nsima ya kondowole, ...), then food_synonyms expansion, then FatSecret Premier suggestions last for anything with no local coverage (skipped, not fatal, if FatSecret isn't configured)",
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
         "GET  /foods/compare?foods=nsima,rice,potatoes  (public, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
@@ -6691,10 +6941,13 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         return await handleFoodsSearch(request, url, db, env);
       }
       if (param === "autocomplete") {
-        return await handleFoodsAutocomplete(request, url, env);
+        return await handleFoodsAutocomplete(request, url, db, env);
       }
       if (param === "categories") {
         return await handleFoodsCategories(request, env);
+      }
+      if (param === "by-category") {
+        return await handleFoodsByCategory(request, url, db);
       }
       if (param === "substitutes") {
         return await handleFoodSubstitutes(request, url, db, env);
