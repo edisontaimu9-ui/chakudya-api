@@ -188,7 +188,7 @@
  *  - Added Serving-Size Intelligence: GET /foods/:id and GET /foods/lookup
  *    now accept ?with_servings=true, which adds a `serving_sizes` array to
  *    the response — realistic Malawian household measures (e.g. "1 cup /
- *    chikombe (240g)", "1 chunk nsima (200g)", "1 sachet RUTF (92g)"), each
+ *    chikombe (240g)", "1 chipande / mtanda nsima (200g)", "1 sachet RUTF (92g)"), each
  *    with every nutrient field pre-scaled from the existing per-100g/100ml
  *    basis (that basis itself is unchanged — this is response-shaping only,
  *    no new columns, no migration). Three tiers, most specific first: the
@@ -2093,7 +2093,7 @@ async function handleGlycaemicIndex(request, url, db, id) {
 // estimates for counselling/portioning purposes, not lab-measured weights.
 
 const SERVING_SIZE_KEYWORDS = [
-  [["nsima"], { label: "1 chipande (approx. 150-200g)", grams: 175 }],
+  [["nsima"], { label: "1 chipande / mtanda (piece) (approx. 150-200g)", grams: 175 }],
   [["likuni phala", "phala", "porridge", "csb", "corn soya blend"], { label: "1 cup cooked porridge / chikombe (250g)", grams: 250 }],
   [["rutf", "plumpy"], { label: "1 sachet (92g)", grams: 92 }],
   [["rice"], { label: "1 cup cooked rice (150g)", grams: 150 }],
