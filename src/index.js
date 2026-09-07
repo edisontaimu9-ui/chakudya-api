@@ -3,7 +3,31 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.22.1
+ * Version: 1.26.0
+ *
+ * v1.26.0 changes:
+ *  - Added POST /batch — lets one HTTP round trip carry several sub-requests
+ *    (e.g. a handful of /foods/lookup calls plus a /rag/ask, or several
+ *    /foods/:id reads) instead of forcing a client to make one call per
+ *    item. Motivated by the MCP server, which was doing this fan-out itself
+ *    over HTTP/service-binding per tool call — now it can send one batch
+ *    and get every sub-result back together, cutting round trips (and
+ *    Termux/mobile-network latency) proportionally to batch size.
+ *    Body: { "requests": [ { "id"?, "method", "path", "body"? }, ... ] },
+ *    max BATCH_MAX_REQUESTS (20) items. Each item is routed through the
+ *    *exact same* auth + rate-limit + edge-cache + dispatch pipeline as a
+ *    normal top-level request (see routeSingle(), factored out of router()
+ *    for this reuse) — a sub-request needing an admin key still needs one
+ *    (forwarded from the batch call's own Authorization header), and it
+ *    still counts against that resource's own rate-limit bucket. This means
+ *    batching cannot be used to bypass per-resource auth or rate limits;
+ *    it only saves round trips. The batch endpoint itself also has its own
+ *    (tighter) rate limit, since a single batch can fan out into a lot of
+ *    backend work. Nested /batch sub-requests are rejected. Response:
+ *    { status: "success", data: [ { id, status, body }, ... ], meta }, with
+ *    per-item results always in request order and never short-circuited by
+ *    one item's failure (each item gets its own status/body, HTTP 200 at
+ *    the envelope level unless the batch request itself is malformed).
  *
  * v1.22.1 changes:
  *  - Fixed a false-positive in fuzzy_food_search() (v1.22.0): scoring the
@@ -410,7 +434,7 @@ import {
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.25.0";
+const CNR_VERSION = "1.26.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -723,6 +747,16 @@ function routePolicy(resource, method, param, action) {
   const isDri = resource === "dri";
   const isDrugInteractionsSearch =
     resource === "drug-interactions" && param === "search" && method === "GET";
+  const isBatch = resource === "batch" && method === "POST";
+
+  // Batch — fans out into up to BATCH_MAX_REQUESTS sub-requests, each of
+  // which pays its own cost against its own resource's rate limit. This
+  // outer limit exists only to cap how many *batches* (i.e. how much total
+  // fan-out) one IP can trigger per minute — the per-item costs are already
+  // covered by each sub-request's own policy in routeSingle().
+  if (isBatch) {
+    return { auth: "public", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
+  }
 
   // Favorites/history — no admin gate (same public, self-declared-identity
   // model as memory/write and memory/recall: the client supplies its own
@@ -5530,6 +5564,9 @@ function handleRoot(env) {
         "GET  /dri?nutrient=&life_stage=   OR   ?nutrient=&age=&sex=&life_stage_type=   (public, rate-limited) → EAR/RDA/AI/UL for one nutrient (or every nutrient if 'nutrient' is omitted) at the resolved life stage, plus that life stage's AMDR and sodium CDRR when returning the full set",
         "POST /dri/compare   (public, rate-limited) → body {age|life_stage, sex?, life_stage_type?, intake:{nutrient_key: amount}}; compares intake (same field names as /recipes/calculate or /meals/analyze's total_nutrients) against RDA/AI, flags UL if exceeded — only nutrients CNR's foods table actually tracks are comparable, see 'trackable' on GET /dri",
       ],
+      batch: [
+        `POST /batch   (public, rate-limited, max ${BATCH_MAX_REQUESTS} sub-requests) → body {requests:[{id?, method, path, body?}, ...]}; runs each sub-request through the same auth/rate-limit/cache pipeline as calling it directly (forwards Authorization/apikey/CF-Connecting-IP from the batch call), in parallel, and returns {status:'success', data:[{id, status, body}, ...], meta:{total, succeeded, failed, duration_ms}} with one entry per sub-request in the original order — one failed sub-request doesn't fail the others. Nested /batch sub-requests are rejected.`,
+      ],
     },
   });
 }
@@ -6591,37 +6628,28 @@ async function purgeResourceCache(origin, resource, param, ctx) {
   );
 }
 
-async function router(request, env, ctx, requestId) {
-  const url = new URL(request.url);
-  const pathname = url.pathname.replace(/\/$/, "") || "/";
-  const segments = pathname.split("/").filter(Boolean);
-
-  const db = supabase(env);
-
-  // Preflight
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
-  }
-
-  // GET /
-  if (pathname === "/" && request.method === "GET") {
-    return handleRoot(env);
-  }
-
-  const [resource, param, action] = segments;
-
-  // ── Centralised auth + rate limit gate ─────────────────────────────────────
-  const policy = routePolicy(resource, request.method, param, action);
+/**
+ * Resolves the auth + rate-limit policy for one (resource, method, param,
+ * action) tuple and enforces it. Shared by routeSingle() (top-level
+ * requests) and handleBatch() (the /batch envelope itself), so both go
+ * through identical gating logic instead of two copies drifting apart.
+ *
+ * Returns either { response: <Response> } — the caller should return this
+ * immediately without dispatching — or { policy, admin } on success, where
+ * `admin` is the resolved admin identity (or null for public routes).
+ */
+async function authAndRateGate(request, env, ctx, db, resource, method, param, action) {
+  const policy = routePolicy(resource, method, param, action);
 
   let admin = null;
   if (policy.auth === "admin") {
     admin = await isAdmin(request, env, db, ctx);
-    if (!admin.valid) return unauthorized();
+    if (!admin.valid) return { response: unauthorized() };
 
     // Managing other API keys is root-only — a per-consumer key can't
     // mint or revoke keys, so a single leaked non-root key can't escalate.
     if (resource === "admin" && param === "keys" && !admin.isRoot) {
-      return unauthorized("Only the root admin key can manage API keys");
+      return { response: unauthorized("Only the root admin key can manage API keys") };
     }
 
     // Scoped roles — "reviewer" keys can only reach routes that opted into
@@ -6634,7 +6662,9 @@ async function router(request, env, ctx, requestId) {
     const requiredRole = policy.requiredRole || "admin";
     const currentRank = ROLE_RANK[admin.role] || 0;
     if (!admin.isRoot && currentRank < ROLE_RANK[requiredRole]) {
-      return unauthorized(`This action requires the '${requiredRole}' role (this key has '${admin.role}')`);
+      return {
+        response: unauthorized(`This action requires the '${requiredRole}' role (this key has '${admin.role}')`),
+      };
     }
   }
 
@@ -6652,8 +6682,27 @@ async function router(request, env, ctx, requestId) {
       policy.rate.limit,
       policy.rate.windowSeconds
     );
-    if (!allowed) return rateLimited(retryAfter);
+    if (!allowed) return { response: rateLimited(retryAfter) };
   }
+
+  return { policy, admin };
+}
+
+/**
+ * Routes a single request (top-level or a /batch sub-request) through the
+ * full pipeline: auth + rate limit gate, edge cache lookup/fill, dispatch
+ * to the resource handler, and cache purge on successful admin writes.
+ * Pulled out of router() so /batch can send each of its sub-requests
+ * through exactly this same path — same auth rules, same rate-limit
+ * buckets, same caching — rather than a parallel, easier-to-drift copy.
+ */
+async function routeSingle(request, url, segments, env, ctx, requestId) {
+  const db = supabase(env);
+  const [resource, param, action] = segments;
+
+  const gate = await authAndRateGate(request, env, ctx, db, resource, request.method, param, action);
+  if (gate.response) return gate.response;
+  const { admin } = gate;
 
   // ── Edge cache (Cloudflare Cache API) — GET routes only ─────────────────────
   // Cache key includes full query string (filters/limit/offset/query text all
@@ -6696,6 +6745,174 @@ async function router(request, env, ctx, requestId) {
   } catch (e) {
     return serverErr(e, requestId);
   }
+}
+
+// ─── BATCH ───────────────────────────────────────────────────────────────────
+
+// Cap on sub-requests per /batch call. Each sub-request runs the full
+// routeSingle() pipeline — including its own Supabase (and sometimes
+// Cohere/Groq/external-API) calls — so this isn't just a payload-size
+// guard, it's a fan-out guard: a generous cap here multiplies straight
+// into backend load and CPU time for one incoming HTTP request.
+const BATCH_MAX_REQUESTS = 20;
+const BATCH_ALLOWED_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * POST /batch — { "requests": [ { "id"?, "method", "path", "body"? }, ... ] }
+ *
+ * Runs every sub-request through routeSingle() — same auth, same
+ * per-resource rate-limit bucket, same edge cache — and returns all results
+ * together, in request order, regardless of individual failures. This is a
+ * fan-out convenience for the *caller* (fewer round trips), not a way to
+ * dodge per-resource auth/rate limits: each item still needs whatever
+ * Authorization the underlying route requires (forwarded from the batch
+ * call's own headers) and still consumes that route's own rate-limit
+ * budget.
+ *
+ * Sub-requests run concurrently (Promise.all) since they're independent —
+ * order in the response array is preserved regardless.
+ */
+async function handleBatch(request, env, ctx, requestId) {
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return err("Invalid JSON body");
+  }
+
+  const items = payload && Array.isArray(payload.requests) ? payload.requests : null;
+  if (!items) {
+    return err('Body must be { "requests": [ { "method", "path", "body"? , "id"? }, ... ] }');
+  }
+  if (!items.length) return err("`requests` must contain at least one item");
+  if (items.length > BATCH_MAX_REQUESTS) {
+    return err(`Too many sub-requests — max ${BATCH_MAX_REQUESTS} per batch, got ${items.length}`);
+  }
+
+  const origin = new URL(request.url).origin;
+
+  // Forward the identity/rate-limit-relevant headers from the batch call
+  // itself so every sub-request is authenticated/limited as if the caller
+  // had hit it directly — an admin-only sub-route still needs a valid
+  // admin bearer token, and per-IP rate limiting still sees the real
+  // client IP rather than defaulting to "unknown".
+  const forwardedHeaders = {};
+  const authHeader = request.headers.get("Authorization");
+  if (authHeader) forwardedHeaders["Authorization"] = authHeader;
+  const apikeyHeader = request.headers.get("apikey");
+  if (apikeyHeader) forwardedHeaders["apikey"] = apikeyHeader;
+  const clientIpHeader = request.headers.get("CF-Connecting-IP");
+  if (clientIpHeader) forwardedHeaders["CF-Connecting-IP"] = clientIpHeader;
+
+  async function runOne(item, index) {
+    const subId = item && item.id !== undefined && item.id !== null ? String(item.id) : String(index);
+
+    const method = String((item && item.method) || "GET").toUpperCase();
+    if (!BATCH_ALLOWED_METHODS.has(method)) {
+      return { id: subId, status: 400, body: { status: "error", message: `Unsupported method '${method}'` } };
+    }
+
+    const path = item && typeof item.path === "string" ? item.path : null;
+    if (!path || !path.startsWith("/")) {
+      return {
+        id: subId,
+        status: 400,
+        body: { status: "error", message: "Each sub-request needs a `path` starting with '/'" },
+      };
+    }
+
+    let subUrl;
+    try {
+      subUrl = new URL(path, origin);
+    } catch {
+      return { id: subId, status: 400, body: { status: "error", message: "Invalid `path`" } };
+    }
+
+    const subPathname = subUrl.pathname.replace(/\/$/, "") || "/";
+    const subSegments = subPathname.split("/").filter(Boolean);
+    if (subSegments[0] === "batch") {
+      return {
+        id: subId,
+        status: 400,
+        body: { status: "error", message: "Batches cannot contain nested /batch sub-requests" },
+      };
+    }
+
+    const init = { method, headers: { ...forwardedHeaders } };
+    if (method !== "GET" && item && item.body !== undefined) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(item.body);
+    }
+
+    let subResponse;
+    try {
+      const subRequest = new Request(subUrl.toString(), init);
+      subResponse = await routeSingle(subRequest, subUrl, subSegments, env, ctx, `${requestId}:${subId}`);
+    } catch (e) {
+      return { id: subId, status: 500, body: { status: "error", message: "Sub-request failed" } };
+    }
+
+    const text = await subResponse.text();
+    let subBody;
+    try {
+      subBody = text ? JSON.parse(text) : null;
+    } catch {
+      subBody = text;
+    }
+
+    return { id: subId, status: subResponse.status, body: subBody };
+  }
+
+  const startedAt = Date.now();
+  const results = await Promise.all(items.map((item, index) => runOne(item, index)));
+  const succeeded = results.filter((r) => r.status < 400).length;
+
+  return json({
+    status: "success",
+    data: results,
+    meta: {
+      total: results.length,
+      succeeded,
+      failed: results.length - succeeded,
+      duration_ms: Date.now() - startedAt,
+    },
+  });
+}
+
+async function router(request, env, ctx, requestId) {
+  const url = new URL(request.url);
+  const pathname = url.pathname.replace(/\/$/, "") || "/";
+  const segments = pathname.split("/").filter(Boolean);
+
+  // Preflight
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  // GET /
+  if (pathname === "/" && request.method === "GET") {
+    return handleRoot(env);
+  }
+
+  const [resource] = segments;
+
+  // /batch is a composite endpoint — it fans out to routeSingle() per
+  // sub-request rather than dispatching to a single resource handler, so
+  // it's handled before (instead of inside) the normal single-route
+  // pipeline. It still goes through its own auth/rate-limit gate first.
+  if (resource === "batch") {
+    if (request.method !== "POST") return err("Method not allowed", 405);
+    const db = supabase(env);
+    const gate = await authAndRateGate(request, env, ctx, db, resource, request.method, null, null);
+    if (gate.response) return gate.response;
+    try {
+      return await handleBatch(request, env, ctx, requestId);
+    } catch (e) {
+      return serverErr(e, requestId);
+    }
+  }
+
+  return await routeSingle(request, url, segments, env, ctx, requestId);
 }
 
 // ─── WORKER ENTRY ────────────────────────────────────────────────────────────
