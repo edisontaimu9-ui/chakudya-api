@@ -2093,7 +2093,7 @@ async function handleGlycaemicIndex(request, url, db, id) {
 // estimates for counselling/portioning purposes, not lab-measured weights.
 
 const SERVING_SIZE_KEYWORDS = [
-  [["nsima"], { label: "1 chipande / mtanda (piece) (approx. 150-200g)", grams: 175 }],
+  [["nsima"], { label: "1 chipande / mtanda (approx. 150-200g)", grams: 175 }],
   [["likuni phala", "phala", "porridge", "csb", "corn soya blend"], { label: "1 cup cooked porridge / chikombe (250g)", grams: 250 }],
   [["rutf", "plumpy"], { label: "1 sachet (92g)", grams: 92 }],
   [["rice"], { label: "1 cup cooked rice (150g)", grams: 150 }],
