@@ -2072,7 +2072,7 @@ const SERVING_SIZE_KEYWORDS = [
   [["sugar"], { label: "1 tablespoon (12g)", grams: 12 }],
   [["banana"], { label: "1 medium banana (120g)", grams: 120 }],
   [["egg"], { label: "1 medium egg (50g)", grams: 50 }],
-  [["bread"], { label: "1 slice (35g)", grams: 35 }],
+  [["bread"], { label: "1 slice (±42g)", grams: 42 }],
   [["mango", "orange", "papaya", "guava", "apple"], { label: "1 medium piece (150g)", grams: 150 }],
   [["fish", "sardine", "tilapia", "salmon", "tuna", "chambo", "usipa", "kapenta", "matemba", "mbaba", "chisawasawa", "ntchila"], { label: "1 medium piece (80g)", grams: 80 }],
   [["chicken", "beef", "pork", "goat", "turkey", "meat", "liver", "mince"], { label: "1 palm-sized portion (90g)", grams: 90 }],
@@ -2287,6 +2287,12 @@ const GENERIC_UNIT_GRAMS = {
   pint: 473.2, pints: 473.2,
   quart: 946.2, quarts: 946.2,
   gallon: 3785, gallons: 3785,
+  // Dessertspoon — between a teaspoon and tablespoon, common in Malawian/
+  // Southern African recipes and measurement guides but absent from most
+  // generic unit tables. 20ml plain, 30ml heaped (per household measurements
+  // guide: 1 Dsp = 20ml, 1 heaped Dsp = 30ml).
+  dsp: 20, dessertspoon: 20, dessertspoons: 20,
+  "h dsp": 30, "hdsp": 30, "heaped dsp": 30, "heaped dessertspoon": 30, "heaped dessertspoons": 30,
 };
 
 // Generic household-unit fallback — used only when the unit couldn't be
@@ -2294,7 +2300,9 @@ const GENERIC_UNIT_GRAMS = {
 // resolveIngredientGrams below), so it's necessarily coarser than a
 // food-specific measure.
 const GENERIC_HOUSEHOLD_UNIT_GRAMS = {
-  cup: 240, cups: 240,
+  // 250ml metric cup (per household measurements guide: 1 cup = 250ml,
+  // 2 cups = 500ml, 3 cups = 750ml) — NOT the 240ml US customary cup.
+  cup: 250, cups: 250,
   tbsp: 15, tablespoon: 15, tablespoons: 15,
   tsp: 5, teaspoon: 5, teaspoons: 5,
   slice: 30, slices: 30,
