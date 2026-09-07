@@ -293,6 +293,7 @@ curl -X DELETE https://your-worker-url/admin/keys/1 -H "Authorization: Bearer <A
 - **Memory recall (`GET /memory/recall`)**: `30/min` per IP
 - **Admin writes (general)**: `60/min` per admin token
 - **RAG ingest (`POST /rag/ingest`)**: `30/min` per admin token
+- **Batch (`POST /batch`)**: `10/min` per IP — on top of whatever limit each sub-request's own resource applies
 
 When exceeded:
 
@@ -429,6 +430,63 @@ Response:
 Returns `200` when `status: "healthy"`, `503` when `status: "degraded"`
 (i.e. Supabase, Cohere, or Groq — the required upstreams — failed to
 respond).
+
+### Batch
+
+- `POST /batch` *(public, rate-limited, max 20 sub-requests)* — runs several
+  sub-requests in one HTTP call and returns all their results together.
+  Built for clients (the MCP server, the SDK, or any caller) that would
+  otherwise make several separate calls per user action — e.g. a few
+  `/foods/lookup` calls plus a `/rag/ask`, or a batch of `/foods/:id` reads —
+  and want one round trip instead.
+
+  Each sub-request goes through the *exact same* auth + rate-limit + edge
+  cache + dispatch path as calling it directly: an admin-only sub-route
+  still needs a valid `Authorization: Bearer <admin key>` (forwarded from
+  the batch call's own header), and it still consumes that resource's own
+  rate-limit bucket. Batching only saves round trips — it can't be used to
+  bypass per-resource auth or rate limits. The `/batch` endpoint itself also
+  has its own limit (see Rate Limits above), since one batch call can fan
+  out into a lot of backend work. Sub-requests run concurrently; results
+  come back in the same order as the request array regardless. A failed
+  sub-request never fails the others — each item carries its own `status`.
+
+  Request:
+
+  ```json
+  {
+    "requests": [
+      { "id": "banana", "method": "GET", "path": "/foods/lookup?q=banana" },
+      { "id": "rice-vs-nsima", "method": "GET", "path": "/foods/compare?foods=rice,nsima" },
+      { "id": "log-it", "method": "POST", "path": "/log", "body": { "user_id": "u1", "meal_type": "lunch", "calories": 450 } }
+    ]
+  }
+  ```
+
+  Response:
+
+  ```json
+  {
+    "status": "success",
+    "data": [
+      { "id": "banana", "status": 200, "body": { "status": "success", "data": { "...": "..." } } },
+      { "id": "rice-vs-nsima", "status": 200, "body": { "status": "success", "data": { "...": "..." } } },
+      { "id": "log-it", "status": 201, "body": { "status": "success", "data": { "...": "..." } } }
+    ],
+    "meta": { "total": 3, "succeeded": 3, "failed": 0, "duration_ms": 187 }
+  }
+  ```
+
+  Notes:
+  - `id` is optional — defaults to the item's index (as a string) if omitted.
+  - `method` defaults to `GET`; supported methods are `GET`, `POST`, `PUT`,
+    `PATCH`, `DELETE`.
+  - `path` must be a path starting with `/` (not a full URL), matching
+    whatever you'd normally call the API with (query string included).
+  - Nested `/batch` sub-requests are rejected with a `400` item.
+  - The envelope itself returns `200` unless the batch request is malformed
+    (bad JSON, missing/empty/oversized `requests`) — individual sub-request
+    failures live in each item's own `status`/`body`, not the envelope status.
 
 ## Request IDs & logging
 

@@ -79,6 +79,80 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/HealthStatus" }
 
+  /batch:
+    post:
+      tags: [Meta]
+      summary: Run several sub-requests in one call
+      description: >
+        Fans out to up to 20 sub-requests, each routed through the exact
+        same auth/rate-limit/edge-cache/dispatch pipeline as calling it
+        directly (Authorization/apikey/client IP are forwarded from this
+        call). Sub-requests run concurrently; results come back in request
+        order regardless of individual failures. Nested /batch sub-requests
+        are rejected. See the README's Batch section for examples.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requests]
+              properties:
+                requests:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [path]
+                    properties:
+                      id:
+                        type: string
+                        description: Optional; defaults to the item's index as a string.
+                      method:
+                        type: string
+                        enum: [GET, POST, PUT, PATCH, DELETE]
+                        default: GET
+                      path:
+                        type: string
+                        description: Path starting with "/", e.g. "/foods/lookup?q=banana".
+                      body:
+                        description: JSON body for non-GET sub-requests.
+      responses:
+        "200":
+          description: >
+            Envelope success — individual sub-request outcomes are in each
+            item's own status/body, not the envelope status.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            status: { type: integer }
+                            body: {}
+                      meta:
+                        type: object
+                        properties:
+                          total: { type: integer }
+                          succeeded: { type: integer }
+                          failed: { type: integer }
+                          duration_ms: { type: integer }
+        "400":
+          description: Malformed batch request (bad JSON, missing/empty/oversized requests[])
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /admin/keys:
     get:
       tags: [API Keys]
