@@ -427,6 +427,236 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /foods/{id}/label:
+    get:
+      tags: [Foods]
+      summary: Codex-oriented nutrition label for one food
+      description: >
+        Standardized nutrition label built from Serving-Size Intelligence.
+        References CXS 1-1985 (General Standard for the Labelling of
+        Pre-packaged Foods) and CXG 2-1985 (Guidelines on Nutrition
+        Labelling) separately as `labelling_standard` and
+        `nutrition_labelling_guideline`. Every nutrition_declaration and
+        vitamins_minerals_detail field carries an explicit status —
+        `available`, `not_available`, or `estimated` — so a genuine 0 is
+        never rendered the same as missing data, and `estimated` only
+        appears where the source FCT's own data_quality_flags marks that
+        value as assumed. `per_100g_reference` exposes the raw per-100g
+        basis a scaled serving was derived from. Defaults to the most
+        specific local serving available (chipande/mtanda, cup, tablespoon,
+        handful, piece, etc.); an unrecognized `?serving=` falls back to
+        the default rather than erroring, flagged via
+        `requested_serving.matched=false`. All existing response fields
+        (serving_size, calories, total_fat_g, saturated_fat_g,
+        carbohydrates_g, fiber_g, sugars_g, protein_g, sodium_mg,
+        vitamins_minerals, standard, missing_fields) are unchanged.
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+        - name: serving
+          in: query
+          description: >
+            Case-insensitive substring match against a serving_sizes label
+            (e.g. "chipande", "mtanda", "100g", "cup"). Omit to get the most
+            specific serving Serving-Size Intelligence has for this food. An
+            unmatched value falls back to the default and is flagged via
+            requested_serving.matched=false rather than erroring.
+          schema: { type: string }
+          example: chipande
+      responses:
+        "200":
+          description: Nutrition label built successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: success }
+                  food_id: { type: integer, example: 9 }
+                  food_name: { type: string, example: "Cassava thick porridge, (Nsima ya kondowole)" }
+                  serving_source: { type: string, enum: [fct, local_intelligence, category_estimate, reference], example: local_intelligence }
+                  alternate_servings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        label: { type: string }
+                        grams: { type: number }
+                        source: { type: string }
+                  requested_serving:
+                    type: object
+                    properties:
+                      requested: { type: string, nullable: true, example: chipande }
+                      matched: { type: boolean, example: true }
+                      resolved_label: { type: string, example: "1 chipande / mtanda (approx. 150-200g)" }
+                  data:
+                    type: object
+                    description: The nutrition label itself.
+                    properties:
+                      serving_size: { type: string, example: "1 chipande / mtanda (approx. 150-200g)" }
+                      serving_grams: { type: number, example: 175 }
+                      calories: { type: number, nullable: true, example: 112 }
+                      total_fat_g: { type: number, nullable: true, example: 0.7 }
+                      saturated_fat_g: { type: number, nullable: true, example: null }
+                      carbohydrates_g: { type: number, nullable: true, example: 24.68 }
+                      fiber_g: { type: number, nullable: true, example: 1.22 }
+                      sugars_g: { type: number, nullable: true, example: null }
+                      protein_g: { type: number, nullable: true, example: 0.7 }
+                      sodium_mg: { type: number, nullable: true, example: 8.75 }
+                      vitamins_minerals: { type: object, description: "Legacy flat value map, unchanged", additionalProperties: { type: number } }
+                      standard: { type: string, example: codex_stan_1-1985, description: "Legacy field, unchanged" }
+                      labelling_standard: { type: string, example: "CXS 1-1985" }
+                      nutrition_labelling_guideline: { type: string, example: "CXG 2-1985" }
+                      energy_kcal: { type: number, nullable: true, example: 112 }
+                      energy_kj: { type: number, nullable: true, example: 474.25 }
+                      nutrition_declaration:
+                        type: object
+                        properties:
+                          energy:
+                            type: object
+                            properties:
+                              kcal: { type: number, nullable: true, example: 112 }
+                              kj: { type: number, nullable: true, example: 474.25 }
+                              kcal_status: { type: string, enum: [available, not_available, estimated], example: available }
+                              kj_status: { type: string, enum: [available, not_available, estimated], example: available }
+                          protein_g:
+                            type: object
+                            properties:
+                              value: { type: number, nullable: true, example: 0.7 }
+                              status: { type: string, enum: [available, not_available, estimated] }
+                          carbohydrate_g:
+                            type: object
+                            properties:
+                              value: { type: number, nullable: true, example: 24.68 }
+                              status: { type: string, enum: [available, not_available, estimated] }
+                          total_sugars_g:
+                            type: object
+                            properties:
+                              value: { type: number, nullable: true, example: null }
+                              status: { type: string, enum: [available, not_available, estimated], example: not_available }
+                          total_fat_g:
+                            type: object
+                            properties:
+                              value: { type: number, nullable: true, example: 0.7 }
+                              status: { type: string, enum: [available, not_available, estimated] }
+                          saturated_fat_g:
+                            type: object
+                            properties:
+                              value: { type: number, nullable: true, example: null }
+                              status: { type: string, enum: [available, not_available, estimated], example: not_available }
+                          dietary_fibre_g:
+                            type: object
+                            properties:
+                              value: { type: number, nullable: true, example: 1.22 }
+                              status: { type: string, enum: [available, not_available, estimated] }
+                          sodium_mg:
+                            type: object
+                            properties:
+                              value: { type: number, nullable: true, example: 8.75 }
+                              status: { type: string, enum: [available, not_available, estimated] }
+                      vitamins_minerals_detail:
+                        type: object
+                        description: >
+                          Same nutrients as vitamins_minerals, each paired with a
+                          status so a value of 0 is never confused with missing
+                          data (e.g. Vitamin D at 0 mcg but status "estimated"
+                          because the source FCT flagged it as assumed, not
+                          measured).
+                        additionalProperties:
+                          type: object
+                          properties:
+                            value: { type: number, nullable: true }
+                            status: { type: string, enum: [available, not_available, estimated] }
+                      calculation:
+                        type: object
+                        properties:
+                          serving_weight_grams: { type: number, example: 175 }
+                          serving_weight_source: { type: string, enum: [measured, estimated], nullable: true, example: estimated }
+                          serving_weight_basis: { type: string, enum: [fct, local_intelligence, category_estimate, reference], example: local_intelligence }
+                          value_basis: { type: string, enum: [direct_from_database, calculated_from_per_100g_reference], example: calculated_from_per_100g_reference }
+                      per_100g_reference:
+                        type: object
+                        nullable: true
+                        description: The raw per-100g basis the selected serving was scaled from.
+                        properties:
+                          calories: { type: number, nullable: true, example: 64 }
+                          energy_kj: { type: number, nullable: true, example: 271 }
+                          total_fat_g: { type: number, nullable: true, example: 0.4 }
+                          saturated_fat_g: { type: number, nullable: true, example: null }
+                          carbohydrates_g: { type: number, nullable: true, example: 14.1 }
+                          fiber_g: { type: number, nullable: true, example: 0.7 }
+                          sugars_g: { type: number, nullable: true, example: null }
+                          protein_g: { type: number, nullable: true, example: 0.4 }
+                          sodium_mg: { type: number, nullable: true, example: 5 }
+                          vitamins_minerals: { type: object, additionalProperties: { type: number } }
+                      missing_fields:
+                        type: array
+                        items: { type: string }
+                        example: ["saturated_fat_g", "sugars_g"]
+              example:
+                status: success
+                food_id: 9
+                food_name: "Cassava thick porridge, (Nsima ya kondowole)"
+                serving_source: local_intelligence
+                alternate_servings:
+                  - { label: "100g", grams: 100, source: fct }
+                requested_serving: { requested: chipande, matched: true, resolved_label: "1 chipande / mtanda (approx. 150-200g)" }
+                data:
+                  serving_size: "1 chipande / mtanda (approx. 150-200g)"
+                  serving_grams: 175
+                  calories: 112
+                  total_fat_g: 0.7
+                  saturated_fat_g: null
+                  carbohydrates_g: 24.68
+                  fiber_g: 1.22
+                  sugars_g: null
+                  protein_g: 0.7
+                  sodium_mg: 8.75
+                  vitamins_minerals: { "Vitamin C (mg)": 1.75, "Vitamin D (mcg)": 0, "Vitamin B12 (mcg)": 0 }
+                  standard: codex_stan_1-1985
+                  labelling_standard: "CXS 1-1985"
+                  nutrition_labelling_guideline: "CXG 2-1985"
+                  energy_kcal: 112
+                  energy_kj: 474.25
+                  nutrition_declaration:
+                    energy: { kcal: 112, kj: 474.25, kcal_status: available, kj_status: available }
+                    protein_g: { value: 0.7, status: available }
+                    carbohydrate_g: { value: 24.68, status: available }
+                    total_sugars_g: { value: null, status: not_available }
+                    total_fat_g: { value: 0.7, status: available }
+                    saturated_fat_g: { value: null, status: not_available }
+                    dietary_fibre_g: { value: 1.22, status: available }
+                    sodium_mg: { value: 8.75, status: available }
+                  vitamins_minerals_detail:
+                    "Vitamin D (mcg)": { value: 0, status: estimated }
+                    "Vitamin B12 (mcg)": { value: 0, status: estimated }
+                    "Vitamin C (mg)": { value: 1.75, status: available }
+                  calculation:
+                    serving_weight_grams: 175
+                    serving_weight_source: estimated
+                    serving_weight_basis: local_intelligence
+                    value_basis: calculated_from_per_100g_reference
+                  per_100g_reference:
+                    calories: 64
+                    energy_kj: 271
+                    total_fat_g: 0.4
+                    carbohydrates_g: 14.1
+                    fiber_g: 0.7
+                    protein_g: 0.4
+                    sodium_mg: 5
+                  missing_fields: ["saturated_fat_g", "sugars_g"]
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: No serving-size data available, or an invalid (non-positive) serving weight
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: error }
+                  message: { type: string, example: "No serving-size data available to build a label from" }
+
   /exchange:
     get:
       tags: [Exchange]

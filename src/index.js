@@ -188,7 +188,7 @@
  *  - Added Serving-Size Intelligence: GET /foods/:id and GET /foods/lookup
  *    now accept ?with_servings=true, which adds a `serving_sizes` array to
  *    the response — realistic Malawian household measures (e.g. "1 cup /
- *    chikombe (240g)", "1 chipande / mtanda nsima (200g)", "1 sachet RUTF (92g)"), each
+ *    chikombe (240g)", "1 chunk nsima (200g)", "1 sachet RUTF (92g)"), each
  *    with every nutrient field pre-scaled from the existing per-100g/100ml
  *    basis (that basis itself is unchanged — this is response-shaping only,
  *    no new columns, no migration). Three tiers, most specific first: the
@@ -2093,7 +2093,7 @@ async function handleGlycaemicIndex(request, url, db, id) {
 // estimates for counselling/portioning purposes, not lab-measured weights.
 
 const SERVING_SIZE_KEYWORDS = [
-  [["nsima"], { label: "1 chipande / mtanda (approx. 150-200g)", grams: 175 }],
+  [["nsima"], { label: "1 chipande (approx. 150-200g)", grams: 175 }],
   [["likuni phala", "phala", "porridge", "csb", "corn soya blend"], { label: "1 cup cooked porridge / chikombe (250g)", grams: 250 }],
   [["rutf", "plumpy"], { label: "1 sachet (92g)", grams: 92 }],
   [["rice"], { label: "1 cup cooked rice (150g)", grams: 150 }],
@@ -2176,27 +2176,125 @@ const LABEL_MICRONUTRIENT_NAMES = {
   iodine_mcg: "Iodine (mcg)",
 };
 
+// The two distinct Codex texts a nutrition label actually rests on — kept
+// separate because they're separate standards, not interchangeable names
+// for the same thing:
+//   CXS 1-1985  — General Standard for the Labelling of Pre-packaged Foods
+//                  (what MUST appear on a label at all: name, ingredients, etc.)
+//   CXG 2-1985  — Guidelines on Nutrition Labelling
+//                  (the nutrition-declaration content this endpoint builds)
+// `standard: "codex_stan_1-1985"` is kept below, unchanged, for existing
+// callers that already read it — labelling_standard/nutrition_labelling_guideline
+// are the corrected, separated references.
+const CODEX_LABELLING_STANDARD = "CXS 1-1985";
+const CODEX_NUTRITION_LABELLING_GUIDELINE = "CXG 2-1985";
+
+// kcal -> kJ, the standard Codex/FAO conversion factor. Only used when a
+// food has kcal but no directly-sourced kj value — see buildNutritionLabel.
+const KCAL_TO_KJ_FACTOR = 4.184;
+
+// Maps a `foods` DB column to the column name data_quality_flags actually
+// uses. The ingestion script (scripts/reload_foods_from_mfct.cjs) stores
+// data_quality_flags verbatim from the source CSV, whose column names don't
+// always match the renamed DB columns (e.g. CSV "vitamin_b12_mcg" -> DB
+// "vitb12_mcg"; CSV "added_sugar_g" -> DB "sugar_added_g") — this table
+// lets us look a DB field's flag up correctly instead of silently never
+// matching. Only fields that ever appear on a label need an entry here.
+const QUALITY_FLAG_FIELD_MAP = {
+  kcal: "energy_kcal",
+  kj: "energy_kj",
+  protein_g: "protein_g",
+  carbs_g: "carbohydrate_available_g",
+  sugar_total_g: "total_sugar_g",
+  fat_g: "fat_g",
+  safa_g: "safa_g",
+  fiber_g: "fiber_g",
+  sodium_mg: "sodium_mg",
+  vita_rae_mcg: "vitamin_a_rae_mcg",
+  vitc_mg: "vitamin_c_mg",
+  vitd_mcg: "vitamin_d_mcg",
+  vitb12_mcg: "vitamin_b12_mcg",
+  folate_mcg: "folate_mcg",
+  calcium_mg: "calcium_mg",
+  iron_mg: "iron_mg",
+  zinc_mg: "zinc_mg",
+  magnesium_mg: "magnesium_mg",
+  potassium_mg: "potassium_mg",
+  iodine_mcg: "iodine_mcg",
+};
+
+/** Parses a `data_quality_flags` string ("key:flag;key2:flag2") into a lookup object. Never throws on malformed input. */
+function parseDataQualityFlags(flagsStr) {
+  const out = {};
+  if (!flagsStr || typeof flagsStr !== "string") return out;
+  for (const pair of flagsStr.split(";")) {
+    const [key, val] = pair.split(":");
+    if (key && key.trim()) out[key.trim()] = (val || "").trim();
+  }
+  return out;
+}
+
+/**
+ * Status for one label field — never conflates "0" (genuinely zero) with
+ * missing data: only a null/undefined value is ever "not_available".
+ * "estimated" only applies when the source FCT itself flagged that field
+ * as assumed/estimated/low_confidence in data_quality_flags (see
+ * QUALITY_FLAG_FIELD_MAP) — otherwise a present value is "available".
+ */
+function fieldStatus(dbField, value, qualityFlags) {
+  if (value == null) return "not_available";
+  const flagKey = QUALITY_FLAG_FIELD_MAP[dbField];
+  const flag = flagKey ? qualityFlags[flagKey] : null;
+  if (flag && ["assumed", "estimated", "low_confidence"].includes(flag.toLowerCase())) return "estimated";
+  return "available";
+}
+
 /**
  * Reshapes an already-scaled nutrients object (the `nutrients` field from a
  * buildServingSizes() entry, or /recipes/calculate's nutrients_per_serving)
- * into a standardized Codex-style nutrition label. Codex STAN 1-1985 (as
- * amended) mandates energy, protein, available carbohydrate, fat, saturated
- * fat, sodium, and total sugars; fibre and vitamins/minerals are included
- * here too since producers generally want them shown even though Codex
- * itself only requires them when a nutrition claim is made about them.
- * `missing_fields` flags which mandatory values this food/recipe doesn't
- * have data for yet, rather than silently rendering them blank.
+ * into a standardized Codex-style nutrition label. CXG 2-1985 (Guidelines on
+ * Nutrition Labelling, as amended) is the actual basis for the nutrition
+ * declaration content — energy, protein, available carbohydrate, fat,
+ * saturated fat, sodium, and total sugars; fibre and vitamins/minerals are
+ * included here too since producers generally want them shown even though
+ * the guideline itself only requires them when a nutrition claim is made
+ * about them. `missing_fields` flags which mandatory values this food/recipe
+ * doesn't have data for yet, rather than silently rendering them blank.
+ *
+ * `options` (all optional — omitting them preserves the original,
+ * single-argument behavior used by POST /recipes/calculate, which has no
+ * single food row/quality-flags/100g-reference to draw on):
+ *   - qualityFlags   — parseDataQualityFlags() output for the source food row.
+ *   - reference100g  — the food's raw per-100g nutrients (buildServingSizes'
+ *                       "reference" tier), exposed alongside the serving
+ *                       values so a caller can see how they were derived.
+ *   - servingSource   — the serving_sizes tier this serving came from ("fct",
+ *                       "local_intelligence", "category_estimate", "reference").
  */
-function buildNutritionLabel(nutrients, servingLabel, servingGrams) {
+function buildNutritionLabel(nutrients, servingLabel, servingGrams, options = {}) {
+  const { qualityFlags = {}, reference100g = null, servingSource = null } = options;
+
   const vitaminsMinerals = {};
-  for (const [field, label] of Object.entries(LABEL_MICRONUTRIENT_NAMES)) {
-    if (nutrients[field] != null) vitaminsMinerals[label] = nutrients[field];
+  const vitaminsMineralsDetail = {};
+  for (const [field, name] of Object.entries(LABEL_MICRONUTRIENT_NAMES)) {
+    const value = nutrients[field] ?? null;
+    if (value != null) vitaminsMinerals[name] = value;
+    vitaminsMineralsDetail[name] = { value, status: fieldStatus(field, value, qualityFlags) };
   }
 
+  const kcal = nutrients.kcal ?? nutrients.energy_kcal ?? null;
+  // kJ: prefer a directly-sourced value; only fall back to converting from
+  // kcal (and mark that conversion as "estimated", since it isn't itself a
+  // measured value) when the source has no kJ figure of its own.
+  const kjDirect = nutrients.kj ?? null;
+  const kj = kjDirect ?? (kcal != null ? Math.round(kcal * KCAL_TO_KJ_FACTOR * 100) / 100 : null);
+  const kjStatus = kjDirect != null ? fieldStatus("kj", kjDirect, qualityFlags) : kcal != null ? "estimated" : "not_available";
+
   const label = {
+    // Legacy fields — unchanged shape/meaning, existing clients keep working.
     serving_size: servingLabel,
     serving_grams: servingGrams,
-    calories: nutrients.kcal ?? nutrients.energy_kcal ?? null,
+    calories: kcal,
     total_fat_g: nutrients.fat_g ?? null,
     saturated_fat_g: nutrients.safa_g ?? null,
     carbohydrates_g: nutrients.carbs_g ?? null,
@@ -2206,7 +2304,66 @@ function buildNutritionLabel(nutrients, servingLabel, servingGrams) {
     sodium_mg: nutrients.sodium_mg ?? null,
     vitamins_minerals: vitaminsMinerals,
     standard: "codex_stan_1-1985",
+
+    // New: corrected/separated Codex references.
+    labelling_standard: CODEX_LABELLING_STANDARD,
+    nutrition_labelling_guideline: CODEX_NUTRITION_LABELLING_GUIDELINE,
+
+    // New: explicit energy pair, calculated consistently from the same
+    // source nutrients as `calories` above.
+    energy_kcal: kcal,
+    energy_kj: kj,
+
+    // New: structured nutrition declaration — same values as the legacy
+    // flat fields, paired with an availability/estimation status so "0"
+    // (genuinely zero) is never confused with missing data.
+    nutrition_declaration: {
+      energy: { kcal, kj, kcal_status: fieldStatus("kcal", kcal, qualityFlags), kj_status: kjStatus },
+      protein_g: { value: nutrients.protein_g ?? null, status: fieldStatus("protein_g", nutrients.protein_g ?? null, qualityFlags) },
+      carbohydrate_g: { value: nutrients.carbs_g ?? null, status: fieldStatus("carbs_g", nutrients.carbs_g ?? null, qualityFlags) },
+      total_sugars_g: { value: nutrients.sugar_total_g ?? null, status: fieldStatus("sugar_total_g", nutrients.sugar_total_g ?? null, qualityFlags) },
+      total_fat_g: { value: nutrients.fat_g ?? null, status: fieldStatus("fat_g", nutrients.fat_g ?? null, qualityFlags) },
+      saturated_fat_g: { value: nutrients.safa_g ?? null, status: fieldStatus("safa_g", nutrients.safa_g ?? null, qualityFlags) },
+      dietary_fibre_g: { value: nutrients.fiber_g ?? null, status: fieldStatus("fiber_g", nutrients.fiber_g ?? null, qualityFlags) },
+      sodium_mg: { value: nutrients.sodium_mg ?? null, status: fieldStatus("sodium_mg", nutrients.sodium_mg ?? null, qualityFlags) },
+    },
+
+    // New: same vitamins/minerals, each paired with its availability status.
+    vitamins_minerals_detail: vitaminsMineralsDetail,
+
+    // New: calculation transparency — is this serving's weight a real
+    // measured amount or a curated estimate, and are the nutrient values
+    // themselves the database's own 100g figures or scaled from them.
+    calculation: {
+      serving_weight_grams: servingGrams,
+      serving_weight_source: servingSource === "fct" || servingSource === "reference" ? "measured" : servingSource ? "estimated" : null,
+      serving_weight_basis: servingSource,
+      value_basis: servingGrams === 100 ? "direct_from_database" : "calculated_from_per_100g_reference",
+    },
   };
+
+  // New: the raw per-100g basis these serving values were scaled from, so a
+  // caller can see the derivation rather than only the final numbers.
+  // Only present when a single food's 100g reference nutrients were passed
+  // in (not available for /recipes/calculate, which sums several foods).
+  if (reference100g) {
+    label.per_100g_reference = {
+      calories: reference100g.kcal ?? null,
+      energy_kj: reference100g.kj ?? null,
+      total_fat_g: reference100g.fat_g ?? null,
+      saturated_fat_g: reference100g.safa_g ?? null,
+      carbohydrates_g: reference100g.carbs_g ?? null,
+      fiber_g: reference100g.fiber_g ?? null,
+      sugars_g: reference100g.sugar_total_g ?? null,
+      protein_g: reference100g.protein_g ?? null,
+      sodium_mg: reference100g.sodium_mg ?? null,
+      vitamins_minerals: Object.fromEntries(
+        Object.entries(LABEL_MICRONUTRIENT_NAMES)
+          .map(([field, name]) => [name, reference100g[field] ?? null])
+          .filter(([, v]) => v != null)
+      ),
+    };
+  }
 
   const mandatory = ["calories", "total_fat_g", "saturated_fat_g", "carbohydrates_g", "sugars_g", "protein_g", "sodium_mg"];
   const missing = mandatory.filter((f) => label[f] == null);
@@ -2217,6 +2374,25 @@ function buildNutritionLabel(nutrients, servingLabel, servingGrams) {
 
 function roundServingVal(n) {
   return n == null || n === "" || isNaN(n) ? null : Math.round(Number(n) * 100) / 100;
+}
+
+/**
+ * The raw per-100g/100ml nutrients straight off a food row (scale=1), for
+ * exposing alongside a scaled serving as `per_100g_reference` on a
+ * nutrition label. Computed directly from the row rather than pulled from
+ * buildServingSizes()'s "reference" tier, because that tier gets deduped
+ * away whenever the food's own `measure`/`weight_g` is already ~100g (true
+ * for every row loaded via scripts/reload_foods_from_mfct.cjs, which always
+ * sets measure="100g") — so a distinct "reference"-sourced entry often
+ * doesn't exist even though the 100g basis obviously still does.
+ */
+function extractPer100gNutrients(food) {
+  const nutrients = {};
+  if (!food) return nutrients;
+  for (const field of SERVING_SCALE_FIELDS) {
+    if (food[field] != null && food[field] !== "") nutrients[field] = roundServingVal(Number(food[field]));
+  }
+  return nutrients;
 }
 
 /**
@@ -5464,7 +5640,7 @@ function handleRoot(env) {
         "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
         "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
         "GET  /foods/compare?foods=nsima,rice,potatoes  (public, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
-        "GET  /foods/:id/label?serving=  (public, rate-limited, cached 1h) → standardized Codex STAN 1-1985 nutrition label (serving_size, calories, total_fat_g, saturated_fat_g, carbohydrates_g, fiber_g, sugars_g, protein_g, sodium_mg, vitamins_minerals) for one food; defaults to the most specific serving Serving-Size Intelligence has, ?serving= picks another by label text (e.g. ?serving=100g); missing_fields flags any mandatory value this food doesn't have data for; POST /recipes/calculate returns the same shape as nutrition_label for a whole recipe",
+        "GET  /foods/:id/label?serving=  (public, rate-limited, cached 1h) → Codex-oriented nutrition label for one food. References CXS 1-1985 (General Standard for the Labelling of Pre-packaged Foods, `labelling_standard`) and CXG 2-1985 (Guidelines on Nutrition Labelling, `nutrition_labelling_guideline`) separately. Legacy flat fields (serving_size, calories, total_fat_g, saturated_fat_g, carbohydrates_g, fiber_g, sugars_g, protein_g, sodium_mg, vitamins_minerals, standard) are unchanged; adds energy_kcal/energy_kj, a structured nutrition_declaration and vitamins_minerals_detail (each field paired with status: available/not_available/estimated — a genuine 0 is never shown as missing, and 'estimated' only appears where the source FCT's data_quality_flags itself flags that value as assumed), per_100g_reference (the raw 100g basis a scaled serving was derived from), and a calculation block (serving_weight_source: measured/estimated, value_basis: direct_from_database/calculated_from_per_100g_reference). Defaults to the most specific serving Serving-Size Intelligence has (chipande/mtanda, cup, tablespoon, handful, piece, etc. — see SERVING_SIZE_KEYWORDS); ?serving= picks another by label text (e.g. ?serving=100g) — an unrecognized ?serving= falls back to the default rather than erroring, flagged via requested_serving.matched=false. missing_fields flags any mandatory value this food doesn't have data for. Invalid (non-numeric) food IDs and non-positive serving weights return 400/422 with a clear message. POST /recipes/calculate returns the same nutrition_label shape for a whole recipe (its own per-serving totals — no single food row, so no per_100g_reference or quality-flag-based 'estimated' status there)",
         "POST /foods            (admin)",
         "POST /foods/bulk       (admin) → body {items:[...]}, max 500, batch insert in one request",
         "PUT  /foods/:id        (admin)",
@@ -5614,24 +5790,56 @@ async function handleFoodsLookup(request, url, db, env) {
 async function handleFoodsLabel(request, url, db, id) {
   if (request.method !== "GET") return err("Only GET is supported for /foods/:id/label", 405);
 
-  const { ok, status, body } = await db.selectOne("foods", id);
-  if (status === 404) return notFound("Food");
-  if (!ok) return err(body?.message || "Query failed", status);
+  // Validate the food ID up front with a clear message, rather than letting
+  // a malformed id fall through to a generic 404 from the DB query.
+  if (!id || !/^\d+$/.test(String(id))) {
+    return err(`Invalid food ID '${id}' — must be a positive integer`, 400);
+  }
 
-  const servingSizes = buildServingSizes(body);
-  if (!servingSizes.length) return err("No serving-size data available to build a label from", 422);
+  try {
+    const { ok, status, body } = await db.selectOne("foods", id);
+    if (status === 404) return notFound("Food");
+    if (!ok) return err(body?.message || "Query failed", status);
 
-  const requested = (url.searchParams.get("serving") || "").toLowerCase();
-  const chosen = (requested && servingSizes.find((s) => s.label.toLowerCase().includes(requested))) || servingSizes[0];
+    const servingSizes = buildServingSizes(body);
+    if (!servingSizes.length) return err("No serving-size data available to build a label from", 422);
 
-  const label = buildNutritionLabel(chosen.nutrients, chosen.label, chosen.grams);
+    const requestedRaw = url.searchParams.get("serving") || "";
+    const requested = requestedRaw.toLowerCase();
+    const matchedServing = requested ? servingSizes.find((s) => s.label.toLowerCase().includes(requested)) : null;
+    // Unknown serving name: fall back to the most specific tier available
+    // (same as before) rather than erroring, but flag it via
+    // requested_serving.matched so a caller can tell the request didn't
+    // resolve to what it asked for.
+    const chosen = matchedServing || servingSizes[0];
 
-  return success(label, {
-    food_id: body.id,
-    food_name: body.food_name,
-    serving_source: chosen.source,
-    alternate_servings: servingSizes.filter((s) => s !== chosen).map(({ label, grams, source }) => ({ label, grams, source })),
-  });
+    if (!(Number(chosen.grams) > 0) || !isFinite(Number(chosen.grams))) {
+      return err(`Invalid serving weight (${chosen.grams}g) for this food — cannot build a label from it`, 422);
+    }
+
+    const qualityFlags = parseDataQualityFlags(body.data_quality_flags);
+    const reference100g = extractPer100gNutrients(body);
+
+    const label = buildNutritionLabel(chosen.nutrients, chosen.label, chosen.grams, {
+      qualityFlags,
+      reference100g: Object.keys(reference100g).length ? reference100g : null,
+      servingSource: chosen.source,
+    });
+
+    return success(label, {
+      food_id: body.id,
+      food_name: body.food_name,
+      serving_source: chosen.source,
+      alternate_servings: servingSizes.filter((s) => s !== chosen).map(({ label, grams, source }) => ({ label, grams, source })),
+      requested_serving: {
+        requested: requestedRaw || null,
+        matched: !requestedRaw || !!matchedServing,
+        resolved_label: chosen.label,
+      },
+    });
+  } catch (e) {
+    return err(`Label calculation failed: ${e?.message || String(e)}`, 500);
+  }
 }
 
 async function handleFoods(request, url, db, id) {
