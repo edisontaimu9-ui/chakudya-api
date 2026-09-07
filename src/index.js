@@ -2560,6 +2560,22 @@ function resolveIngredientGrams(food, quantity, unit) {
   return { grams: null, reason: `unrecognized unit '${unit}' — use g/kg/ml/l/oz/lb, a household unit (cup/tbsp/tsp/piece/slice/handful/serving), or a food-specific label` };
 }
 
+// Bare-query overrides — real-world prevalence beats the generic
+// qualifier/shortest-name tiebreak for a handful of foods where Malawi FCT
+// lists several named variants and the shortest-name rule would otherwise
+// surface an obscure one just because its name happens to be shorter. E.g.
+// a bare "nsima" search previously resolved to "Cassava thick porridge,
+// (Nsima ya kondowole)" — a variant rarely eaten day-to-day — ahead of
+// "Maize thick porridge, refined flour, (Nsima ya ufa oyera)", the
+// everyday white/refined-maize-flour nsima most people actually mean,
+// purely because "kondowole" made for a shorter food_name than "ufa
+// oyera". Only fires on an exact (trimmed, case-insensitive) match of the
+// bare query against a key here — a more specific query like "nsima ya
+// kondowole" still resolves to that specific variant as expected.
+const BARE_QUERY_PREFERRED_MATCH = {
+  nsima: "ufa oyera", // common everyday nsima (refined/white maize flour)
+};
+
 /**
  * Given several ilike-matched food rows for a search term, picks the one
  * most likely to be what was meant — plain "milk" or "rice" over
@@ -2582,6 +2598,8 @@ function resolveIngredientGrams(food, quantity, unit) {
  * This still can't disambiguate raw vs. cooked when both qualify equally
  * (e.g. plain "rice" could mean either) — pass food_id instead of
  * food_name for exact control when that distinction matters.
+ * BARE_QUERY_PREFERRED_MATCH above runs first and overrides the length
+ * tiebreak for specific known-ambiguous bare queries (see comment there).
  */
 function pickBestFoodMatch(rows, query) {
   if (!rows || !rows.length) return null;
@@ -2589,6 +2607,12 @@ function pickBestFoodMatch(rows, query) {
 
   const exact = rows.find((r) => (r.food_name || "").trim().toLowerCase() === q);
   if (exact) return exact;
+
+  const preferredSubstring = BARE_QUERY_PREFERRED_MATCH[q];
+  if (preferredSubstring) {
+    const preferred = rows.find((r) => (r.food_name || "").toLowerCase().includes(preferredSubstring));
+    if (preferred) return preferred;
+  }
 
   const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const wordBoundary = new RegExp(`\\b${escaped}\\b`, "i");
@@ -4482,12 +4506,20 @@ function withExternalShape(row, source) {
 async function lookupFoodCascade(db, { query, barcode }, env) {
   // 1. Local curated data
   if (query) {
+    // Fetch several candidates (same limit as pickBestFoodMatch's other
+    // callers) and let it pick the best one — not just whichever row
+    // Postgres happens to return first for a bare `limit: 1` (previously
+    // this was always the lowest `id` match, e.g. "nsima" resolved to
+    // food id 9, "Cassava thick porridge, (Nsima ya kondowole)", a variant
+    // rarely eaten day-to-day, purely because it happened to have the
+    // lowest id among ilike matches — not because it was the best match).
     const local = await db.select("foods", {
       filters: { food_name: `ilike.*${escapeLikePattern(query)}*` },
-      limit: 1,
+      limit: 25,
     });
-    if (local.ok && local.body?.[0]) {
-      return { food: withExternalShape(local.body[0], "local"), source: "local", cached: false };
+    const best = local.ok && local.body?.length ? pickBestFoodMatch(local.body, query) : null;
+    if (best) {
+      return { food: withExternalShape(best, "local"), source: "local", cached: false };
     }
   }
   if (barcode) {
