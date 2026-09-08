@@ -3,7 +3,16 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.27.0
+ * Version: 1.27.1
+ *
+ * v1.27.1 changes:
+ *  - sql/010_expand_food_synonyms_from_mfct.sql: expanded food_synonyms
+ *    with terms mined from the authoritative Malawi FCT source CSV —
+ *    more vegetables/fruits, additional local fish species names, and
+ *    insect/wild-food staples (locust, caterpillar, lake flies, termites)
+ *    that had zero synonym coverage before. Also fixes a wrong guess from
+ *    009 (pumpkin's real FCT term is "Dzungu", not "thabwa"). No code
+ *    changes in this version — pure data migration, additive/idempotent.
  *
  * v1.27.0 changes:
  *  - Advanced food search + autocomplete (sql/009_add_advanced_food_search.sql):
