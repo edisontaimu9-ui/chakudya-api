@@ -4668,9 +4668,9 @@ function withExternalShape(row, source) {
   };
 }
 
-async function lookupFoodCascade(db, { query, barcode }, env) {
+async function lookupFoodCascade(db, { query, barcode, skipLocal = false }, env) {
   // 1. Local curated data
-  if (query) {
+  if (query && !skipLocal) {
     // Fetch several candidates (same limit as pickBestFoodMatch's other
     // callers) and let it pick the best one — not just whichever row
     // Postgres happens to return first for a bare `limit: 1` (previously
@@ -4705,7 +4705,7 @@ async function lookupFoodCascade(db, { query, barcode }, env) {
   // misspelled Malawian food name (e.g. "Chinagwa" for "Chinangwa") before
   // falling through to external APIs that don't index Chichewa names
   // anyway. See fuzzyFoodSearch/sql/008_add_fuzzy_food_search.sql.
-  if (query) {
+  if (query && !skipLocal) {
     const fuzzy = await fuzzyFoodSearch(db, query, { maxResults: 1 });
     if (fuzzy[0]) {
       return { food: withExternalShape(fuzzy[0], "local_fuzzy"), source: "local_fuzzy", cached: false };
@@ -5924,7 +5924,7 @@ function handleRoot(env) {
         "GET  /foods?search=...&category=...  → list/search results are trimmed to identity + amount (measure/weight_g) + energy + macros + micros (see FOODS_SEARCH_FIELDS); GET /foods/:id still returns the full row incl. mfct_code/moisture_g/etc.",
         "GET  /foods?with_servings=true",
         "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
-        "GET  /foods/lookup?q=...|barcode=...&with_servings=true   (public, rate-limited) → CNR's wider data tier: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
+        "GET  /foods/lookup?q=...|barcode=...&with_servings=true&tier=wider   (public, rate-limited) → CNR's wider data tier: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. ?tier=wider skips the local/fuzzy steps and forces USDA/OFF/FatSecret directly — for when the local Malawi FCT entry is a different preparation than what was actually asked for (e.g. 'rice, cooked' vs. the local 'Rice, soaked' entry). All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
         "GET  /foods/search?q=&max_results=&min_similarity=&category=&brand=&ingredient=  (public, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql + sql/009_add_advanced_food_search.sql), expanded through food_synonyms (Chichewa<->English + local-name aliases — a search for 'chinangwa' also searches 'cassava'). category= filters/narrows the q search (or, with no q, browses that category). brand= and ingredient= search packaged_foods.brand/.ingredients_text instead (brand search, search-by-ingredient) and merge into the same results array. Every result is tagged _source ('foods'|'packaged_foods') and _match_type ('fuzzy'|'synonym'|'category'|'brand'|'ingredient'). No external API calls, never caches an external result — purely local. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
         "GET  /foods/by-category?category=...&max_results=  (public, rate-limited) → plain category browse over public.foods, no query text needed",
         "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → local-first as-you-type suggestions: Malawi FCT + packaged foods (brand/product) substring match, backfilled with fuzzy search for typo tolerance ('nsim' -> Nsima, Nsima ya chimanga, Nsima ya kondowole, ...), then food_synonyms expansion, then FatSecret Premier suggestions last for anything with no local coverage (skipped, not fatal, if FatSecret isn't configured)",
@@ -6042,17 +6042,24 @@ function handleRoot(env) {
 
 // GET /foods/lookup?q=banana
 // GET /foods/lookup?barcode=6007048001598
+// GET /foods/lookup?q=rice+cooked&tier=wider
 // Checks local data first, then previously-cached external results, then
 // falls through to USDA FDC / Open Food Facts / FatSecret and caches
 // whatever it finds so the next lookup for the same food is a local hit.
+// ?tier=wider skips the local/fuzzy steps and goes straight to the cached/
+// external steps — for a caller that already has a local match but wants
+// the wider USDA/OFF/FatSecret data specifically (e.g. the local Malawi
+// FCT entry is for a different preparation than what was asked for, like
+// "Rice, soaked" vs. a plain "rice, cooked" ask).
 async function handleFoodsLookup(request, url, db, env) {
   if (request.method !== "GET") return err("Only GET is supported for lookup", 405);
 
   const query = url.searchParams.get("q") || "";
   const barcode = url.searchParams.get("barcode") || "";
   if (!query && !barcode) return err("Provide 'q' (food name) or 'barcode'");
+  const wider = url.searchParams.get("tier") === "wider";
 
-  const result = await lookupFoodCascade(db, { query, barcode }, env);
+  const result = await lookupFoodCascade(db, { query, barcode, skipLocal: wider }, env);
   if (!result) {
     return json(
       { status: "not_found", message: "No match in local data or any external source" },
