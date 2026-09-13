@@ -3,7 +3,38 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.27.1
+ * Version: 1.28.0
+ *
+ * v1.28.0 changes:
+ *  - Replaced pickBestFoodMatch()'s ranking logic entirely (now in the new
+ *    src/foodMatching.js) — root cause: its only real disambiguation
+ *    beyond exact/word-boundary matching was "shortest food_name wins",
+ *    which has nothing to do with which candidate is actually the best
+ *    semantic match (e.g. a bare "rice" query could resolve onto "Rice
+ *    pudding" or "Rice, soaked" somewhat arbitrarily depending on which
+ *    was shorter). Replaced with a multi-component scorer: base-name
+ *    token overlap, exact-name match, a dish-word penalty so a genuinely
+ *    different prepared dish ("Rice pudding") can't outrank the plain
+ *    ingredient just for containing the word, and requested-vs-conflicting
+ *    preparation-state/form/freshness/variety attribute matching (so
+ *    "cooked rice" actively prefers a cooked record and is penalized
+ *    against a conflicting one, while an attribute the query never asked
+ *    about only applies a small specificity tiebreak, never a
+ *    disqualification — the Malawi FCT frequently has no unqualified
+ *    entry for a food at all). Also removed BARE_QUERY_PREFERRED_MATCH,
+ *    a per-food hardcoded override (just `{ nsima: "ufa oyera" }`) — a
+ *    bare query that only weakly ties across multiple candidates (e.g.
+ *    "nsima" matching several candidates solely through their Chichewa-
+ *    name parenthetical, with nothing in the query to prefer one base
+ *    food over another) is now honestly flagged ambiguous instead of
+ *    silently guessing; see pickBestFoodMatchDetailed(), surfaced on
+ *    GET /foods/lookup's response as `ambiguous`/`alternates`. Every
+ *    existing caller (ingredient parsing, /foods/compare, batch
+ *    resolution) still calls pickBestFoodMatch() with its original
+ *    signature/return shape, so this is a drop-in ranking improvement
+ *    across all of them, not a per-endpoint fix. See
+ *    src/foodMatching.js's doc comment and test/foodMatching.test.js for
+ *    the full design and regression coverage.
  *
  * v1.27.1 changes:
  *  - sql/010_expand_food_synonyms_from_mfct.sql: expanded food_synonyms
@@ -471,6 +502,7 @@ import {
   sodiumCdrrForAge,
   resolveDriLifeStage,
 } from "./dri_data.js";
+import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
@@ -2606,72 +2638,21 @@ function resolveIngredientGrams(food, quantity, unit) {
   return { grams: null, reason: `unrecognized unit '${unit}' — use g/kg/ml/l/oz/lb, a household unit (cup/tbsp/tsp/piece/slice/handful/serving), or a food-specific label` };
 }
 
-// Bare-query overrides — real-world prevalence beats the generic
-// qualifier/shortest-name tiebreak for a handful of foods where Malawi FCT
-// lists several named variants and the shortest-name rule would otherwise
-// surface an obscure one just because its name happens to be shorter. E.g.
-// a bare "nsima" search previously resolved to "Cassava thick porridge,
-// (Nsima ya kondowole)" — a variant rarely eaten day-to-day — ahead of
-// "Maize thick porridge, refined flour, (Nsima ya ufa oyera)", the
-// everyday white/refined-maize-flour nsima most people actually mean,
-// purely because "kondowole" made for a shorter food_name than "ufa
-// oyera". Only fires on an exact (trimmed, case-insensitive) match of the
-// bare query against a key here — a more specific query like "nsima ya
-// kondowole" still resolves to that specific variant as expected.
-const BARE_QUERY_PREFERRED_MATCH = {
-  nsima: "ufa oyera", // common everyday nsima (refined/white maize flour)
-};
-
-/**
- * Given several ilike-matched food rows for a search term, picks the one
- * most likely to be what was meant — plain "milk" or "rice" over
- * "Milk scones" or "Rice porridge" just because the substring happens to
- * appear inside a longer dish name. Four tiers:
- *   1. Exact case-insensitive match on the whole food_name.
- *   2. The search term appears as a whole word (word-boundary match) —
- *      narrows out coincidental substring hits like "rice" inside
- *      "Apricot".
- *   3. Among those, prefer names where the matched word is immediately
- *      followed by a qualifier — parenthesis/comma/dash/slash/end-of-
- *      string — rather than straight into another bare word. This is the
- *      part that actually distinguishes "Rice (cooked, white)" or
- *      "Rice, brown, raw" (still just rice, with a qualifier) from
- *      "Rice pudding" or "Rice porridge" (a different dish that happens to
- *      start with the same word) — a plain shortest-name tiebreak alone
- *      gets this wrong, since e.g. "Rice pudding" (12 chars) is literally
- *      shorter than "Rice (cooked, white)" (21 chars).
- *   4. Shortest food_name as the final tiebreak within whatever's left.
- * This still can't disambiguate raw vs. cooked when both qualify equally
- * (e.g. plain "rice" could mean either) — pass food_id instead of
- * food_name for exact control when that distinction matters.
- * BARE_QUERY_PREFERRED_MATCH above runs first and overrides the length
- * tiebreak for specific known-ambiguous bare queries (see comment there).
- */
-function pickBestFoodMatch(rows, query) {
-  if (!rows || !rows.length) return null;
-  const q = query.trim().toLowerCase();
-
-  const exact = rows.find((r) => (r.food_name || "").trim().toLowerCase() === q);
-  if (exact) return exact;
-
-  const preferredSubstring = BARE_QUERY_PREFERRED_MATCH[q];
-  if (preferredSubstring) {
-    const preferred = rows.find((r) => (r.food_name || "").toLowerCase().includes(preferredSubstring));
-    if (preferred) return preferred;
-  }
-
-  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const wordBoundary = new RegExp(`\\b${escaped}\\b`, "i");
-  let pool = rows.filter((r) => wordBoundary.test(r.food_name || ""));
-  if (!pool.length) pool = rows;
-
-  const qualifierAfter = new RegExp(`\\b${escaped}\\b\\s*($|[(),/-])`, "i");
-  const qualified = pool.filter((r) => qualifierAfter.test(r.food_name || ""));
-  const candidates = qualified.length ? qualified : pool;
-
-  candidates.sort((a, b) => (a.food_name || "").length - (b.food_name || "").length);
-  return candidates[0];
-}
+// pickBestFoodMatch()/pickBestFoodMatchDetailed() now live in
+// ./foodMatching.js — a general multi-component scorer (base-name
+// overlap, exact match, requested-vs-conflicting preparation/form/
+// freshness/variety attributes, a dish-word penalty so "Rice pudding"
+// can't outrank "Rice" for a bare "rice" query, and a specificity penalty
+// for unrequested qualifiers) that replaced the old "shortest food_name
+// wins" tiebreak and a per-food hardcoded override table (BARE_QUERY_
+// PREFERRED_MATCH, previously just `{ nsima: "ufa oyera" }`). See that
+// file's doc comment for the full root-cause writeup and design, and
+// foodMatching.test.js for the regression suite. A bare query like
+// "nsima" that only weakly matches multiple candidates (via their
+// Chichewa-name parenthetical, with nothing in the query to prefer one
+// base food over another) is now honestly reported as ambiguous rather
+// than silently guessing — see pickBestFoodMatchDetailed's `ambiguous`/
+// `alternates` fields, surfaced on GET /foods/lookup's response.
 
 // ─── INGREDIENT TEXT PARSING ─────────────────────────────────────────────────
 //
@@ -4682,9 +4663,17 @@ async function lookupFoodCascade(db, { query, barcode, skipLocal = false }, env)
       filters: { food_name: `ilike.*${escapeLikePattern(query)}*` },
       limit: 25,
     });
-    const best = local.ok && local.body?.length ? pickBestFoodMatch(local.body, query) : null;
-    if (best) {
-      return { food: withExternalShape(best, "local"), source: "local", cached: false };
+    if (local.ok && local.body?.length) {
+      const { match, ambiguous, alternates } = pickBestFoodMatchDetailed(local.body, query);
+      if (match) {
+        return {
+          food: withExternalShape(match, "local"),
+          source: "local",
+          cached: false,
+          ambiguous,
+          alternates: ambiguous ? alternates.map((r) => ({ id: r.id, food_name: r.food_name })) : undefined,
+        };
+      }
     }
   }
   if (barcode) {
@@ -6073,6 +6062,14 @@ async function handleFoodsLookup(request, url, db, env) {
     source: result.source,
     cached: result.cached,
     freshly_cached: !!result.freshly_cached,
+    ...(result.ambiguous
+      ? {
+          ambiguous: true,
+          note:
+            "This match wasn't confident — the query didn't clearly favour it over other similarly-named foods. See 'alternates'.",
+          alternates: result.alternates,
+        }
+      : {}),
   });
 }
 
