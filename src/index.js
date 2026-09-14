@@ -4458,13 +4458,24 @@ function extractJsonObject(text) {
 // (NUTRITION_LABEL_SCHEMA_PROMPT uses "sugars_g"). Manual /packaged/submit
 // payloads target the packaged_foods DB column names directly, which use
 // "sugar_g" (singular) — see PACKAGED_FOOD_DB_NUTRIENT_FIELDS below.
+// The micronutrient names below are shared as-is between the two lists —
+// same field name in the AI schema and the DB column, matching the panel
+// public.foods and public.external_foods_cache already use (see
+// sql/001_add_micronutrients_to_foods.sql / 007_add_external_cache_micros.sql)
+// so a packaged-food result can be displayed the same way as a local one.
+const PACKAGED_FOOD_MICRONUTRIENT_FIELDS = [
+  "calcium_mg", "iron_mg", "zinc_mg", "magnesium_mg", "potassium_mg",
+  "folate_mcg", "vita_rae_mcg", "vitc_mg", "vitd_mcg", "vitb12_mcg", "iodine_mcg",
+];
 const PACKAGED_FOOD_NUTRIENT_FIELDS = [
   "energy_kcal", "protein_g", "fat_g", "saturated_fat_g",
   "carbs_g", "sugars_g", "fiber_g", "sodium_mg", "salt_g",
+  ...PACKAGED_FOOD_MICRONUTRIENT_FIELDS,
 ];
 const PACKAGED_FOOD_DB_NUTRIENT_FIELDS = [
   "energy_kcal", "protein_g", "fat_g", "saturated_fat_g",
   "carbs_g", "sugar_g", "fiber_g", "sodium_mg", "salt_g",
+  ...PACKAGED_FOOD_MICRONUTRIENT_FIELDS,
 ];
 
 /**
@@ -4562,6 +4573,17 @@ Return ONLY a single JSON object (no prose, no markdown fences) with exactly the
   "fiber_g": number|null,
   "sodium_mg": number|null,
   "salt_g": number|null,
+  "calcium_mg": number|null,
+  "iron_mg": number|null,
+  "zinc_mg": number|null,
+  "magnesium_mg": number|null,
+  "potassium_mg": number|null,
+  "folate_mcg": number|null,
+  "vita_rae_mcg": number|null,    // Vitamin A, as printed (RAE mcg — convert from IU if that's what's printed: mcg RAE = IU / 3.3 for a mixed/food source)
+  "vitc_mg": number|null,         // Vitamin C
+  "vitd_mcg": number|null,        // Vitamin D
+  "vitb12_mcg": number|null,      // Vitamin B12
+  "iodine_mcg": number|null,
   "ingredients_text": string|null,
   "allergens": string|null,
   "confidence": number            // your own confidence 0.0-1.0 that the extracted values are accurate
@@ -4569,6 +4591,7 @@ Return ONLY a single JSON object (no prose, no markdown fences) with exactly the
 
 Rules:
 - If energy is printed in kJ only, convert to kcal (divide by 4.184) and note that in nothing else — just return the kcal number.
+- Micronutrients (calcium, iron, zinc, magnesium, potassium, folate, vitamins A/C/D/B12, iodine) are frequently printed as "% Daily Value" / "%NRV" rather than an absolute amount — if ONLY a percentage is printed with no absolute mg/mcg figure alongside it, leave that field null rather than guessing a reference value to convert from.
 - If a field is not visible or not printed in ANY photo, use null. Do not guess or invent numbers.
 - If none of the photos show a legible nutrition label, set "label_detected": false and set numeric fields to null (a barcode-only or front-of-pack-only photo does not count as a legible label).
 - Output valid JSON only.`;
@@ -6542,6 +6565,20 @@ async function handlePackagedScan(request, env, db) {
     fiber_g: scaled.fiber_g ?? null,
     sodium_mg: scaled.sodium_mg ?? null,
     salt_g: scaled.salt_g ?? null,
+    // Same field names in `scaled` and the DB column for every micro (no
+    // "sugars_g"-vs-"sugar_g"-style rename needed here) — see
+    // PACKAGED_FOOD_MICRONUTRIENT_FIELDS.
+    calcium_mg: scaled.calcium_mg ?? null,
+    iron_mg: scaled.iron_mg ?? null,
+    zinc_mg: scaled.zinc_mg ?? null,
+    magnesium_mg: scaled.magnesium_mg ?? null,
+    potassium_mg: scaled.potassium_mg ?? null,
+    folate_mcg: scaled.folate_mcg ?? null,
+    vita_rae_mcg: scaled.vita_rae_mcg ?? null,
+    vitc_mg: scaled.vitc_mg ?? null,
+    vitd_mcg: scaled.vitd_mcg ?? null,
+    vitb12_mcg: scaled.vitb12_mcg ?? null,
+    iodine_mcg: scaled.iodine_mcg ?? null,
     ingredients_text: extracted.ingredients_text ?? null,
     allergens: extracted.allergens ?? null,
     ocr_raw: extracted,
