@@ -23,6 +23,7 @@
  *                                     [{"page": 5, "heading": "Food groups", "content": "..."}]
  *   --pages 3-40                      only process this page range (dry run friendly)
  *   --skip-pages 1-2,61-72,80         leave these pages out (covers, numeric lookup grids, pages you'll hand-write)
+ *   --skip-tables 49                  drop only the tables on these pages, keep their prose
  *
  * Env
  *   ADMIN_KEY     admin key for the Worker (sent as "Authorization: Bearer <key>";
@@ -127,15 +128,19 @@ if (typeof args.pages === "string") {
   lastPage = Math.min(totalPages, Number(m[2]));
 }
 
-// pages to leave out entirely, e.g. --skip-pages 1-2,61-72,80
-const skipPages = new Set();
-if (typeof args["skip-pages"] === "string") {
-  for (const part of args["skip-pages"].split(",")) {
+// page sets: --skip-pages drops whole pages, --skip-tables drops only the tables on those pages
+function parsePageSet(flag) {
+  const set = new Set();
+  if (typeof args[flag] !== "string") return set;
+  for (const part of args[flag].split(",")) {
     const m = part.trim().match(/^(\d+)(?:-(\d+))?$/);
-    if (!m) die("--skip-pages must look like 1-2,61-72,80");
-    for (let q = Number(m[1]); q <= Number(m[2] || m[1]); q++) skipPages.add(q);
+    if (!m) die(`--${flag} must look like 1-2,61-72,80`);
+    for (let q = Number(m[1]); q <= Number(m[2] || m[1]); q++) set.add(q);
   }
+  return set;
 }
+const skipPages = parsePageSet("skip-pages");
+const skipTables = parsePageSet("skip-tables");
 
 const ranges = (arr) => {
   const a = [...new Set(arr)].sort((x, y) => x - y);
@@ -174,22 +179,42 @@ try {
 // ── cleaning ─────────────────────────────────────────────────────────────────
 const normLine = (l) => l.trim().replace(/\s+/g, " ").replace(/\d+/g, "#").toLowerCase();
 const repeating = new Set();
+const headerTexts = []; // long running headers, so they can also be stripped from mid-paragraph
 if (totalPages >= 3) {
   const threshold = Math.max(3, Math.ceil(totalPages * 0.4));
   for (const pages of [rawPages, layoutPages]) {
     const counts = new Map();
+    const orig = new Map();
     for (const p of pages) {
       // lines with 3+ columns are table rows (e.g. a header repeated on every page) — keep them
-      const seen = new Set(p.split("\n").filter((l) => cellsOf(l).length < 3).map(normLine).filter((l) => l && l.length < 100));
+      const lines = p.split("\n").filter((l) => cellsOf(l).length < 3);
+      const seen = new Set();
+      for (const l of lines) {
+        const n = normLine(l);
+        if (!n || n.length >= 200) continue;
+        seen.add(n);
+        if (!orig.has(n)) orig.set(n, l.trim().replace(/\s+/g, " "));
+      }
       for (const l of seen) counts.set(l, (counts.get(l) || 0) + 1);
     }
-    for (const [l, n] of counts) if (n >= threshold) repeating.add(l);
+    for (const [l, n] of counts) {
+      if (n < threshold) continue;
+      repeating.add(l);
+      const o = orig.get(l);
+      if (o && o.length >= 25 && !/\d/.test(o)) headerTexts.push(o);
+    }
   }
 }
+const headerRegexes = [...new Set(headerTexts)].map(
+  (t) => new RegExp(t.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi")
+);
 const isPageNumber = (l) => /^\s*(page\s*)?\d{1,3}(\s*of\s*\d{1,3})?\s*$/i.test(l);
 const keepLine = (l) => !repeating.has(normLine(l)) && !isPageNumber(l);
 
 const BULLET = /^\s*([•●▪◦·*]|[-–—]\s|\d{1,2}[.)]\s)/;
+
+// lone capitalised words that are table/box labels, not section headings
+const LABEL_WORDS = /^(limit|avoid|eat|choose|include|height|weight|age|sex|note|notes|example|examples|source|sources|total|yes|no|none|other|others|tip|tips|key|table|figure|box|serving|portion|amount|energy)$/i;
 
 function isHeadingLine(t, next) {
   if (!t || t.length > 80 || next === undefined) return false;
@@ -200,6 +225,8 @@ function isHeadingLine(t, next) {
   if (letters.length < 3) return false;
   const allCaps = letters === letters.toUpperCase();
   const capRatio = words.filter((w) => /^[A-Z0-9]/.test(w)).length / words.length;
+  // a lone word must look like a real heading, not a label such as "Limit" or "Height"
+  if (words.length === 1 && (letters.length < 4 || LABEL_WORDS.test(t))) return false;
   return allCaps || capRatio >= 0.6;
 }
 
@@ -212,9 +239,11 @@ function toParagraphs(text) {
   let cur = "";
   let lastLen = 0;
   const flushCur = () => {
-    const text = cur.replace(/[ \t]+/g, " ");
+    let text = cur.replace(/[ \t]+/g, " ");
+    for (const re of headerRegexes) text = text.replace(re, " ");
+    text = text.replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").trim();
     // skip an exact repeat of the previous paragraph (e.g. a cover title printed twice)
-    if (cur && !(out.length && out[out.length - 1].text === text)) out.push({ heading: false, text });
+    if (text && !(out.length && out[out.length - 1].text === text)) out.push({ heading: false, text });
     cur = "";
   };
   for (let i = 0; i < lines.length; i++) {
@@ -281,25 +310,67 @@ function isTwoColumn(pageText) {
 
 const proseCell = (c) => c.split(/\s+/).length >= 7;
 
+/** Cells of a layout line WITH their start columns (cells are separated by 3+ spaces). */
+function cellsPos(line) {
+  const out = [];
+  const re = /\S+(?: {1,2}\S+)*/g;
+  let m;
+  while ((m = re.exec(line))) out.push({ text: m[0], start: m.index });
+  return out;
+}
+// a line whose cells all start lowercase / "(" continues the cell above (a wrapped cell)
+const isContinuationLine = (line) => {
+  const cells = cellsPos(line);
+  return cells.length > 0 && cells.every((c) => /^[a-z(]/.test(c.text));
+};
+
 /**
  * If a real table run starts at lines[i], return the index just past its last row, else -1.
- * A run is 3+ consecutive column-like lines. Runs where many rows contain a long sentence
- * fragment are rejected: that is prose beside a sidebar/figure, not a table.
+ * A run is 3+ consecutive column-like lines (wrapped-cell continuation lines may sit between
+ * them). Runs where many rows contain a long sentence fragment are rejected: that is prose
+ * beside a sidebar/figure, not a table.
  */
 function tableRunEnd(lines, i) {
   let j = i;
-  const rows = [];
+  const tableLines = [];
   while (j < lines.length) {
-    if (isTableLine(lines[j])) {
-      rows.push(lines[j]);
+    const l = lines[j];
+    if (isTableLine(l)) {
+      tableLines.push(l);
       j++;
-    } else if (!lines[j].trim() && rows.length && j + 1 < lines.length && isTableLine(lines[j + 1])) j++;
+    } else if (!l.trim() && tableLines.length && j + 1 < lines.length && isTableLine(lines[j + 1])) j++;
+    else if (tableLines.length && l.trim() && lines[j - 1].trim() && isContinuationLine(l)) j++;
     else break;
   }
-  if (rows.length < 3) return -1;
-  const proseRows = rows.filter((r) => cellsOf(r).some(proseCell)).length;
-  if (proseRows / rows.length > 0.25) return -1;
+  if (tableLines.length < 3) return -1;
+  const proseRows = tableLines.filter((r) => cellsOf(r).some(proseCell)).length;
+  if (proseRows / tableLines.length > 0.25) return -1;
   return j;
+}
+
+const tidyCell = (t) => t.replace(/(\d)-\s+(\d)/g, "$1-$2").replace(/(\d)\.\s+(\d)/g, "$1.$2");
+
+/** Turn the raw lines of one table run into "a | b | c" rows, joining wrapped cells. */
+function buildRows(runLines) {
+  const lines = runLines.filter((l) => l.trim());
+  // in a longer table where nearly every line looks like a continuation, it is just lowercase text: don't merge
+  const contCount = lines.slice(1).filter(isContinuationLine).length;
+  const mergeWrapped = lines.length < 6 || contCount / (lines.length - 1) <= 0.7;
+  const rows = [];
+  for (const line of lines) {
+    const cells = cellsPos(line);
+    const prev = rows[rows.length - 1];
+    if (mergeWrapped && prev && isContinuationLine(line)) {
+      for (const c of cells) {
+        let k = 0;
+        prev.forEach((pc, idx) => {
+          if (pc.start <= c.start + 2) k = idx;
+        });
+        prev[k].text += " " + c.text;
+      }
+    } else rows.push(cells.map((c) => ({ ...c })));
+  }
+  return rows.map((r) => r.map((c) => tidyCell(c.text)).join(" | "));
 }
 
 /** Split a layout page into alternating {type:'text'|'table'} blocks. */
@@ -310,7 +381,7 @@ function layoutBlocks(pageText) {
   while (i < lines.length) {
     const end = tableRunEnd(lines, i);
     if (end > 0) {
-      blocks.push({ type: "table", rows: lines.slice(i, end).filter((l) => l.trim()).map((l) => cellsOf(l).join(" | ")) });
+      blocks.push({ type: "table", rows: buildRows(lines.slice(i, end)) });
       i = end;
       continue;
     }
@@ -349,6 +420,7 @@ for (let p = firstPage; p <= lastPage; p++) {
   }
   for (const b of blocks) {
     if (b.type === "table") {
+      if (skipTables.has(p)) continue;
       segments.push({ page: p, type: "table", rows: b.rows });
       const flat = b.rows.join("").replace(/[\s|]/g, "");
       if (flat.length && (flat.match(/[0-9.,:+%-]/g) || []).length / flat.length > 0.6) numericPages.add(p);
@@ -360,6 +432,7 @@ for (let p = firstPage; p <= lastPage; p++) {
 const SKIP_HEADING = /^(references?|bibliography|further reading|acknowledge?ments?)\b/i;
 const chunks = [];
 let heading = "";
+let headingPage = 0;
 let buf = [];
 let bufStart = 0;
 let bufEnd = 0;
@@ -395,7 +468,13 @@ for (const seg of segments) {
     flush();
     skipping = SKIP_HEADING.test(seg.text);
     heading = seg.text;
+    headingPage = seg.page;
     continue;
+  }
+  // a heading from many pages back no longer describes this content
+  if (heading && seg.page - headingPage > 6) {
+    flush();
+    heading = "";
   }
   if (skipping) {
     skippedRefParas++;
@@ -509,9 +588,17 @@ function report() {
   console.log(`Source: "${source}"   context: ${context}`);
   console.log(`Chunks: ${payloads.length}  (${Object.entries(byType).map(([k, v]) => `${k}: ${v}`).join(", ")})`);
   console.log(`Size: min ${sizes.length ? Math.min(...sizes) : 0}, avg ${avg}, max ${sizes.length ? Math.max(...sizes) : 0} chars`);
+  const hc = new Map();
+  for (const c of payloads) if (c.metadata.heading) hc.set(c.metadata.heading, (hc.get(c.metadata.heading) || 0) + 1);
+  if (hc.size) {
+    const top = [...hc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40);
+    console.log(`Headings used (chunks): ${top.map(([h, n]) => `${h.slice(0, 40)} (${n})`).join("; ")}`);
+    console.log(`  ↑ if a heading here is really a table label or a stray word, tell me and I'll add it to the ignore list`);
+  }
   if (skippedRefParas) console.log(`Skipped ${skippedRefParas} paragraph(s) under References/Bibliography/Acknowledgements`);
   if (droppedTiny) console.log(`Dropped ${droppedTiny} tiny scrap(s) (<60 chars)`);
   if (skipPages.size) console.log(`Skipped by --skip-pages: ${ranges([...skipPages])}`);
+  if (skipTables.size) console.log(`Tables dropped by --skip-tables on pages: ${ranges([...skipTables])} (their other text is kept)`);
   if (tablePages.length) console.log(`\nTable content on pages: ${ranges(tablePages)}  ← check these in the preview`);
   if (numericPages.size) console.log(`Mostly-numeric lookup grids on pages: ${ranges([...numericPages])}  ← rarely useful as retrievable text; consider --skip-pages ${ranges([...numericPages])}`);
   if (columnPages.length) console.log(`Side-by-side columns/sidebars on pages: ${ranges(columnPages)}  ← read in column order; check they read naturally`);
