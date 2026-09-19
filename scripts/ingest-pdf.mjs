@@ -22,6 +22,7 @@
  *   --extra FILE.json                 extra chunks, e.g. descriptions of figures:
  *                                     [{"page": 5, "heading": "Food groups", "content": "..."}]
  *   --pages 3-40                      only process this page range (dry run friendly)
+ *   --skip-pages 1-2,61-72,80         leave these pages out (covers, numeric lookup grids, pages you'll hand-write)
  *
  * Env
  *   ADMIN_KEY     admin key for the Worker (sent as "Authorization: Bearer <key>";
@@ -126,6 +127,34 @@ if (typeof args.pages === "string") {
   lastPage = Math.min(totalPages, Number(m[2]));
 }
 
+// pages to leave out entirely, e.g. --skip-pages 1-2,61-72,80
+const skipPages = new Set();
+if (typeof args["skip-pages"] === "string") {
+  for (const part of args["skip-pages"].split(",")) {
+    const m = part.trim().match(/^(\d+)(?:-(\d+))?$/);
+    if (!m) die("--skip-pages must look like 1-2,61-72,80");
+    for (let q = Number(m[1]); q <= Number(m[2] || m[1]); q++) skipPages.add(q);
+  }
+}
+
+const ranges = (arr) => {
+  const a = [...new Set(arr)].sort((x, y) => x - y);
+  if (!a.length) return "";
+  const out = [];
+  let s0 = a[0];
+  let prev = a[0];
+  for (let i = 1; i <= a.length; i++) {
+    if (a[i] === prev + 1) {
+      prev = a[i];
+      continue;
+    }
+    out.push(s0 === prev ? `${s0}` : `${s0}-${prev}`);
+    s0 = a[i];
+    prev = a[i];
+  }
+  return out.join(",");
+};
+
 // images per page (ignore tiny icons/bullets)
 const imagesPerPage = {};
 try {
@@ -183,16 +212,25 @@ function toParagraphs(text) {
   let cur = "";
   let lastLen = 0;
   const flushCur = () => {
-    if (cur) out.push({ heading: false, text: cur.replace(/[ \t]+/g, " ") });
+    const text = cur.replace(/[ \t]+/g, " ");
+    // skip an exact repeat of the previous paragraph (e.g. a cover title printed twice)
+    if (cur && !(out.length && out[out.length - 1].text === text)) out.push({ heading: false, text });
     cur = "";
   };
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i];
     if (!t) {
+      // a blank line in the middle of a sentence (text wrapped around a figure) is not a paragraph break
+      if (cur && !/[.!?:]$/.test(cur)) {
+        let k = i + 1;
+        while (k < lines.length && !lines[k]) k++;
+        if (k < lines.length && /^[a-z(]/.test(lines[k])) continue;
+      }
       flushCur();
       continue;
     }
     if (!keepLine(t)) continue;
+    if (/^[•●▪◦·]$/.test(t)) continue; // bullet glyph on its own line (reading-order output)
     if ((!cur || /[.!?:]$/.test(cur)) && isHeadingLine(t, lines[i + 1])) {
       flushCur();
       out.push({ heading: true, text: t });
@@ -201,6 +239,7 @@ function toParagraphs(text) {
     if (!cur) cur = t;
     else if (BULLET.test(t)) cur += "\n" + t;
     else if (/[A-Za-z]-$/.test(cur) && /^[a-z]/.test(t)) cur = cur.slice(0, -1) + t;
+    else if (lastLen < typical * 0.5 && t.length < typical * 0.5 && !/[.!?,;:]$/.test(cur)) cur += "\n" + t; // short lines in a row = list items
     else if (/[.!?]$/.test(cur) && /^[A-Z]/.test(t) && lastLen < typical * 0.7) {
       flushCur();
       cur = t;
@@ -240,45 +279,61 @@ function isTwoColumn(pageText) {
   return false;
 }
 
+const proseCell = (c) => c.split(/\s+/).length >= 7;
+
+/**
+ * If a real table run starts at lines[i], return the index just past its last row, else -1.
+ * A run is 3+ consecutive column-like lines. Runs where many rows contain a long sentence
+ * fragment are rejected: that is prose beside a sidebar/figure, not a table.
+ */
+function tableRunEnd(lines, i) {
+  let j = i;
+  const rows = [];
+  while (j < lines.length) {
+    if (isTableLine(lines[j])) {
+      rows.push(lines[j]);
+      j++;
+    } else if (!lines[j].trim() && rows.length && j + 1 < lines.length && isTableLine(lines[j + 1])) j++;
+    else break;
+  }
+  if (rows.length < 3) return -1;
+  const proseRows = rows.filter((r) => cellsOf(r).some(proseCell)).length;
+  if (proseRows / rows.length > 0.25) return -1;
+  return j;
+}
+
 /** Split a layout page into alternating {type:'text'|'table'} blocks. */
 function layoutBlocks(pageText) {
   const lines = pageText.split("\n").filter((l) => !l.trim() || keepLine(l));
   const blocks = [];
   let i = 0;
   while (i < lines.length) {
-    if (isTableLine(lines[i])) {
-      let j = i;
-      while (j < lines.length && (isTableLine(lines[j]) || (!lines[j].trim() && j + 1 < lines.length && isTableLine(lines[j + 1]) && j > i))) j++;
-      const run = lines.slice(i, j).filter((l) => l.trim());
-      if (run.length >= 3) {
-        blocks.push({ type: "table", rows: run.map((l) => cellsOf(l).join(" | ")) });
-        i = j;
-        continue;
-      }
+    const end = tableRunEnd(lines, i);
+    if (end > 0) {
+      blocks.push({ type: "table", rows: lines.slice(i, end).filter((l) => l.trim()).map((l) => cellsOf(l).join(" | ")) });
+      i = end;
+      continue;
     }
-    let j = i;
-    const start = i;
-    while (j < lines.length) {
-      if (isTableLine(lines[j])) {
-        // only break the text block if this starts a real table run
-        let k = j;
-        while (k < lines.length && isTableLine(lines[k])) k++;
-        if (k - j >= 3) break;
-        j = k;
-      } else j++;
-    }
-    if (j === start) j = start + 1;
-    blocks.push({ type: "text", text: lines.slice(start, j).map((l) => l.trim()).join("\n") });
+    let j = i + 1;
+    while (j < lines.length && tableRunEnd(lines, j) < 0) j++;
+    blocks.push({ type: "text", text: lines.slice(i, j).map((l) => l.trim()).join("\n") });
     i = j;
   }
   return blocks;
+}
+
+/** Count lines with a wide internal gap — a sign of side-by-side columns/sidebars. */
+function gapLineCount(pageText) {
+  return pageText.split("\n").filter((l) => keepLine(l) && /\S {3,}\S/.test(l.trim())).length;
 }
 
 // ── build ordered segments ───────────────────────────────────────────────────
 const segments = []; // {page, type:'para'|'heading'|'table', text|rows}
 const tablePages = [];
 const columnPages = [];
+const numericPages = new Set();
 for (let p = firstPage; p <= lastPage; p++) {
+  if (skipPages.has(p)) continue;
   const layout = layoutPages[p - 1] || "";
   const raw = rawPages[p - 1] || "";
   const blocks = layoutBlocks(layout);
@@ -286,14 +341,18 @@ for (let p = firstPage; p <= lastPage; p++) {
   const twoCol = isTwoColumn(layout);
   if (hasTable) tablePages.push(p);
   if (twoCol) columnPages.push(p);
-  if (!hasTable && twoCol) {
-    // reading-order text handles columns better than -layout
+  if (!hasTable && (twoCol || gapLineCount(layout) >= 4)) {
+    // side-by-side columns / sidebars: reading-order text beats -layout
+    if (!twoCol) columnPages.push(p);
     for (const par of toParagraphs(raw)) segments.push({ page: p, type: par.heading ? "heading" : "para", text: par.text });
     continue;
   }
   for (const b of blocks) {
-    if (b.type === "table") segments.push({ page: p, type: "table", rows: b.rows });
-    else for (const par of toParagraphs(b.text)) segments.push({ page: p, type: par.heading ? "heading" : "para", text: par.text });
+    if (b.type === "table") {
+      segments.push({ page: p, type: "table", rows: b.rows });
+      const flat = b.rows.join("").replace(/[\s|]/g, "");
+      if (flat.length && (flat.match(/[0-9.,:+%-]/g) || []).length / flat.length > 0.6) numericPages.add(p);
+    } else for (const par of toParagraphs(b.text)) segments.push({ page: p, type: par.heading ? "heading" : "para", text: par.text });
   }
 }
 
@@ -452,17 +511,19 @@ function report() {
   console.log(`Size: min ${sizes.length ? Math.min(...sizes) : 0}, avg ${avg}, max ${sizes.length ? Math.max(...sizes) : 0} chars`);
   if (skippedRefParas) console.log(`Skipped ${skippedRefParas} paragraph(s) under References/Bibliography/Acknowledgements`);
   if (droppedTiny) console.log(`Dropped ${droppedTiny} tiny scrap(s) (<60 chars)`);
-  if (tablePages.length) console.log(`\nTable-like content on pages: ${tablePages.join(", ")}  ← check these in the preview`);
-  if (columnPages.length) console.log(`Two-column layout detected on pages: ${columnPages.join(", ")}  ← read in column order; check they read naturally`);
+  if (skipPages.size) console.log(`Skipped by --skip-pages: ${ranges([...skipPages])}`);
+  if (tablePages.length) console.log(`\nTable content on pages: ${ranges(tablePages)}  ← check these in the preview`);
+  if (numericPages.size) console.log(`Mostly-numeric lookup grids on pages: ${ranges([...numericPages])}  ← rarely useful as retrievable text; consider --skip-pages ${ranges([...numericPages])}`);
+  if (columnPages.length) console.log(`Side-by-side columns/sidebars on pages: ${ranges(columnPages)}  ← read in column order; check they read naturally`);
 
-  const imgPages = Object.keys(imagesPerPage).map(Number).filter((p) => p >= firstPage && p <= lastPage).sort((a, b) => a - b);
+  const imgPages = Object.keys(imagesPerPage).map(Number).filter((p) => p >= firstPage && p <= lastPage && !skipPages.has(p)).sort((a, b) => a - b);
   if (imgPages.length) {
     console.log(`\nPages with pictures (count): ${imgPages.map((p) => `${p}(${imagesPerPage[p]})`).join(", ")}`);
     const thin = imgPages.filter((p) => (rawPages[p - 1] || "").replace(/\s+/g, " ").trim().length < 200);
     if (thin.length) console.log(`Pages that are mostly picture, little text: ${thin.join(", ")}  ← nothing useful extracted; describe them via --extra if they matter`);
   }
   const empty = [];
-  for (let p = firstPage; p <= lastPage; p++) if (!(rawPages[p - 1] || "").trim()) empty.push(p);
+  for (let p = firstPage; p <= lastPage; p++) if (!skipPages.has(p) && !(rawPages[p - 1] || "").trim()) empty.push(p);
   if (empty.length) console.log(`\nPages with NO text layer (scanned/image only): ${empty.join(", ")}`);
 
   const show = (label, c) => console.log(`\n── ${label} (chunk ${c.metadata.chunk}, p.${c.metadata.page}, ${c.metadata.type}, ${c.content.length} chars) ──\n${c.content.slice(0, 500)}${c.content.length > 500 ? " …" : ""}`);
