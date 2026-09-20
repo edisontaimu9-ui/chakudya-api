@@ -503,6 +503,7 @@ import {
   resolveDriLifeStage,
 } from "./dri_data.js";
 import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
+import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
@@ -688,7 +689,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -810,7 +811,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2135,6 +2136,59 @@ async function handleGlycaemicIndex(request, url, db, id) {
   }
 
   return err("Method not allowed", 405);
+}
+
+// ─── BMI-FOR-AGE (/bmi-for-age) ────────────────────────────────────────────
+//
+// WHO 2007 BMI-for-age reference for 5y 1m to 19y 0m (see
+// sql/012_add_bmi_for_age.sql and src/bmiForAge.js). Public reads; the table is
+// filled once via POST /bmi-for-age/bulk (admin). Screening aid, not a diagnosis.
+async function handleBmiForAge(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /bmi-for-age/bulk (admin).", 405);
+  }
+
+  if (param === "classify") {
+    const parsed = parseBmiForAgeQuery(url.searchParams);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.select("bmi_for_age", {
+      filters: { sex: `eq.${parsed.sex}`, age_months: `eq.${parsed.ageMonths}` },
+      limit: 1,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const row = Array.isArray(body) ? body[0] : null;
+    if (!row) return notFound("BMI-for-age reference row (has sql/012 been run and the table seeded?)");
+
+    const result = classifyBmiForAge(row, parsed.bmi);
+    return success(
+      {
+        sex: parsed.sex,
+        age_months: parsed.ageMonths,
+        ...result,
+        source: row.source,
+        note: "Screening aid only, not a diagnosis. Cut-offs: severe thinness < -3SD, thinness < -2SD, normal -2SD to +1SD, overweight > +1SD, obesity > +2SD.",
+      },
+      { message: "BMI-for-age classification" }
+    );
+  }
+
+  if (param) return notFound("BMI-for-age route");
+
+  const filters = {};
+  const sex = url.searchParams.get("sex");
+  if (sex) {
+    const n = ["girls", "girl", "female", "f"].includes(sex.toLowerCase()) ? "girls"
+      : ["boys", "boy", "male", "m"].includes(sex.toLowerCase()) ? "boys" : null;
+    if (!n) return err("'sex' must be girls or boys");
+    filters.sex = `eq.${n}`;
+  }
+  const age = url.searchParams.get("age_months");
+  if (age) {
+    if (!Number.isInteger(Number(age))) return err("'age_months' must be a whole number");
+    filters.age_months = `eq.${Number(age)}`;
+  }
+  return await paginatedList(db, "bmi_for_age", url, { filters, order: "age_months.asc" });
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -5959,6 +6013,11 @@ function handleRoot(env) {
         "PATCH /glycaemic-index/:id    (admin)",
         "DELETE /glycaemic-index/:id   (admin)",
       ],
+      bmi_for_age: [
+        "GET  /bmi-for-age/classify?sex=girls&age_months=95&weight_kg=26&height_cm=121.1  → WHO 2007 BMI-for-age status for 5y 1m to 19y 0m (or pass &bmi= instead of weight/height); screening aid, see sql/012_add_bmi_for_age.sql",
+        "GET  /bmi-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD cut-offs)",
+        "POST /bmi-for-age/bulk        (admin) → body {items:[...]}, 336 rows; seed file: scripts/bmi_for_age_seed.json",
+      ],
       exchange_lists: [
         "GET  /exchange",
         "POST /exchange         (admin)",
@@ -7026,6 +7085,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       }
       const id = param || null;
       return await handleGlycaemicIndex(request, url, db, id);
+    }
+
+    case "bmi-for-age": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "bmi_for_age", {
+          requiredField: "sex",
+          label: "BMI-for-age rows",
+        });
+      }
+      return await handleBmiForAge(request, url, db, param || null);
     }
 
     case "exchange": {
