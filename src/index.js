@@ -504,6 +504,7 @@ import {
 } from "./dri_data.js";
 import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
+import { capSearchTerms } from "./searchTerms.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
@@ -5155,7 +5156,10 @@ async function scanTableByKeywords(db, table, keywords, limit = 150) {
  * exactly as before — one call, no behavior change.
  */
 async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 5) {
-  const terms = keywords.length ? keywords : [rawQuery];
+  // Cap and dedupe: each term costs one Supabase call per source, and a long
+  // query (e.g. one with an appended instruction) can exceed Cloudflare's
+  // per-invocation subrequest limit. See src/searchTerms.js.
+  const terms = keywords.length ? capSearchTerms(keywords) : [rawQuery];
   const resultsPerTerm = await Promise.all(terms.map((term) => searchFn(db, term, limit)));
   const seen = new Set();
   const merged = [];
