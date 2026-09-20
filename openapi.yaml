@@ -33,6 +33,7 @@ tags:
   - name: Exchange
   - name: Renal
   - name: Formulas
+  - name: BMI for age
   - name: Packaged
   - name: Favorites
   - name: History
@@ -883,6 +884,100 @@ paths:
       parameters: [{ $ref: "#/components/parameters/PathId" }]
       responses:
         "200": { $ref: "#/components/responses/MutationSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /bmi-for-age/classify:
+    get:
+      tags: [BMI for age]
+      summary: Classify BMI-for-age for a child or adolescent (5y 1m to 19y 0m)
+      description: >
+        WHO 2007 BMI-for-age reference as printed in the Malawi MoH guide
+        Eat Well to Live Well (2021), Annex 2. Pass either bmi, or both
+        weight_kg and height_cm. Compared against the unrounded BMI with
+        strict cut-offs: severe thinness below -3SD, thinness below -2SD,
+        normal from -2SD to +1SD, overweight above +1SD, obesity above +2SD.
+        Screening aid only, not a diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: age_months
+          in: query
+          required: true
+          description: Whole months, years x 12 + months (7y 11m = 95)
+          schema: { type: integer, minimum: 61, maximum: 228 }
+        - name: bmi
+          in: query
+          schema: { type: number }
+        - name: weight_kg
+          in: query
+          schema: { type: number }
+        - name: height_cm
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          age_months: { type: integer }
+                          status:
+                            type: string
+                            enum: [severe thinness, thinness, normal, overweight, obesity]
+                          bmi: { type: number }
+                          cutoffs:
+                            type: object
+                            additionalProperties: { type: number }
+                            description: Keys -3SD, -2SD, -1SD, median, +1SD, +2SD, +3SD
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /bmi-for-age:
+    get:
+      tags: [BMI for age]
+      summary: List BMI-for-age reference rows (-3SD to +3SD cut-offs)
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          schema: { type: string }
+        - name: age_months
+          in: query
+          schema: { type: integer }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /bmi-for-age/bulk:
+    post:
+      tags: [BMI for age]
+      summary: Bulk-create BMI-for-age rows (admin)
+      description: Seed file scripts/bmi_for_age_seed.json (336 rows). A unique (sex, age_months) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /packaged:

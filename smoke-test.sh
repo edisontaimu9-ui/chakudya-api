@@ -3,7 +3,8 @@
 # Chakudya API — Smoke Test
 # Re-run after every deploy or dashboard binding change.
 # Verifies: KV binding, RAG cache, edge cache, rate limiting,
-# memory recall cache + session isolation, foods lookup cascade.
+# memory recall cache + session isolation, foods lookup cascade,
+# BMI-for-age endpoint, and the Eat Well to Live Well guide in RAG.
 #
 # Usage: bash smoke-test.sh [base-url]
 # Default base URL: https://chakudya-api.edisontaimu9.workers.dev
@@ -117,6 +118,45 @@ if [ "$ext2" = '"cached":true' ]; then
   pass "Repeat external lookup served from external_foods_cache"
 else
   fail "Repeat external lookup was not cached (got: $ext2)"
+fi
+echo ""
+
+# ── 7. BMI-for-age (WHO 2007, 5-19 years) ─────────────────────
+echo "[7] BMI-for-age classification"
+bmi1=$(curl -s "$BASE/bmi-for-age/classify?sex=girls&age_months=95&weight_kg=26&height_cm=121.1")
+if echo "$bmi1" | grep -q '"status":"overweight"'; then
+  pass "Annex 2 worked example (girl, 7y 11m, 26 kg, 121.1 cm) classified overweight"
+else
+  fail "BMI-for-age example did not return overweight. Is sql/012 run and scripts/bmi_for_age_seed.json seeded? Got: ${bmi1:0:120}"
+fi
+if echo "$bmi1" | grep -q '"+1SD":17.7'; then
+  pass "Reference row matches the guide (girls, 95 months, +1SD = 17.7)"
+else
+  fail "Reference row cut-offs not as expected for girls at 95 months"
+fi
+bmi2=$(curl -s "$BASE/bmi-for-age/classify?sex=girls&age_months=40&bmi=15")
+if echo "$bmi2" | grep -q '"status":"error"'; then
+  pass "Age under 5y 1m rejected (outside the 5-19 year table)"
+else
+  fail "Out-of-range age was not rejected (got: ${bmi2:0:120})"
+fi
+echo ""
+
+# ── 8. Eat Well to Live Well guide in the RAG knowledge base ──
+echo "[8] Eat Well to Live Well guide (RAG retrieve)"
+rq1=$(curl -s -X POST "$BASE/rag/retrieve" -H "Content-Type: application/json" \
+  -d '{"query":"Which fats should I limit? Examples of trans fats","context":"both","top_k":3}')
+if echo "$rq1" | grep -q "Eat Well to Live Well" && echo "$rq1" | grep -qi "hydrogenated cooking oils"; then
+  pass "Fats table (Table 5) retrieved from the guide"
+else
+  fail "Guide's fats table not retrieved. Was the guide ingested with source 'Malawi Ministry of Health, Eat Well to Live Well (2021)'?"
+fi
+rq2=$(curl -s -X POST "$BASE/rag/retrieve" -H "Content-Type: application/json" \
+  -d '{"query":"How much physical activity do adults need per week?","context":"both","top_k":3}')
+if echo "$rq2" | grep -q "Eat Well to Live Well" && echo "$rq2" | grep -q "150 minutes"; then
+  pass "Physical activity table (Table 8) retrieved from the guide"
+else
+  fail "Guide's physical activity guidance not retrieved"
 fi
 echo ""
 

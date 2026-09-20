@@ -308,7 +308,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -546,7 +546,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, and `/glycaemic-index/bulk` *(all admin)* accept a batch
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, and `/bmi-for-age/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
 
@@ -719,6 +719,33 @@ Standalone reference table backing the `glycaemic` block on `GET /foods/compare`
 - `PUT` / `PATCH` / `DELETE /glycaemic-index/:id` *(admin)*
 
 The bundled seed covers Malawi's three nsima processing variants (Mlotha et al. 2016 — the only Malawi-specific GI study found), white/brown rice, boiled/mashed potato, boiled sweet potato, and cassava (flagged as high-variance/no regional consensus rather than given a single confident number). Extend it the same way as `drug_nutrient_interactions_seed.json` — add rows with a real citation, then `POST /glycaemic-index/bulk`.
+
+### BMI-for-Age (`/bmi-for-age`)
+
+WHO 2007 BMI-for-age reference for children and adolescents from 5y 1m to 19y 0m (61 to 228 completed months), as printed in the Malawi Ministry of Health guide *Eat Well to Live Well* (2021), Annex 2. Table: [`sql/012_add_bmi_for_age.sql`](sql/012_add_bmi_for_age.sql), 336 rows (168 girls, 168 boys), one per sex per age in months, each with the -3SD to +3SD BMI cut-offs. Values are transcribed from the guide, not estimated. Classification logic: [`src/bmiForAge.js`](src/bmiForAge.js).
+
+- `GET /bmi-for-age/classify` *(public, rate-limited, cached 1h)* — `sex` (`girls` or `boys`; `girl`/`boy`/`female`/`male`/`f`/`m` also accepted), `age_months` (whole number, years x 12 + months, so 7y 11m = 95), and either `bmi` or both `weight_kg` and `height_cm`. Returns `status`, the rounded `bmi`, and the `cutoffs` used.
+- `GET /bmi-for-age` — the raw reference rows; optional `sex` and `age_months` filters, standard pagination.
+- `POST /bmi-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/bmi_for_age_seed.json`](scripts/bmi_for_age_seed.json). A unique `(sex, age_months)` constraint rejects a second seeding attempt instead of duplicating rows.
+
+```
+GET /bmi-for-age/classify?sex=girls&age_months=95&weight_kg=26&height_cm=121.1
+```
+
+```json
+{
+  "status": "success",
+  "message": "BMI-for-age classification",
+  "data": {
+    "sex": "girls", "age_months": 95, "status": "overweight", "bmi": 17.7,
+    "cutoffs": { "-3SD": 11.9, "-2SD": 12.9, "-1SD": 14.1, "median": 15.7, "+1SD": 17.7, "+2SD": 20.5, "+3SD": 24.6 },
+    "source": "WHO 2007 BMI-for-age (5-19 years), as printed in Malawi Ministry of Health, Eat Well to Live Well (2021), Annex 2",
+    "note": "Screening aid only, not a diagnosis. ..."
+  }
+}
+```
+
+Cut-offs (strict inequalities, compared against the **unrounded** BMI, so a displayed BMI of 17.7 can still be above a 17.7 cut-off): severe thinness < -3SD, thinness < -2SD, normal from -2SD to +1SD, overweight > +1SD, obesity > +2SD. The printed guide lists severe thinness as "< -1 SD", which looks like a typo, so the WHO -3SD cut-off is used. Ages outside 61 to 228 months return a 400: under-5s need the WHO child growth standards and adults use adult BMI cut-offs. This is a screening aid, not a diagnosis.
 
 ### Recipes
 
