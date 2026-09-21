@@ -3830,12 +3830,18 @@ function normalizeFood(source, raw) {
  * meaningful words to actually appear in the candidate's name.
  */
 function wordOverlapScore(query, candidateName) {
+  // Strip a bare trailing "s" (length > 3 so we don't mangle real short
+  // words like "gas" or "yas") so "Burritos" overlaps a USDA/FatSecret
+  // entry named singular "burrito" instead of scoring 0% and getting
+  // rejected outright.
+  const singularize = (w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
   const normalize = (s) =>
     (s || "")
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, " ")
       .split(/\s+/)
-      .filter((w) => w.length > 2);
+      .filter((w) => w.length > 2)
+      .map(singularize);
 
   const queryWords = [...new Set(normalize(query))];
   if (!queryWords.length) return 0;
@@ -3846,10 +3852,14 @@ function wordOverlapScore(query, candidateName) {
 
 async function fetchFromUSDA(query, env) {
   if (!env.USDA_FDC_API_KEY) return null;
+  // Foundation/SR Legacy alone only covers raw/minimally-processed
+  // ingredients — prepared/composite dishes (hummus, burritos, hot dogs)
+  // mostly live in Survey (FNDDS). Branded is deliberately left out: it's
+  // dominated by specific commercial products, not generic dish lookups.
   const url = `https://api.nal.usda.gov/fdc/v1/foods/search` +
     `?api_key=${env.USDA_FDC_API_KEY}` +
     `&query=${encodeURIComponent(query)}` +
-    `&pageSize=5&dataType=Foundation,SR%20Legacy`;
+    `&pageSize=5&dataType=${encodeURIComponent("Foundation,SR Legacy,Survey (FNDDS)")}`;
   const res = await fetch(url);
   if (!res.ok) return null;
   const data = await res.json().catch(() => null);
