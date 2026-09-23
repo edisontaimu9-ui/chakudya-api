@@ -1,6 +1,6 @@
 # Chakudya Nutrition Registry (CNR) 🌽
 
-**Malawi's first open Food & Nutrition Database**
+**Malawi's Intelligent Food & Nutrition Knowledge Platform**
 
 Chakudya is a Malawi focused nutrition data and intelligence API. It
 provides structured, searchable nutrition information for health

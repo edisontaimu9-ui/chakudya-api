@@ -1,5 +1,5 @@
 /**
- * Chakudya Nutrition Registry (CNR) — Malawi's First Open Food & Nutrition Database
+ * Chakudya Nutrition Registry (CNR) — Malawi's Intelligent Food & Nutrition Knowledge Platform
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
@@ -5981,7 +5981,7 @@ async function handleHealth(request, env) {
 function handleRoot(env) {
   return success({
     name: "Chakudya Nutrition Registry (CNR)",
-    tagline: "Malawi's first open Food & Nutrition Database",
+    tagline: "Malawi's Intelligent Food & Nutrition Knowledge Platform",
     version: CNR_VERSION,
     maintainer: "Edison Taimu",
     auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /rag/ask, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
