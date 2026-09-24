@@ -34,6 +34,7 @@ tags:
   - name: Renal
   - name: Formulas
   - name: BMI for age
+  - name: Fenton Preterm
   - name: Packaged
   - name: Favorites
   - name: History
@@ -970,6 +971,84 @@ paths:
       tags: [BMI for age]
       summary: Bulk-create BMI-for-age rows (admin)
       description: Seed file scripts/bmi_for_age_seed.json (336 rows). A unique (sex, age_months) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /fenton-preterm/classify:
+    get:
+      tags: [Fenton Preterm]
+      summary: Classify a preterm infant measurement (weight, length, or head circumference)
+      description: >
+        Fenton preterm growth chart z-score/percentile/status, 2013 or 2025
+        reference. Licensed from Dr. Tanis Fenton (CC BY-NC-ND 4.0,
+        non-commercial, this app only) — raw L/M/S values are never returned.
+        There is no list/dump route for this resource. Screening aid only.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          schema: { type: string, enum: [boys, girls] }
+        - name: metric
+          in: query
+          required: true
+          schema: { type: string, enum: [weight, length, hc] }
+        - name: gest_age_weeks
+          in: query
+          required: true
+          schema: { type: number, minimum: 22, maximum: 50 }
+        - name: day
+          in: query
+          description: Day of the gestational week (0-6). Default 0.
+          schema: { type: integer, minimum: 0, maximum: 6 }
+        - name: value
+          in: query
+          required: true
+          description: Grams for weight, cm for length/hc.
+          schema: { type: number }
+        - name: reference_year
+          in: query
+          description: Default 2025.
+          schema: { type: integer, enum: [2013, 2025] }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string }
+                          metric: { type: string }
+                          reference_year: { type: integer }
+                          gest_age_weeks: { type: number }
+                          day: { type: integer }
+                          value: { type: number }
+                          z: { type: number }
+                          percentile: { type: number }
+                          status: { type: string, enum: [small, appropriate, large] }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fenton-preterm/bulk:
+    post:
+      tags: [Fenton Preterm]
+      summary: Bulk-create Fenton preterm reference rows (admin)
+      description: Seed files scripts/fenton_preterm_seed_1.json .. _5.json (2284 rows total). A unique (reference_year, sex, metric, time_days) constraint rejects re-seeding.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true

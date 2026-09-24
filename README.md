@@ -546,7 +546,8 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, `/glycaemic-index/bulk`, and `/bmi-for-age/bulk` *(all admin)* accept a batch
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, and
+`/fenton-preterm/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
 
@@ -569,8 +570,9 @@ curl -X POST https://your-worker-url/foods/bulk \
 - Max **500 items** per request — split larger loads into multiple calls.
 - `food_name` is required on every item for `/foods/bulk` and
   `/glycaemic-index/bulk` (mirrors each resource's single-row `POST`
-  validation), `drug` for `/drug-interactions/bulk`; the other three
-  resources have no required-field check beyond a non-empty array, matching
+  validation), `drug` for `/drug-interactions/bulk`, `metric` for
+  `/fenton-preterm/bulk`; the other resources have no required-field check
+  beyond a non-empty array, matching
   their single-row endpoints today. Note `/glycaemic-index/bulk` does *not*
   enforce `match_keywords`/`source` per-item the way the single-row `POST`
   does — a bulk seed file with a missing citation will insert silently, so
@@ -746,6 +748,37 @@ GET /bmi-for-age/classify?sex=girls&age_months=95&weight_kg=26&height_cm=121.1
 ```
 
 Cut-offs (strict inequalities, compared against the **unrounded** BMI, so a displayed BMI of 17.7 can still be above a 17.7 cut-off): severe thinness < -3SD, thinness < -2SD, normal from -2SD to +1SD, overweight > +1SD, obesity > +2SD. The printed guide lists severe thinness as "< -1 SD", which looks like a typo, so the WHO -3SD cut-off is used. Ages outside 61 to 228 months return a 400: under-5s need the WHO child growth standards and adults use adult BMI cut-offs. This is a screening aid, not a diagnosis.
+
+### Fenton Preterm Growth Chart (`/fenton-preterm`)
+
+Weight, length, and head-circumference z-scores/percentiles for preterm infants, both the 2013 (Fenton & Kim, *BMC Pediatrics* 2013;13:59) and 2025 (Fenton, Elmrayed & Alshaikh, *Paediatric and Perinatal Epidemiology* 2025, PMID 40534585) references. LMS parameters provided directly by Dr. Tanis Fenton (University of Calgary) by email. Table: [`sql/013_add_fenton_preterm.sql`](sql/013_add_fenton_preterm.sql), 2284 rows (2013 + 2025, both sexes, all 3 metrics). Calculation logic: [`src/fentonPreterm.js`](src/fentonPreterm.js).
+
+**License — this is not open data like the rest of CNR.** Shared under [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) for non-commercial use in this app only, with two extra conditions from Dr. Fenton: the underlying L/M/S values must never be visible to end users, and must never be shared with other hospitals or organizations. So, unlike every other reference table in CNR:
+
+- There is **no `GET /fenton-preterm` list route** — `classify` is the only read path, and it only ever returns a computed z-score/percentile/status, never a raw row.
+- Don't add one. If this needs to change, that's a conversation with Edison about the data-sharing agreement, not a routine API change.
+
+- `GET /fenton-preterm/classify` *(public, rate-limited, cached 1h)* — `sex` (`boys`/`girls`, or `boy`/`girl`/`male`/`female`/`m`/`f`), `metric` (`weight`/`length`/`hc`), `gest_age_weeks` (22-50), `day` (0-6, day of the gestational week, default 0), `value` (grams for weight, cm for length/hc), and optional `reference_year` (`2013` or `2025`, default `2025`). Returns `z`, `percentile`, and `status`.
+- `POST /fenton-preterm/bulk` *(admin)* — see [Bulk insert](#bulk-insert); 5 seed files (500 rows each except the last, 284): [`scripts/fenton_preterm_seed_1.json`](scripts/fenton_preterm_seed_1.json) through `_5.json`. Run all 5 — the unique `(reference_year, sex, metric, time_days)` constraint rejects a repeat seed instead of duplicating rows.
+
+```
+GET /fenton-preterm/classify?sex=girls&metric=weight&gest_age_weeks=32&day=0&value=1500
+```
+
+```json
+{
+  "status": "success",
+  "message": "Fenton preterm growth chart classification",
+  "data": {
+    "sex": "girls", "metric": "weight", "reference_year": 2025,
+    "gest_age_weeks": 32, "day": 0, "value": 1500,
+    "z": -0.92, "percentile": 17.9, "status": "appropriate",
+    "note": "Screening aid only, not a diagnosis. SGA/LGA labels are only valid AT BIRTH per Fenton's own guidance; this 'status' is a generic +/-2SD read usable at any age for interval growth monitoring. Weight includes the WHO SD23 correction for extreme values; length/HC do not (matches Fenton's own calculator)."
+  }
+}
+```
+
+The age axis is days since 22 completed weeks gestation (`(gest_age_weeks - 22) * 7 + day`), matching Dr. Fenton's own spreadsheet's lookup axis exactly, and the reference-row lookup is a step function (largest tabulated age ≤ the requested age) rather than interpolated — same behaviour as her Excel `LOOKUP()`, so results match her calculator to within rounding. Weight's z-score gets the WHO-recommended SD23 correction for values beyond ±3SD (a linear extension from the SD2/SD3 cut-offs, per the [WHO technical report](http://www.who.int/childgrowth/standards/technical_report/en/)); length and head circumference don't — Dr. Fenton's own calculator doesn't correct those either, so neither does this. `status` is a plain ±2SD read (`small`/`appropriate`/`large`) usable at any postnatal age for interval growth monitoring — it is deliberately **not** the SGA/LGA label, which by Dr. Fenton's own guidance only means something at birth. Length and head-circumference reference data start partway through the 22-50 week range in both editions; a `gest_age_weeks`/`day` before that returns a 400 rather than a wrong answer.
 
 ### Recipes
 

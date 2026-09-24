@@ -504,13 +504,14 @@ import {
 } from "./dri_data.js";
 import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
+import { parseFentonQuery, computeFentonZ, statusFromZ } from "./fentonPreterm.js";
 import { capSearchTerms } from "./searchTerms.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.26.0";
+const CNR_VERSION = "1.27.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -690,7 +691,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -812,7 +813,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2190,6 +2191,59 @@ async function handleBmiForAge(request, url, db, param) {
     filters.age_months = `eq.${Number(age)}`;
   }
   return await paginatedList(db, "bmi_for_age", url, { filters, order: "age_months.asc" });
+}
+
+// Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
+// and src/fentonPreterm.js for the license condition this exists under: no
+// list/dump route, ever. This function intentionally has no bare-GET listing
+// branch (unlike handleBmiForAge above) — /classify is the only read path.
+async function handleFentonPreterm(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /fenton-preterm/bulk (admin).", 405);
+  }
+  if (param !== "classify") {
+    return notFound("Fenton preterm route. Only GET /fenton-preterm/classify is available.");
+  }
+
+  const parsed = parseFentonQuery(url.searchParams);
+  if (parsed.error) return err(parsed.error);
+
+  const { ok, status, body } = await db.select("fenton_preterm_lms", {
+    filters: {
+      reference_year: `eq.${parsed.referenceYear}`,
+      sex: `eq.${parsed.sex}`,
+      metric: `eq.${parsed.metric}`,
+      time_days: `lte.${parsed.timeDays}`,
+    },
+    order: "time_days.desc",
+    limit: 1,
+  });
+  if (!ok) return err(body?.message || "Query failed", status);
+  const row = Array.isArray(body) ? body[0] : null;
+  if (!row) {
+    return notFound(
+      "Fenton reference row for this age (has sql/013 been run and the table seeded for this reference_year/metric?)"
+    );
+  }
+
+  const { z, percentile } = computeFentonZ(row, parsed.value, parsed.metric);
+
+  return success(
+    {
+      sex: parsed.sex,
+      metric: parsed.metric,
+      reference_year: parsed.referenceYear,
+      gest_age_weeks: parsed.gestAgeWeeks,
+      day: parsed.day,
+      value: parsed.value,
+      z,
+      percentile,
+      status: statusFromZ(z),
+      note:
+        "Screening aid only, not a diagnosis. SGA/LGA labels are only valid AT BIRTH per Fenton's own guidance; this 'status' is a generic +/-2SD read usable at any age for interval growth monitoring. Weight includes the WHO SD23 correction for extreme values; length/HC do not (matches Fenton's own calculator).",
+    },
+    { message: "Fenton preterm growth chart classification" }
+  );
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -6032,6 +6086,11 @@ function handleRoot(env) {
         "GET  /bmi-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD cut-offs)",
         "POST /bmi-for-age/bulk        (admin) → body {items:[...]}, 336 rows; seed file: scripts/bmi_for_age_seed.json",
       ],
+      fenton_preterm: [
+        "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
+        "No list/dump route — licensed from Dr. Tanis Fenton (CC BY-NC-ND 4.0, non-commercial, this app only); raw L/M/S values are never returned to end users.",
+        "POST /fenton-preterm/bulk     (admin) → body {items:[...]}, 2284 rows across 5 files; seed files: scripts/fenton_preterm_seed_1.json .. _5.json",
+      ],
       exchange_lists: [
         "GET  /exchange",
         "POST /exchange         (admin)",
@@ -7110,6 +7169,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleBmiForAge(request, url, db, param || null);
+    }
+
+    case "fenton-preterm": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "fenton_preterm_lms", {
+          requiredField: "metric",
+          label: "Fenton preterm reference rows",
+        });
+      }
+      return await handleFentonPreterm(request, url, db, param || null);
     }
 
     case "exchange": {
