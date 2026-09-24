@@ -45,4 +45,4 @@ create index if not exists idx_fenton_preterm_lookup
   on public.fenton_preterm_lms (reference_year, sex, metric, time_days);
 
 comment on table public.fenton_preterm_lms is
-  'Fenton preterm growth chart LMS parameters (2013 & 2025), from Dr. Tanis Fenton (Univ. of Calgary), CC BY-NC-ND 4.0, non-commercial, this app only. CONDITION: never expose raw rows to end users or other organizations - classify-only access via GET /fenton-preterm/classify. No list/dump route.';
+  'Fenton preterm growth chart LMS parameters (2013 & 2025), from Dr. Tanis Fenton (Univ. of Calgary), CC BY-NC-ND 4.0, non-commercial, this app only. CONDITION: never expose raw rows to end users or other organizations - only computed results (classify/profile/growth/velocity), static references metadata, or the rendered chart SVG image. No list/dump route, and no mode of /chart that returns curve data as JSON.';

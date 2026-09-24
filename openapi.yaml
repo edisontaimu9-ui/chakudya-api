@@ -1044,6 +1044,162 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /fenton-preterm/profile:
+    post:
+      tags: [Fenton Preterm]
+      summary: Classify weight, length, and head circumference together at one timepoint
+      description: At least one of weight/length/hc required. Never returns L/M/S.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sex, gest_age_weeks]
+              properties:
+                sex: { type: string, enum: [boys, girls] }
+                reference_year: { type: integer, enum: [2013, 2025] }
+                gest_age_weeks: { type: number, minimum: 22, maximum: 50 }
+                day: { type: integer, minimum: 0, maximum: 6 }
+                weight: { type: number, description: grams }
+                length: { type: number, description: cm }
+                hc: { type: number, description: cm }
+      responses:
+        "200":
+          description: Profile classification
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Success" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fenton-preterm/growth:
+    post:
+      tags: [Fenton Preterm]
+      summary: Classify a series of same-metric measurements over time (trajectory + trend)
+      description: Up to 50 points. Response is chart-ready (age/value/z/percentile per point) plus a descriptive trend block. Never returns L/M/S.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sex, metric, measurements]
+              properties:
+                sex: { type: string, enum: [boys, girls] }
+                metric: { type: string, enum: [weight, length, hc] }
+                reference_year: { type: integer, enum: [2013, 2025] }
+                measurements:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [gest_age_weeks, value]
+                    properties:
+                      gest_age_weeks: { type: number }
+                      day: { type: integer, minimum: 0, maximum: 6 }
+                      value: { type: number }
+      responses:
+        "200":
+          description: Trajectory + trend
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Success" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fenton-preterm/velocity:
+    post:
+      tags: [Fenton Preterm]
+      summary: Growth velocity between consecutive same-metric measurements
+      description: Same body shape as /growth, 2+ points required. Weight in g/kg/day (average-weight method); length/hc in cm/week.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sex, metric, measurements]
+              properties:
+                sex: { type: string, enum: [boys, girls] }
+                metric: { type: string, enum: [weight, length, hc] }
+                reference_year: { type: integer, enum: [2013, 2025] }
+                measurements:
+                  type: array
+                  minItems: 2
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [gest_age_weeks, value]
+                    properties:
+                      gest_age_weeks: { type: number }
+                      day: { type: integer, minimum: 0, maximum: 6 }
+                      value: { type: number }
+      responses:
+        "200":
+          description: Velocity per consecutive interval
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Success" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fenton-preterm/chart:
+    get:
+      tags: [Fenton Preterm]
+      summary: Server-rendered SVG growth chart (P3/P10/P50/P90/P97 curves)
+      description: >
+        Returns a rendered SVG image, never numeric curve data — this is the
+        one endpoint that touches the full reference curve, and it stays an
+        image by design (mirrors Dr. Fenton's own public tool, which outputs
+        jpg/pdf, not data points).
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          schema: { type: string, enum: [boys, girls] }
+        - name: metric
+          in: query
+          required: true
+          schema: { type: string, enum: [weight, length, hc] }
+        - name: reference_year
+          in: query
+          schema: { type: integer, enum: [2013, 2025] }
+        - name: points
+          in: query
+          description: 'Optional overlay, e.g. "28w0d:900,30w0d:1200,32w0d:1500" (day suffix optional).'
+          schema: { type: string }
+      responses:
+        "200":
+          description: SVG image
+          content:
+            image/svg+xml:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fenton-preterm/references:
+    get:
+      tags: [Fenton Preterm]
+      summary: Static reference metadata (years, sexes, metrics, valid age ranges, citations, license)
+      description: No L/M/S values or anything the curve could be reconstructed from.
+      security: []
+      responses:
+        "200":
+          description: Metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Success" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /fenton-preterm/bulk:
     post:
       tags: [Fenton Preterm]

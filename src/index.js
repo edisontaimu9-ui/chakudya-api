@@ -504,14 +504,27 @@ import {
 } from "./dri_data.js";
 import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
-import { parseFentonQuery, computeFentonZ, statusFromZ } from "./fentonPreterm.js";
+import {
+  parseFentonQuery,
+  classifyRow,
+  parseProfileBody,
+  parseSeriesBody,
+  computeVelocity,
+  summarizeTrend,
+  SCREENING_NOTE,
+  FENTON_REFERENCES_META,
+  FENTON_YEARS,
+  normalizeSex,
+  normalizeMetric,
+} from "./fentonPreterm.js";
+import { renderFentonChartSVG } from "./fentonChart.js";
 import { capSearchTerms } from "./searchTerms.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.27.0";
+const CNR_VERSION = "1.28.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -808,7 +821,12 @@ function routePolicy(resource, method, param, action) {
   const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
   const isFoodSubstitutes = resource === "foods" && param === "substitutes" && method === "GET";
   const isFoodsCompare = resource === "foods" && param === "compare" && method === "GET";
-  const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
+  const isFentonCompute =
+    resource === "fenton-preterm" &&
+    ["profile", "growth", "velocity"].includes(param) &&
+    method === "POST";
+  const isFentonChart = resource === "fenton-preterm" && param === "chart" && method === "GET";
+  const isFentonReferences = resource === "fenton-preterm" && param === "references" && method === "GET";  const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
@@ -906,6 +924,22 @@ function routePolicy(resource, method, param, action) {
   // Community submissions: public, but tightly rate-limited to deter spam.
   if (isPackagedSubmit) {
     return { auth: "public", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Fenton preterm classify/profile/growth/velocity are all pure
+  // computation over the seeded reference table (a DB lookup + arithmetic,
+  // no external API call) — public, same tier as bmi-for-age's classify.
+  // /chart adds SVG rendering server-side but is still cheap; cached at the
+  // edge too (see cachePolicy) so repeat requests for the same curve don't
+  // hit the DB at all.
+  if (isFentonCompute) {
+    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  if (isFentonChart) {
+    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+  }
+  if (isFentonReferences) {
+    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
   // Photo scan costs a Groq vision call per request — public but capped
@@ -2197,36 +2231,66 @@ async function handleBmiForAge(request, url, db, param) {
 // and src/fentonPreterm.js for the license condition this exists under: no
 // list/dump route, ever. This function intentionally has no bare-GET listing
 // branch (unlike handleBmiForAge above) — /classify is the only read path.
+// Shared step-lookup used by every Fenton read handler (classify, profile,
+// growth, velocity, chart). Returns { ok, row } or { ok: false, errRes }.
+async function lookupFentonRow(db, referenceYear, sex, metric, timeDays) {
+  const { ok, status, body } = await db.select("fenton_preterm_lms", {
+    filters: {
+      reference_year: `eq.${referenceYear}`,
+      sex: `eq.${sex}`,
+      metric: `eq.${metric}`,
+      time_days: `lte.${timeDays}`,
+    },
+    order: "time_days.desc",
+    limit: 1,
+  });
+  if (!ok) return { ok: false, errRes: err(body?.message || "Query failed", status) };
+  const row = Array.isArray(body) ? body[0] : null;
+  if (!row) {
+    return {
+      ok: false,
+      errRes: notFound(
+        "Fenton reference row for this age (has sql/013 been run and the table seeded for this reference_year/metric?)"
+      ),
+    };
+  }
+  return { ok: true, row };
+}
+
+// Fetches every row for one (reference_year, sex, metric), ordered by age —
+// used by the chart renderer, which needs the whole curve to draw a line.
+async function lookupFentonRows(db, referenceYear, sex, metric) {
+  const { ok, status, body } = await db.select("fenton_preterm_lms", {
+    filters: { reference_year: `eq.${referenceYear}`, sex: `eq.${sex}`, metric: `eq.${metric}` },
+    order: "time_days.asc",
+    limit: 500,
+  });
+  if (!ok) return { ok: false, errRes: err(body?.message || "Query failed", status) };
+  const rows = Array.isArray(body) ? body : [];
+  if (rows.length === 0) {
+    return { ok: false, errRes: notFound("No seeded rows for this reference_year/sex/metric.") };
+  }
+  return { ok: true, rows };
+}
+
 async function handleFentonPreterm(request, url, db, param) {
   if (request.method !== "GET") {
     return err("Method not allowed. Seed rows with POST /fenton-preterm/bulk (admin).", 405);
   }
   if (param !== "classify") {
-    return notFound("Fenton preterm route. Only GET /fenton-preterm/classify is available.");
+    return notFound(
+      "Fenton preterm route. Available: GET /fenton-preterm/classify, POST .../profile, POST .../growth, " +
+        "POST .../velocity, GET .../chart, GET .../references."
+    );
   }
 
   const parsed = parseFentonQuery(url.searchParams);
   if (parsed.error) return err(parsed.error);
 
-  const { ok, status, body } = await db.select("fenton_preterm_lms", {
-    filters: {
-      reference_year: `eq.${parsed.referenceYear}`,
-      sex: `eq.${parsed.sex}`,
-      metric: `eq.${parsed.metric}`,
-      time_days: `lte.${parsed.timeDays}`,
-    },
-    order: "time_days.desc",
-    limit: 1,
-  });
-  if (!ok) return err(body?.message || "Query failed", status);
-  const row = Array.isArray(body) ? body[0] : null;
-  if (!row) {
-    return notFound(
-      "Fenton reference row for this age (has sql/013 been run and the table seeded for this reference_year/metric?)"
-    );
-  }
+  const looked = await lookupFentonRow(db, parsed.referenceYear, parsed.sex, parsed.metric, parsed.timeDays);
+  if (!looked.ok) return looked.errRes;
 
-  const { z, percentile } = computeFentonZ(row, parsed.value, parsed.metric);
+  const { z, percentile, status } = classifyRow(looked.row, parsed.value, parsed.metric);
 
   return success(
     {
@@ -2238,12 +2302,143 @@ async function handleFentonPreterm(request, url, db, param) {
       value: parsed.value,
       z,
       percentile,
-      status: statusFromZ(z),
-      note:
-        "Screening aid only, not a diagnosis. SGA/LGA labels are only valid AT BIRTH per Fenton's own guidance; this 'status' is a generic +/-2SD read usable at any age for interval growth monitoring. Weight includes the WHO SD23 correction for extreme values; length/HC do not (matches Fenton's own calculator).",
+      status,
+      note: SCREENING_NOTE,
     },
     { message: "Fenton preterm growth chart classification" }
   );
+}
+
+// POST /fenton-preterm/profile — weight + length + HC at one timepoint.
+async function handleFentonProfile(request, db) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return err("Invalid JSON body");
+  }
+  const parsed = parseProfileBody(body);
+  if (parsed.error) return err(parsed.error);
+
+  const result = {};
+  for (const metric of Object.keys(parsed.values)) {
+    const looked = await lookupFentonRow(db, parsed.referenceYear, parsed.sex, metric, parsed.timeDaysByMetric[metric]);
+    if (!looked.ok) return looked.errRes;
+    const { z, percentile, status } = classifyRow(looked.row, parsed.values[metric], metric);
+    result[metric] = { value: parsed.values[metric], z, percentile, status };
+  }
+
+  return success(
+    {
+      sex: parsed.sex,
+      reference_year: parsed.referenceYear,
+      gest_age_weeks: parsed.gestAgeWeeks,
+      day: parsed.day,
+      metrics: result,
+      note: SCREENING_NOTE,
+    },
+    { message: "Fenton preterm growth profile" }
+  );
+}
+
+// POST /fenton-preterm/growth — a series of same-metric measurements over
+// time -> classified trajectory + a descriptive trend summary. Response
+// shape is deliberately chart-ready (age + value + z/percentile per point).
+async function handleFentonGrowth(request, db) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return err("Invalid JSON body");
+  }
+  const parsed = parseSeriesBody(body);
+  if (parsed.error) return err(parsed.error);
+
+  const points = [];
+  for (const m of parsed.measurements) {
+    const looked = await lookupFentonRow(db, parsed.referenceYear, parsed.sex, parsed.metric, m.timeDays);
+    if (!looked.ok) return looked.errRes;
+    const { z, percentile, status } = classifyRow(looked.row, m.value, parsed.metric);
+    points.push({ gest_age_weeks: m.gestAgeWeeks, day: m.day, value: m.value, z, percentile, status });
+  }
+
+  return success(
+    {
+      sex: parsed.sex,
+      metric: parsed.metric,
+      reference_year: parsed.referenceYear,
+      points,
+      trend: summarizeTrend(points),
+      note: SCREENING_NOTE,
+    },
+    { message: "Fenton preterm growth trajectory" }
+  );
+}
+
+// POST /fenton-preterm/velocity — growth velocity between consecutive
+// measurements of the same metric (2+ points -> N-1 velocities).
+async function handleFentonVelocity(request, db) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return err("Invalid JSON body");
+  }
+  const parsed = parseSeriesBody(body);
+  if (parsed.error) return err(parsed.error);
+  if (parsed.measurements.length < 2) {
+    return err("'measurements' needs at least 2 points to compute a velocity.");
+  }
+
+  const intervals = [];
+  for (let i = 1; i < parsed.measurements.length; i++) {
+    const v = computeVelocity(parsed.metric, parsed.measurements[i - 1], parsed.measurements[i]);
+    if (v.error) return err(v.error);
+    intervals.push({
+      from: { gest_age_weeks: parsed.measurements[i - 1].gestAgeWeeks, day: parsed.measurements[i - 1].day, value: parsed.measurements[i - 1].value },
+      to: { gest_age_weeks: parsed.measurements[i].gestAgeWeeks, day: parsed.measurements[i].day, value: parsed.measurements[i].value },
+      ...v,
+    });
+  }
+
+  return success(
+    { sex: parsed.sex, metric: parsed.metric, reference_year: parsed.referenceYear, intervals },
+    { message: "Fenton preterm growth velocity" }
+  );
+}
+
+// GET /fenton-preterm/chart?sex=&metric=&reference_year=&points=28w0d:900,30w0d:1200
+// Renders an SVG image server-side. The reference curve is computed from
+// the LMS table in this request's handler ONLY to draw pixel coordinates —
+// it is never returned as JSON. See src/fentonChart.js.
+async function handleFentonChart(request, url, db) {
+  const sex = normalizeSex(url.searchParams.get("sex"));
+  if (!sex) return err("'sex' is required: boys or girls");
+  const metric = normalizeMetric(url.searchParams.get("metric"));
+  if (!metric) return err("'metric' is required: weight, length, or hc");
+  const yearRaw = url.searchParams.get("reference_year");
+  const referenceYear = yearRaw ? Number(yearRaw) : 2025;
+  if (!FENTON_YEARS.includes(referenceYear)) return err("'reference_year' must be 2013 or 2025 (default 2025)");
+
+  // Optional overlay points: "28w0d:900,30w0d:1200,32w0d:1500" (day optional, defaults 0)
+  let points = [];
+  const pointsRaw = url.searchParams.get("points");
+  if (pointsRaw) {
+    for (const chunk of pointsRaw.split(",")) {
+      const m = /^([0-9]+(?:\.[0-9]+)?)w(?:([0-6])d)?:([0-9]+(?:\.[0-9]+)?)$/.exec(chunk.trim());
+      if (!m) return err(`Invalid 'points' entry "${chunk}". Expected e.g. 28w0d:900 or 28w:900.`);
+      points.push({ gestAgeWeeks: Number(m[1]), day: m[2] ? Number(m[2]) : 0, value: Number(m[3]) });
+    }
+  }
+
+  const looked = await lookupFentonRows(db, referenceYear, sex, metric);
+  if (!looked.ok) return looked.errRes;
+
+  const svg = renderFentonChartSVG({ rows: looked.rows, metric, sex, referenceYear, points });
+  return new Response(svg, {
+    status: 200,
+    headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", ...CORS_HEADERS },
+  });
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -6088,7 +6283,12 @@ function handleRoot(env) {
       ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
-        "No list/dump route — licensed from Dr. Tanis Fenton (CC BY-NC-ND 4.0, non-commercial, this app only); raw L/M/S values are never returned to end users.",
+        "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
+        "POST /fenton-preterm/growth   → body {sex, metric, reference_year?, measurements:[{gest_age_weeks, day?, value}, ...]} → classified trajectory + descriptive trend (percentile-crossing flags)",
+        "POST /fenton-preterm/velocity → same body shape as growth, 2+ points → g/kg/day (weight) or cm/week (length/hc) between each consecutive pair",
+        "GET  /fenton-preterm/chart?sex=&metric=&reference_year=&points=28w0d:900,30w0d:1200  → server-rendered SVG growth chart image (P3/P10/P50/P90/P97 curves, optional overlay points); never returns numeric curve data",
+        "GET  /fenton-preterm/references → static metadata: years, sexes, metrics, exact valid age ranges, citations, license summary — no L/M/S values",
+        "No list/dump route for the raw table — licensed from Dr. Tanis Fenton (CC BY-NC-ND 4.0, non-commercial, this app only); raw L/M/S values are never returned to end users, in any of the above.",
         "POST /fenton-preterm/bulk     (admin) → body {items:[...]}, 2284 rows across 5 files; seed files: scripts/fenton_preterm_seed_1.json .. _5.json",
       ],
       exchange_lists: [
@@ -7178,6 +7378,26 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
           requiredField: "metric",
           label: "Fenton preterm reference rows",
         });
+      }
+      if (param === "profile") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleFentonProfile(request, db);
+      }
+      if (param === "growth") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleFentonGrowth(request, db);
+      }
+      if (param === "velocity") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleFentonVelocity(request, db);
+      }
+      if (param === "chart") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        return await handleFentonChart(request, url, db);
+      }
+      if (param === "references") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        return success(FENTON_REFERENCES_META, { message: "Fenton preterm growth chart reference metadata" });
       }
       return await handleFentonPreterm(request, url, db, param || null);
     }

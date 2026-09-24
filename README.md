@@ -755,10 +755,15 @@ Weight, length, and head-circumference z-scores/percentiles for preterm infants,
 
 **License — this is not open data like the rest of CNR.** Shared under [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/) for non-commercial use in this app only, with two extra conditions from Dr. Fenton: the underlying L/M/S values must never be visible to end users, and must never be shared with other hospitals or organizations. So, unlike every other reference table in CNR:
 
-- There is **no `GET /fenton-preterm` list route** — `classify` is the only read path, and it only ever returns a computed z-score/percentile/status, never a raw row.
-- Don't add one. If this needs to change, that's a conversation with Edison about the data-sharing agreement, not a routine API change.
+- There is **no `GET /fenton-preterm` list route** — every read path (`classify`, `profile`, `growth`, `velocity`, `chart`, `references`) only ever returns a computed result (a z-score/percentile/status, a rendered image, or static metadata), never a raw L/M/S row.
+- Don't add one, and don't add a mode to any of the above that echoes L/M/S or the raw curve as JSON — `chart`'s SVG rendering is the one sanctioned way to expose the curve shape, as an image, not data. If this needs to change, that's a conversation with Edison about the data-sharing agreement, not a routine API change.
 
 - `GET /fenton-preterm/classify` *(public, rate-limited, cached 1h)* — `sex` (`boys`/`girls`, or `boy`/`girl`/`male`/`female`/`m`/`f`), `metric` (`weight`/`length`/`hc`), `gest_age_weeks` (22-50), `day` (0-6, day of the gestational week, default 0), `value` (grams for weight, cm for length/hc), and optional `reference_year` (`2013` or `2025`, default `2025`). Returns `z`, `percentile`, and `status`.
+- `POST /fenton-preterm/profile` *(public, rate-limited)* — classify weight + length + HC together at one timepoint. Body: `{sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?}` — at least one of `weight`/`length`/`hc` required, any combination is fine. Returns one `{value, z, percentile, status}` per metric provided.
+- `POST /fenton-preterm/growth` *(public, rate-limited)* — classify a series of same-metric measurements over time and return the trajectory, chart-ready. Body: `{sex, metric, reference_year?, measurements: [{gest_age_weeks, day?, value}, ...]}` (up to 50 points, any order — sorted by age server-side). Returns each point's `{gest_age_weeks, day, value, z, percentile, status}` plus a `trend` block (`first_z`/`last_z`/`min_z`/`max_z`/`z_change_overall`, and `notable_drops`: consecutive-point gaps where z fell ≥0.67 — roughly one major percentile band. Descriptive only, not a clinical threshold.).
+- `POST /fenton-preterm/velocity` *(public, rate-limited)* — same body shape as `/growth`, 2+ points. Returns velocity for each consecutive pair: weight in **g/kg/day** (average-weight method: Δweight / average-weight-kg / days — the long-standing NICU convention), length/HC in **cm/week**.
+- `GET /fenton-preterm/chart` *(public, rate-limited, cached 1h)* — `sex`, `metric`, optional `reference_year`, and optional `points` (e.g. `points=28w0d:900,30w0d:1200,32w0d:1500` — day suffix optional, defaults `0`) to overlay an infant's own trajectory. Returns a self-contained **SVG image** (`Content-Type: image/svg+xml`) with the P3/P10/P50/P90/P97 reference curves and, if given, the overlay points/line. **This is the only endpoint that touches the full reference curve, and it never returns curve data as JSON — only rendered vector graphics** (mirrors Dr. Fenton's own public tool, which outputs jpg/pdf images rather than data points). See [`src/fentonChart.js`](src/fentonChart.js).
+- `GET /fenton-preterm/references` *(public, rate-limited, cached 1h)* — static metadata: both years' citations/DOIs, sexes, metrics, the **exact** valid age range per (year, metric) — verified against the seeded data, not approximated — and the license summary. No L/M/S values.
 - `POST /fenton-preterm/bulk` *(admin)* — see [Bulk insert](#bulk-insert); 5 seed files (500 rows each except the last, 284): [`scripts/fenton_preterm_seed_1.json`](scripts/fenton_preterm_seed_1.json) through `_5.json`. Run all 5 — the unique `(reference_year, sex, metric, time_days)` constraint rejects a repeat seed instead of duplicating rows.
 
 ```
@@ -778,7 +783,57 @@ GET /fenton-preterm/classify?sex=girls&metric=weight&gest_age_weeks=32&day=0&val
 }
 ```
 
-The age axis is days since 22 completed weeks gestation (`(gest_age_weeks - 22) * 7 + day`), matching Dr. Fenton's own spreadsheet's lookup axis exactly, and the reference-row lookup is a step function (largest tabulated age ≤ the requested age) rather than interpolated — same behaviour as her Excel `LOOKUP()`, so results match her calculator to within rounding. Weight's z-score gets the WHO-recommended SD23 correction for values beyond ±3SD (a linear extension from the SD2/SD3 cut-offs, per the [WHO technical report](http://www.who.int/childgrowth/standards/technical_report/en/)); length and head circumference don't — Dr. Fenton's own calculator doesn't correct those either, so neither does this. `status` is a plain ±2SD read (`small`/`appropriate`/`large`) usable at any postnatal age for interval growth monitoring — it is deliberately **not** the SGA/LGA label, which by Dr. Fenton's own guidance only means something at birth. Length and head-circumference reference data start partway through the 22-50 week range in both editions; a `gest_age_weeks`/`day` before that returns a 400 rather than a wrong answer.
+`POST /fenton-preterm/profile` — same 32w0d girl, all three metrics at once:
+
+```json
+// request: {"sex":"girls","gest_age_weeks":32,"day":0,"weight":1500,"length":41,"hc":29}
+{
+  "status": "success",
+  "message": "Fenton preterm growth profile",
+  "data": {
+    "sex": "girls", "reference_year": 2025, "gest_age_weeks": 32, "day": 0,
+    "metrics": {
+      "weight": { "value": 1500, "z": -0.92, "percentile": 17.9, "status": "appropriate" },
+      "length": { "value": 41,   "z": -0.23, "percentile": 41.0, "status": "appropriate" },
+      "hc":     { "value": 29,   "z": -0.13, "percentile": 44.7, "status": "appropriate" }
+    },
+    "note": "..."
+  }
+}
+```
+
+`POST /fenton-preterm/growth` — three weight measurements over 4 weeks:
+
+```json
+// request: {"sex":"girls","metric":"weight","measurements":[
+//   {"gest_age_weeks":28,"value":900},{"gest_age_weeks":30,"value":1050},{"gest_age_weeks":32,"value":1500}]}
+{
+  "data": {
+    "points": [
+      { "gest_age_weeks": 28, "day": 0, "value": 900,  "z": -1.20, "percentile": 11.5, "status": "appropriate" },
+      { "gest_age_weeks": 30, "day": 0, "value": 1050, "z": -1.72, "percentile": 4.2,  "status": "appropriate" },
+      { "gest_age_weeks": 32, "day": 0, "value": 1500, "z": -0.92, "percentile": 17.9, "status": "appropriate" }
+    ],
+    "trend": { "first_z": -1.20, "last_z": -0.92, "z_change_overall": 0.28, "min_z": -1.72, "max_z": -0.92, "notable_drops": [] }
+  }
+}
+```
+
+`POST /fenton-preterm/velocity` — same two-point weight gain: `900g → 1200g` over 14 days → `{"velocity": 20.4, "unit": "g/kg/day", "days": 14}` (average-weight method).
+
+`GET /fenton-preterm/chart?sex=girls&metric=weight&points=28w0d:900,30w0d:1200,32w0d:1500` returns an SVG with the 5 reference curves and a dashed line through those 3 dots.
+
+The age axis is days since 22 completed weeks gestation (`(gest_age_weeks - 22) * 7 + day`), matching Dr. Fenton's own spreadsheet's lookup axis exactly, and the reference-row lookup is a step function (largest tabulated age ≤ the requested age) rather than interpolated — same behaviour as her Excel `LOOKUP()`, so results match her calculator to within rounding. Weight's z-score gets the WHO-recommended SD23 correction for values beyond ±3SD (a linear extension from the SD2/SD3 cut-offs, per the [WHO technical report](http://www.who.int/childgrowth/standards/technical_report/en/)); length and head circumference don't — Dr. Fenton's own calculator doesn't correct those either, so neither does this. `status` is a plain ±2SD read (`small`/`appropriate`/`large`) usable at any postnatal age for interval growth monitoring — it is deliberately **not** the SGA/LGA label, which by Dr. Fenton's own guidance only means something at birth.
+
+Length and head-circumference reference data start partway through the 22-50 week range, and it differs by year and metric — a `gest_age_weeks`/`day` before the real floor returns a clear 400 rather than a wrong answer:
+
+| | 2013 | 2025 |
+|---|---|---|
+| weight | 22.6 wk | 22.5 wk |
+| length | 23.5 wk | 23.5 wk |
+| hc | 23.5 wk | 22.5 wk |
+
+(An earlier version of this endpoint used a single hardcoded guess — `length` rejected anything before 30.6 weeks — which wrongly rejected valid length queries between 23.5 and 30.6 weeks. Fixed by keying the floor on the actual seeded data per `(reference_year, metric)` instead of approximating.)
 
 ### Recipes
 
