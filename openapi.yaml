@@ -35,6 +35,7 @@ tags:
   - name: Formulas
   - name: BMI for age
   - name: Fenton Preterm
+  - name: FHIR
   - name: Packaged
   - name: Favorites
   - name: History
@@ -1214,6 +1215,63 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/BulkSuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /fhir/metadata:
+    get:
+      tags: [FHIR]
+      summary: FHIR R4 CapabilityStatement
+      description: >
+        Phase 1 groundwork for future EHR/HIE integration. Stateless facade,
+        no storage, not yet registered with any OpenHIM/HIE instance.
+      security: []
+      responses:
+        "200":
+          description: CapabilityStatement
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Observation/$evaluate-growth:
+    post:
+      tags: [FHIR]
+      summary: Evaluate a growth/anthropometry measurement, FHIR-shaped
+      description: >
+        Wraps /bmi-for-age/classify and /fenton-preterm/classify only. Routes
+        on age: gestationalAgeWeeks (22-50) -> Fenton preterm; birthDate
+        resolving to 5y1m-19y0m postnatal -> WHO BMI-for-age. The WHO
+        0-59-month gap returns a FHIR OperationOutcome rather than guessing —
+        chakudya-api has no endpoint for that range yet. One measurement ->
+        a single Observation; more than one -> a Bundle (type collection).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              description: A FHIR Parameters resource.
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: Observation or Bundle of Observations
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — malformed input
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome — valid input, unsupported age/route (e.g. WHO 0-59-month gap)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /packaged:
     get:

@@ -516,15 +516,28 @@ import {
   FENTON_YEARS,
   normalizeSex,
   normalizeMetric,
+  ageInDays,
 } from "./fentonPreterm.js";
 import { renderFentonChartSVG } from "./fentonChart.js";
+import {
+  operationOutcome,
+  parseEvaluateGrowth,
+  decideGrowthRoute,
+  buildFentonObservation,
+  buildBmiForAgeObservation,
+  bundleObservations,
+  buildCapabilityStatement,
+  toGrams,
+  toKg,
+  toCm,
+} from "./fhir.js";
 import { capSearchTerms } from "./searchTerms.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.28.0";
+const CNR_VERSION = "1.29.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -826,7 +839,10 @@ function routePolicy(resource, method, param, action) {
     ["profile", "growth", "velocity"].includes(param) &&
     method === "POST";
   const isFentonChart = resource === "fenton-preterm" && param === "chart" && method === "GET";
-  const isFentonReferences = resource === "fenton-preterm" && param === "references" && method === "GET";  const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
+  const isFentonReferences = resource === "fenton-preterm" && param === "references" && method === "GET";
+  const isFhirMetadata = resource === "fhir" && param === "metadata" && method === "GET";
+  const isFhirEvaluateGrowth = resource === "fhir" && param === "Observation" && action === "$evaluate-growth" && method === "POST";
+  const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && param === "keys";
@@ -939,6 +955,14 @@ function routePolicy(resource, method, param, action) {
     return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
   if (isFentonReferences) {
+    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // FHIR facade — same public/cheap-computation tier as the classify
+  // endpoints it wraps (no new backend cost, just a reshape).
+  if (isFhirMetadata) {
+    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  if (isFhirEvaluateGrowth) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -2439,6 +2463,116 @@ async function handleFentonChart(request, url, db) {
     status: 200,
     headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", ...CORS_HEADERS },
   });
+}
+
+// ─── FHIR facade (/fhir/*) — growth/anthropometry, Phase 1 ────────────────
+//
+// Stateless translation layer over the classify endpoints above — see
+// src/fhir.js for the full scope note (Fenton preterm + WHO BMI-for-age
+// only; no WHO 0-59-month coverage yet; no OpenHIM registration yet).
+
+async function handleFhirMetadata(url) {
+  return json(buildCapabilityStatement(url.origin));
+}
+
+async function handleFhirEvaluateGrowth(request, db, url) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json(operationOutcome("error", "Invalid JSON body."), 400);
+  }
+
+  const parsed = parseEvaluateGrowth(body);
+  if (parsed.error) return json(parsed.outcome, 400);
+
+  const route = decideGrowthRoute(parsed);
+  if (route.error) return json(route.outcome, 422);
+
+  const base = url.origin;
+
+  if (route.route === "fenton") {
+    const sex = normalizeSex(parsed.sex);
+    const referenceYear = parsed.referenceYear ?? 2025;
+    const timeDays = ageInDays(parsed.gestationalAgeWeeks, parsed.gestationalAgeDays);
+    const observations = [];
+
+    for (const m of parsed.measurements) {
+      if (m.type === "bmi") {
+        return json(
+          operationOutcome("error", "measurement.type 'bmi' is not valid for a gestational-age (Fenton) evaluation — use weight, length, or hc."),
+          400
+        );
+      }
+      const metric = m.type;
+      const unit = metric === "weight" ? "g" : "cm";
+      const value = metric === "weight" ? toGrams(m.value) : toCm(m.value);
+      if (value === null) {
+        return json(
+          operationOutcome("error", `measurement.value for "${metric}" needs a recognized unit (g/kg for weight, cm/m for length/hc).`),
+          400
+        );
+      }
+
+      const looked = await lookupFentonRow(db, referenceYear, sex, metric, timeDays);
+      if (!looked.ok) return looked.errRes;
+      const { z, percentile, status } = classifyRow(looked.row, value, metric);
+
+      const obs = buildFentonObservation(
+        base,
+        { sex, gestAgeWeeks: parsed.gestationalAgeWeeks, day: parsed.gestationalAgeDays, metric, value, unit },
+        { z, percentile, status, note: SCREENING_NOTE, reference_year: referenceYear }
+      );
+      obs.effectiveDateTime = parsed.effectiveDateTime;
+      observations.push(obs);
+    }
+
+    return json(bundleObservations(observations));
+  }
+
+  // route.route === "bmi-for-age"
+  const sex = normalizeSex(parsed.sex);
+  const bmiMeasurement = parsed.measurements.find((m) => m.type === "bmi");
+  const weightMeasurement = parsed.measurements.find((m) => m.type === "weight");
+  const lengthMeasurement = parsed.measurements.find((m) => m.type === "length");
+
+  let bmi;
+  if (bmiMeasurement) {
+    bmi = bmiMeasurement.value?.value;
+  } else if (weightMeasurement && lengthMeasurement) {
+    const kg = toKg(weightMeasurement.value);
+    const cm = toCm(lengthMeasurement.value);
+    if (kg === null || cm === null) {
+      return json(operationOutcome("error", "weight/length units not recognized (kg/g for weight, cm/m for length)."), 400);
+    }
+    const meters = cm / 100;
+    bmi = kg / (meters * meters);
+  } else {
+    return json(
+      operationOutcome("error", "For a postnatal (BMI-for-age) evaluation, provide either a 'bmi' measurement, or both 'weight' and 'length' measurements together."),
+      400
+    );
+  }
+  if (!Number.isFinite(bmi) || bmi <= 0 || bmi > 100) {
+    return json(operationOutcome("error", "Computed/provided BMI is not plausible."), 400);
+  }
+
+  const { ok, status, body: rows } = await db.select("bmi_for_age", {
+    filters: { sex: `eq.${sex}`, age_months: `eq.${route.ageMonths}` },
+    limit: 1,
+  });
+  if (!ok) return json(operationOutcome("error", rows?.message || "Query failed"), status);
+  const row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) return json(operationOutcome("error", "BMI-for-age reference row not found (has sql/012 been run and seeded?)"), 404);
+
+  const result = classifyBmiForAge(row, bmi);
+  const obs = buildBmiForAgeObservation(base, { ageMonths: route.ageMonths }, {
+    ...result,
+    note: "Screening aid only, not a diagnosis. Cut-offs: severe thinness < -3SD, thinness < -2SD, normal -2SD to +1SD, overweight > +1SD, obesity > +2SD.",
+  });
+  obs.effectiveDateTime = parsed.effectiveDateTime;
+
+  return json(obs);
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -6291,6 +6425,11 @@ function handleRoot(env) {
         "No list/dump route for the raw table — licensed from Dr. Tanis Fenton (CC BY-NC-ND 4.0, non-commercial, this app only); raw L/M/S values are never returned to end users, in any of the above.",
         "POST /fenton-preterm/bulk     (admin) → body {items:[...]}, 2284 rows across 5 files; seed files: scripts/fenton_preterm_seed_1.json .. _5.json",
       ],
+      fhir: [
+        "GET  /fhir/metadata → FHIR R4 CapabilityStatement",
+        "POST /fhir/Observation/$evaluate-growth → body: FHIR Parameters {sex, gestationalAgeWeeks+day OR birthDate, measurement:[{type,value}, ...], reference_year?, effectiveDateTime?} → Observation or Bundle of Observations",
+        "Phase 1 groundwork: wraps bmi-for-age + fenton-preterm classify only (WHO 0-59-month not covered — returns OperationOutcome). Stateless facade, no storage. Not yet registered with any OpenHIM/HIE instance. See src/fhir.js.",
+      ],
       exchange_lists: [
         "GET  /exchange",
         "POST /exchange         (admin)",
@@ -7304,6 +7443,18 @@ async function handleAdminKeys(request, db, idOrAction) {
  */
 async function dispatch(request, url, db, env, resource, param, ctx, action, admin) {
   switch (resource) {
+    case "fhir": {
+      if (param === "metadata") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        return await handleFhirMetadata(url);
+      }
+      if (param === "Observation" && action === "$evaluate-growth") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleFhirEvaluateGrowth(request, db, url);
+      }
+      return notFound("FHIR route. Available: GET /fhir/metadata, POST /fhir/Observation/$evaluate-growth.");
+    }
+
     case "health": {
       return await handleHealth(request, env);
     }
