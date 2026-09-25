@@ -3,3 +3,9 @@ ingest_log.txt
 *.pdf
 Chakudya-docs/
 scripts/ingest_pdf_resume.py
+
+# Licensed source data (e.g. Fenton growth chart files) must never be
+# committed here — this repo is public. Keep such files locally or in
+# private storage only. See data-sources/*/README.md.
+data-sources/**/*.xlsx
+data-sources/**/*.xls

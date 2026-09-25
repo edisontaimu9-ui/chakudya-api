@@ -4,7 +4,9 @@
 -- Source: Fenton TR, Kim JH. BMC Pediatrics 2013;13:59 (2013 reference) and
 -- Fenton TR, Elmrayed S, Alshaikh BN. Paediatric and Perinatal Epidemiology
 -- 2025. PMID: 40534585 (2025 reference). LMS parameters provided directly by
--- Dr. Tanis Fenton (University of Calgary) by email, 2026-09-23.
+-- Dr. Tanis Fenton (University of Calgary) by email, 2026-09-23. Canonical
+-- 2025 source file + a verification cross-check against these seed rows
+-- (0 mismatches, 2026-09-25): data-sources/fenton/README.md.
 --
 -- LICENSE — READ BEFORE TOUCHING THIS TABLE OR ITS ROUTES:
 -- Shared under CC BY-NC-ND 4.0 (https://creativecommons.org/licenses/by-nc-nd/4.0/)
