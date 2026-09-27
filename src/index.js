@@ -4589,12 +4589,61 @@ async function fetchFromFatSecret(query, env) {
   const round2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
   const scaleVal = (n) => (n == null ? null : round2(n * scale));
 
+  // foods.search's food_description is macros-only text ("Per 100g -
+  // Calories: 52kcal | Fat: 0.17g | ..."), so a name-search result used to
+  // come back with no fiber/sodium/potassium/vitamins/calcium/iron at all —
+  // unlike the barcode path (fetchFromFatSecretBarcode), which already
+  // calls food.get and gets the full serving object. Do the same follow-up
+  // call here so a name-search match carries the same micronutrient panel.
+  // A failure here just means we fall back to the macros-only result below,
+  // same behaviour as before this call existed.
+  let microFields = {};
+  let microRawData = {};
+  try {
+    const detailUrl = await signFatSecretRequest(
+      { method: "food.get.v2", food_id: food.food_id, format: "json" },
+      env.FATSECRET_CONSUMER_KEY,
+      env.FATSECRET_CONSUMER_SECRET
+    );
+    const detailRes = await fetch(detailUrl);
+    if (detailRes.ok) {
+      const detailData = await detailRes.json().catch(() => null);
+      const detailFood = detailData?.food;
+      const picked = detailFood && !detailData?.error
+        ? pickFatSecretServing(detailFood.servings?.serving)
+        : null;
+      if (picked) {
+        const { serving: s, scale: detailScale } = picked;
+        const scaleDetailVal = (n) =>
+          n == null || n === "" ? null : Math.round(parseFloat(n) * detailScale * 100) / 100;
+        microFields = {
+          fiber_g: scaleDetailVal(s.fiber),
+          sodium_mg: scaleDetailVal(s.sodium),
+          potassium_mg: scaleDetailVal(s.potassium),
+        };
+        // Same caveat as fetchFromFatSecretBarcode: FatSecret's classic
+        // serving object gives vitamin_a/vitamin_c/calcium/iron as %DV
+        // strings, not absolute mg/mcg — left out of the normalized fields
+        // (only in raw_data) rather than guessing a reference DV.
+        microRawData = {
+          vitamin_a_pct_dv: s.vitamin_a ?? null,
+          vitamin_c_pct_dv: s.vitamin_c ?? null,
+          calcium_pct_dv: s.calcium ?? null,
+          iron_pct_dv: s.iron ?? null,
+        };
+      }
+    }
+  } catch (e) {
+    console.error("FatSecret food.get.v2 detail fetch failed:", e?.message || e);
+  }
+
   return normalizeFood("fatsecret", {
     food_name: food.food_name,
     energy_kcal: scaleVal(grab("Calories")),
     fat_g: scaleVal(grab("Fat")),
     carbs_g: scaleVal(grab("Carbs")),
     protein_g: scaleVal(grab("Protein")),
+    ...microFields,
     external_id: food.food_id,
     raw_data: {
       food_id: food.food_id,
@@ -4603,6 +4652,7 @@ async function fetchFromFatSecret(query, env) {
       food_url: food.food_url ?? null,
       serving_basis: `${basis.amount}${basis.unit}`,
       scaled_to_100: basis.amount !== 100,
+      ...microRawData,
     },
   });
 }
