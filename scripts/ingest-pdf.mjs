@@ -24,6 +24,8 @@
  *   --pages 3-40                      only process this page range (dry run friendly)
  *   --skip-pages 1-2,61-72,80         leave these pages out (covers, numeric lookup grids, pages you'll hand-write)
  *   --skip-tables 49                  drop only the tables on these pages, keep their prose
+ *   --drop-refs                       drop chunks that are mostly numbered bibliography entries (for books whose
+ *                                     per-chapter reference lists aren't under a "References" heading)
  *
  * Env
  *   ADMIN_KEY     admin key for the Worker (sent as "Authorization: Bearer <key>";
@@ -541,6 +543,22 @@ for (let i = 0; i < chunks.length; i++) {
   merged.push(c);
 }
 
+// --drop-refs: remove text chunks that are mostly bibliography entries ("12. Surname AB, et al. J Name. 2019;33(2):1-9.")
+let droppedRefs = 0;
+if (args["drop-refs"]) {
+  const looksLikeRefs = (t) => {
+    const numbered = t.split("\n").filter((l) => /^\s*\d{1,3}\.\s+[A-Z][A-Za-z'’-]+\s+[A-Z]{1,3}[,.]/.test(l)).length;
+    const cites = (t.match(/\b(?:19|20)\d{2};\d+/g) || []).length;
+    return numbered >= 2 || cites >= 3;
+  };
+  for (let i = merged.length - 1; i >= 0; i--) {
+    if (merged[i].type === "text" && looksLikeRefs(merged[i].content)) {
+      merged.splice(i, 1);
+      droppedRefs++;
+    }
+  }
+}
+
 // extra chunks (figure descriptions etc.)
 if (typeof args.extra === "string") {
   if (!fs.existsSync(args.extra)) die(`--extra file not found: ${args.extra}`);
@@ -597,6 +615,7 @@ function report() {
   }
   if (skippedRefParas) console.log(`Skipped ${skippedRefParas} paragraph(s) under References/Bibliography/Acknowledgements`);
   if (droppedTiny) console.log(`Dropped ${droppedTiny} tiny scrap(s) (<60 chars)`);
+  if (droppedRefs) console.log(`Dropped ${droppedRefs} bibliography chunk(s) (--drop-refs)`);
   if (skipPages.size) console.log(`Skipped by --skip-pages: ${ranges([...skipPages])}`);
   if (skipTables.size) console.log(`Tables dropped by --skip-tables on pages: ${ranges([...skipTables])} (their other text is kept)`);
   if (tablePages.length) console.log(`\nTable content on pages: ${ranges(tablePages)}  ← check these in the preview`);
