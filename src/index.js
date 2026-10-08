@@ -519,6 +519,7 @@ import {
 } from "./dri_data.js";
 import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
+import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
   classifyRow,
@@ -858,6 +859,8 @@ function routePolicy(resource, method, param, action) {
   const isRagIngest = resource === "rag" && param === "ingest" && method === "POST";
   const isRagDeleteSource = resource === "rag" && param === "source" && method === "DELETE";
   const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
+  const isRagUpload = resource === "rag" && (param === "upload" || param === "enqueue") && method === "POST";
+  const isRagJobs = resource === "rag" && param === "jobs" && method === "GET";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
   const isFoodsSearch = resource === "foods" && param === "search" && method === "GET";
   const isFoodsByCategory = resource === "foods" && param === "by-category" && method === "GET";
@@ -1038,6 +1041,15 @@ function routePolicy(resource, method, param, action) {
   // RAG ingest writes to the knowledge base AND costs a Cohere call — admin only.
   if (isRagIngest) {
     return { auth: "admin", rate: { limit: 300, windowSeconds: 60, scope: "admin" } };
+  }
+
+  // Automated ingestion (upload/enqueue/job status) — admin only. Upload
+  // stores a file and queues Cohere embedding work, so cap it tightly.
+  if (isRagUpload) {
+    return { auth: "admin", rate: { limit: 20, windowSeconds: 60, scope: "admin" } };
+  }
+  if (isRagJobs) {
+    return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
   }
 
   // Bulk-delete all chunks for one document (by 'source' string) — admin
@@ -5330,6 +5342,14 @@ async function handleRAG(request, url, db, env, param, ctx) {
     );
   }
 
+  // Automated ingestion pipeline (upload / enqueue / jobs) — src/ragPipeline.js.
+  // Handled before parseBody because /rag/upload is multipart, not JSON.
+  if (param === "upload" || param === "enqueue" || param === "jobs") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const jobId = parts[parts.indexOf("rag") + 2] || null;
+    return await handleRagPipeline(request, url, db, env, param, jobId, { success, err });
+  }
+
   if (request.method !== "POST") return err("Method not allowed", 405);
 
   const body = await parseBody(request);
@@ -6560,6 +6580,9 @@ function handleRoot(env) {
       rag: [
         "POST /rag/retrieve     (public, rate-limited) → semantic search (query, context, top_k)",
         "POST /rag/ingest       (admin) → add document chunk (content, source, context)",
+        "POST /rag/upload       (admin, multipart: file, source, context, replace) → auto-ingest PDF/DOCX/TXT/MD/CSV/HTML via queue",
+        "POST /rag/enqueue      (admin) → {path, source} for a file already in the rag-uploads bucket, or {job_id} to retry",
+        "GET  /rag/jobs[/:id]   (admin) → ingestion job status",
         "DELETE /rag/source?source=... (admin) → bulk-delete all chunks for one document (use before re-ingesting a fixed document, since ingest never overwrites)",
         "POST /rag/ask          (public, rate-limited) → RAG Search Orchestrator: intent detection -> fan-out search (semantic + Malawi FCT + packaged/OCR foods + exchange/renal/formula DBs + barcode + USDA/OFF/FatSecret fallback) -> rerank -> grounded LLM answer with citations (query, context, top_k, session_id)",
       ],
@@ -8368,5 +8391,10 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runScheduledConsolidation(env));
+  },
+
+  // Cloudflare Queues consumer — automated RAG ingestion (src/ragPipeline.js)
+  async queue(batch, env, ctx) {
+    await handleIngestQueue(batch, env, supabase(env));
   },
 };

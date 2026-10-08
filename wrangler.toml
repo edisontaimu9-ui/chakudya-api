@@ -71,6 +71,23 @@ id = "413e22969b074518b12a5c0022cf3a84"
 [triggers]
 crons = ["0 * * * *"]
 
+# ── Automated RAG ingestion (POST /rag/upload -> queue -> chunks) ──
+# Queue must exist BEFORE deploy: dashboard -> Workers & Pages -> Queues
+# -> Create queue "chakudya-rag-ingest". The AI binding (Workers AI) does
+# PDF/DOCX/HTML -> markdown via env.AI.toMarkdown().
+[ai]
+binding = "AI"
+
+[[queues.producers]]
+binding = "INGEST_QUEUE"
+queue = "chakudya-rag-ingest"
+
+[[queues.consumers]]
+queue = "chakudya-rag-ingest"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+
 # ── Workers Observability (optional, free tier) ────────────────
 [observability]
 enabled = true
