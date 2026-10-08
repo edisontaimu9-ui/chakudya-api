@@ -861,6 +861,7 @@ function routePolicy(resource, method, param, action) {
   const isRagAsk = resource === "rag" && param === "ask" && method === "POST";
   const isRagUpload = resource === "rag" && (param === "upload" || param === "enqueue") && method === "POST";
   const isRagJobs = resource === "rag" && param === "jobs" && method === "GET";
+  const isRagWebhook = resource === "rag" && param === "webhook" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
   const isFoodsSearch = resource === "foods" && param === "search" && method === "GET";
   const isFoodsByCategory = resource === "foods" && param === "by-category" && method === "GET";
@@ -1047,6 +1048,11 @@ function routePolicy(resource, method, param, action) {
   // stores a file and queues Cohere embedding work, so cap it tightly.
   if (isRagUpload) {
     return { auth: "admin", rate: { limit: 20, windowSeconds: 60, scope: "admin" } };
+  }
+  // Supabase storage trigger -> auto-ingest. Authenticated inside the handler
+  // by the x-webhook-secret header (the admin key never lives in the database).
+  if (isRagWebhook) {
+    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
   if (isRagJobs) {
     return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
@@ -5344,7 +5350,7 @@ async function handleRAG(request, url, db, env, param, ctx) {
 
   // Automated ingestion pipeline (upload / enqueue / jobs) — src/ragPipeline.js.
   // Handled before parseBody because /rag/upload is multipart, not JSON.
-  if (param === "upload" || param === "enqueue" || param === "jobs") {
+  if (param === "upload" || param === "enqueue" || param === "jobs" || param === "webhook") {
     const parts = url.pathname.split("/").filter(Boolean);
     const jobId = parts[parts.indexOf("rag") + 2] || null;
     return await handleRagPipeline(request, url, db, env, param, jobId, { success, err });

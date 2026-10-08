@@ -317,7 +317,70 @@ async function createAndEnqueue(db, env, { filePath, fileName, source, context, 
   return success(job, { message: "Queued. Poll GET /rag/jobs/" + job.id });
 }
 
+function safeEqual(a, b) {
+  const enc = new TextEncoder();
+  const x = enc.encode(a);
+  const y = enc.encode(b);
+  if (x.length !== y.length) return false;
+  return crypto.subtle.timingSafeEqual(x, y);
+}
+
+/**
+ * POST /rag/webhook — called by the Supabase trigger (sql/016) whenever a file
+ * lands in the rag-uploads bucket. Auth = shared secret header, not the admin key.
+ * Folder picks the context: clinical/…, general/…, anything else = both.
+ * Source = file name without extension. Re-uploads replace the old chunks.
+ */
+export async function handleRagWebhook(request, env, db, { success, err }) {
+  const secret = env.INGEST_WEBHOOK_SECRET;
+  if (!secret) return err("INGEST_WEBHOOK_SECRET is not configured", 503);
+  if (!safeEqual(request.headers.get("x-webhook-secret") || "", secret)) return err("Unauthorized", 401);
+
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {}
+  const name = body?.name;
+  if (body?.bucket !== BUCKET || !name) return err("'bucket' and 'name' are required");
+
+  // Skip (200, so the webhook never retries): API uploads already have a job; unsupported types.
+  if (name.startsWith("api/")) return success({ skipped: "api upload" });
+  const ext = extOf(name);
+  if (!ALLOWED_EXT.includes(ext)) return success({ skipped: `unsupported .${ext}` });
+
+  const dup = await db.select("rag_ingest_jobs", {
+    filters: { file_path: `eq.${name}`, status: "in.(queued,processing)" },
+    limit: 1,
+  });
+  if (dup.ok && Array.isArray(dup.body) && dup.body.length) {
+    return success({ skipped: "already queued", id: dup.body[0].id });
+  }
+
+  const segs = name.split("/");
+  const fileName = segs.pop();
+  const context = VALID_CONTEXTS.includes(segs[0]) ? segs[0] : "both";
+  const source = fileName.replace(/\.[^.]+$/, "").replace(/_+/g, " ").trim();
+
+  const { ok, status, body: job } = await db.insert("rag_ingest_jobs", {
+    file_path: name,
+    file_name: fileName,
+    source,
+    context,
+    replace: true,
+  });
+  if (!ok) return err(job?.message || "Could not create ingest job", status);
+  if (!env.INGEST_QUEUE) return err("INGEST_QUEUE binding is missing", 503);
+  // small delay: lets Storage finish writing the object before we download it
+  await env.INGEST_QUEUE.send({ job_id: job.id }, { delaySeconds: 10 });
+  return success(job, { message: "Queued from storage trigger" });
+}
+
 export async function handleRagPipeline(request, url, db, env, param, jobId, { success, err }) {
+  if (param === "webhook") {
+    if (request.method !== "POST") return err("Method not allowed", 405);
+    return handleRagWebhook(request, env, db, { success, err });
+  }
+
   // GET /rag/jobs  |  GET /rag/jobs/:id
   if (param === "jobs") {
     if (request.method !== "GET") return err("Method not allowed", 405);
@@ -353,7 +416,7 @@ export async function handleRagPipeline(request, url, db, env, param, jobId, { s
     const source = (form.get("source") || file.name.replace(/\.[^.]+$/, "")).toString().trim();
     const replace = ["true", "1", "yes"].includes(String(form.get("replace") || "").toLowerCase());
 
-    const path = `${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}-${safeName(file.name)}`;
+    const path = `api/${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}-${safeName(file.name)}`;
     try {
       await storageUpload(env, path, await file.arrayBuffer(), file.type || MIME[ext] || "application/octet-stream");
     } catch (e) {
