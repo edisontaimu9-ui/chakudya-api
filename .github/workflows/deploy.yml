@@ -32,6 +32,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       # unpdf (PDF text extraction for the auto-ingest pipeline) must be in
       # node_modules before wrangler bundles the Worker.
       - name: Install dependencies
@@ -41,3 +46,6 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Pinned: Wrangler 3.x bundles unpdf's PDF.js build incorrectly
+          # (PDF text extraction fails at runtime). 4.149.0 verified locally.
+          wranglerVersion: "4.149.0"
