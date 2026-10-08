@@ -9,3 +9,5 @@ scripts/ingest_pdf_resume.py
 # private storage only. See data-sources/*/README.md.
 data-sources/**/*.xlsx
 data-sources/**/*.xls
+
+node_modules/

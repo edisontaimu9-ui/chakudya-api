@@ -69,14 +69,80 @@ export function extOf(name) {
   return m ? m[1].toLowerCase() : "";
 }
 
+// Strip the noise Workers AI toMarkdown adds (PDF metadata block, image
+// placeholders, "Page N" markers) so it can't pass for real content.
+export function cleanMarkdown(md) {
+  return String(md || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/^#{0,6}[ \t]*Metadata[ \t]*\n(?:[ \t]*-[^\n]*\n?|\n)+/gim, "")
+    .replace(/^[ \t]*Page \d+[ \t]*$/gim, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// Numbered section headings like "4.5.3. What are the indications of ...?"
+// (not wrapped sentences such as "4.5.3.2. Recommendation 32. There are ...")
+const NUM_HEADING = /^\d{1,2}\.(?:\d{1,2}\.?)*\s+([A-Z].{2,110})$/;
+function isHeadingLine(l) {
+  const m = NUM_HEADING.exec(l);
+  return !!m && !/\.\s+[A-Z]/.test(m[1]) && !/[,;:]$/.test(l);
+}
+
+/**
+ * pdf.js gives raw lines per page. Rebuild paragraphs: drop running headers /
+ * page numbers (lines repeated on many pages), join wrapped lines, undo
+ * end-of-line hyphenation, and turn numbered section titles into "## " headings.
+ */
+export function pdfPagesToMarkdown(pages) {
+  const freq = new Map();
+  for (const p of pages) {
+    for (const l of new Set(p.split("\n").map((x) => x.trim()))) if (l) freq.set(l, (freq.get(l) || 0) + 1);
+  }
+  const minRep = Math.max(3, Math.ceil(pages.length * 0.3));
+  const isNoise = (l) => /^\d{3,5}$/.test(l) || (l.length < 160 && (freq.get(l) || 0) >= minRep);
+
+  const paras = [];
+  let cur = [];
+  const flush = () => {
+    if (cur.length) paras.push(cur.join(" ").replace(/\s+/g, " ").trim());
+    cur = [];
+  };
+  for (const page of pages) {
+    for (const raw of page.split("\n")) {
+      const l = raw.trim();
+      if (!l || isNoise(l)) continue;
+      if (isHeadingLine(l)) {
+        flush();
+        paras.push("## " + l);
+        continue;
+      }
+      const last = cur[cur.length - 1];
+      if (last && /[A-Za-z]-$/.test(last) && /^[a-z]/.test(l)) cur[cur.length - 1] = last.slice(0, -1) + l;
+      else cur.push(l);
+    }
+  }
+  flush();
+  return paras.join("\n\n");
+}
+
 export async function extractText(env, name, bytes) {
   const ext = extOf(name);
   if (PLAIN_EXT.includes(ext)) return new TextDecoder().decode(bytes);
-  if (!env.AI) throw new Error("Workers AI binding 'AI' is not configured (needed for PDF/DOCX/HTML)");
+
+  if (ext === "pdf") {
+    // Real text extraction (pdf.js via unpdf). Workers AI toMarkdown returned
+    // only metadata/image placeholders for some publisher PDFs.
+    const { getDocumentProxy, extractText: pdfText } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(bytes));
+    const { text } = await pdfText(pdf, { mergePages: false });
+    return pdfPagesToMarkdown(text);
+  }
+
+  if (!env.AI) throw new Error("Workers AI binding 'AI' is not configured (needed for DOCX/HTML)");
   const blob = new Blob([bytes], { type: MIME[ext] || "application/octet-stream" });
   const [r] = await env.AI.toMarkdown([{ name, blob }]);
   if (!r || r.format === "error") throw new Error(`Text extraction failed: ${r?.error || "no result"}`);
-  return r.data || "";
+  return cleanMarkdown(r.data || "");
 }
 
 // ── chunking (markdown-aware: keeps headings, keeps tables whole) ────────────
@@ -198,6 +264,19 @@ export function chunkMarkdown(text, { maxChars = 1200, minChars = 150 } = {}) {
   }));
 }
 
+/** Drop chunks that are mostly a numbered bibliography ("[12] Surname AB, ... 2019;33:1-9"). */
+export function dropReferenceChunks(chunks) {
+  const kept = [];
+  let dropped = 0;
+  for (const c of chunks) {
+    const refs = (c.content.match(/\[\d{1,3}\]\s+\p{Lu}[\p{L}'’-]+\s+\p{Lu}{1,3}[,\s]/gu) || []).length;
+    const years = (c.content.match(/\b(?:19|20)\d{2}[;:.,]/g) || []).length;
+    if (refs >= 2 && years >= 3) dropped++;
+    else kept.push(c);
+  }
+  return { chunks: kept, dropped };
+}
+
 // ── embeddings (batched; same model as embedText in index.js) ────────────────
 export async function embedBatch(texts, env) {
   for (let attempt = 1; attempt <= 4; attempt++) {
@@ -236,7 +315,8 @@ export async function processJob(env, db, jobId) {
     e.permanent = true;
     throw e;
   }
-  const chunks = chunkMarkdown(text);
+  const { chunks, dropped } = dropReferenceChunks(chunkMarkdown(text));
+  if (dropped) console.log(`[rag-ingest] job ${jobId}: dropped ${dropped} bibliography chunk(s)`);
   if (!chunks.length) {
     const e = new Error("No chunks produced from extracted text");
     e.permanent = true;

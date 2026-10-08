@@ -4,5 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test"
+  },
+  "dependencies": {
+    "unpdf": "1.8.1"
   }
 }

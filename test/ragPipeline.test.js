@@ -42,3 +42,42 @@ test("plain text with no headings", () => {
   assert.equal(c.length, 1);
   assert.ok(!c[0].content.startsWith("null"));
 });
+
+import { cleanMarkdown, pdfPagesToMarkdown, dropReferenceChunks } from "../src/ragPipeline.js";
+
+test("cleanMarkdown strips metadata block, image placeholders, page markers", () => {
+  const md = "Metadata\n\n- PDFFormatVersion=1.7\n- Language=en\n\nPage 1\n\n![Logo]()\n\n# Real heading\n\nReal body text.";
+  const out = cleanMarkdown(md);
+  assert.ok(!out.includes("PDFFormatVersion"));
+  assert.ok(!out.includes("![Logo]"));
+  assert.ok(!/Page 1/.test(out));
+  assert.ok(out.includes("Real body text."));
+});
+
+test("pdfPagesToMarkdown: headings, wrapped lines, hyphenation, running headers", () => {
+  const hdr = "R. Author et al. Clinical Nutrition 40 (2021)";
+  const pages = [
+    `${hdr}\n4.5.3. What are the indications of a low-calorie diet?\nThis is a sentence that is wrap-\nped over two lines and\ncontinues here.\n5688`,
+    `${hdr}\nMore text on page two.\n5689`,
+    `${hdr}\nAnd page three.\n5690`,
+  ];
+  const md = pdfPagesToMarkdown(pages);
+  assert.ok(md.includes("## 4.5.3. What are the indications of a low-calorie diet?"));
+  assert.ok(md.includes("wrapped over two lines and continues here."));
+  assert.ok(!md.includes("R. Author et al."));
+  assert.ok(!/\b568\d\b/.test(md));
+});
+
+test("wrapped recommendation sentence is not mistaken for a heading", () => {
+  const md = pdfPagesToMarkdown(["4.5.3.2. Recommendation 32. There are very few indications for\nlow-calorie diets."]);
+  assert.ok(!md.includes("## "));
+});
+
+test("dropReferenceChunks removes bibliography, keeps body", () => {
+  const refs = "[1] Thibault R, Chikhi M. Clin Nutr 2011;30:289. [2] Vaillant MF, Hennequin V. Nutr Clin 2019;33:131. [3] Cederholm T, Barazzoni R. Clin Nutr 2017;36:49.";
+  const body = "Patients at nutritional risk should receive the hospital diet and be monitored daily [12].";
+  const { chunks, dropped } = dropReferenceChunks([{ content: refs }, { content: body }]);
+  assert.equal(dropped, 1);
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].content, body);
+});
