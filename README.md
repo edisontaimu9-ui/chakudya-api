@@ -173,6 +173,8 @@ Runs the full MISS→HIT / rate-limit / cascade verification pass in one command
   - `/packaged/:id`
 - `GET /packaged/pending`, `POST /packaged/:id/approve`, `POST /packaged/:id/reject`
 - `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/:id` — **root key only**, see [API keys](#api-keys)
+- `POST /oauth/token` — OAuth 2.0 `client_credentials` token endpoint, see [OAuth 2.0](#oauth-20-machine-to-machine)
+- `GET /admin/oauth-clients`, `POST /admin/oauth-clients`, `DELETE /admin/oauth-clients/:id` — **root key only**
 - `POST /rag/ingest`
 - `POST /memory/consolidate` (also runs automatically via hourly cron, bypassing HTTP auth)
 
@@ -281,6 +283,74 @@ curl https://your-worker-url/admin/keys -H "Authorization: Bearer <ADMIN_API_KEY
 ```bash
 curl -X DELETE https://your-worker-url/admin/keys/1 -H "Authorization: Bearer <ADMIN_API_KEY>"
 ```
+
+---
+
+## OAuth 2.0 (machine-to-machine)
+
+For services that call the API on their own behalf (MCP server, Thanzi Coach,
+apps) there's an OAuth 2.0 **client_credentials** flow, so a service holds a
+revocable client secret instead of a long-lived admin key. A client exchanges
+its credentials for a **1-hour bearer token**, then uses it exactly like an API
+key (`Authorization: Bearer <token>`) on any admin route, including `/batch`.
+Tokens carry the client's role (`admin` or `reviewer`), so role limits apply
+unchanged. Existing API keys keep working.
+
+**One-time setup**
+
+1. Run `sql/014_add_oauth_clients.sql` in the Supabase SQL editor.
+2. Add a Worker secret `OAUTH_SIGNING_SECRET` in the Cloudflare dashboard
+   (Workers & Pages → chakudya-api → Settings → Variables and Secrets).
+   Generate one with `openssl rand -hex 32`. Rotating it invalidates all
+   outstanding tokens (clients simply fetch a new one).
+
+**Create a client** (root key only; the secret is shown once):
+
+```bash
+curl -X POST https://your-worker-url/admin/oauth-clients \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" -H "Content-Type: application/json" \
+  -d '{"label":"thanzi-coach","role":"admin"}'
+# -> client_id: cnr_client_..., client_secret: cnr_secret_...
+```
+
+**Get a token** (HTTP Basic, or `client_id`/`client_secret` form fields):
+
+```bash
+curl -X POST https://your-worker-url/oauth/token \
+  -u "$CLIENT_ID:$CLIENT_SECRET" -d "grant_type=client_credentials"
+# -> {"access_token":"eyJ...","token_type":"Bearer","expires_in":3600,"scope":"admin"}
+```
+
+Optional `scope=reviewer` requests a narrower token than the client's role;
+asking for more than the client's role returns `invalid_scope`.
+
+**Use it, caching until shortly before expiry:**
+
+```js
+let cached = { token: null, exp: 0 };
+async function getToken(env, base) {
+  if (cached.token && Date.now() < cached.exp - 60_000) return cached.token;
+  const res = await fetch(`${base}/oauth/token`, {
+    method: "POST",
+    headers: {
+      Authorization: "Basic " + btoa(`${env.CNR_CLIENT_ID}:${env.CNR_CLIENT_SECRET}`),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  });
+  if (!res.ok) throw new Error(`token request failed: ${res.status}`);
+  const { access_token, expires_in } = await res.json();
+  cached = { token: access_token, exp: Date.now() + expires_in * 1000 };
+  return access_token;
+}
+```
+
+**Revoke:** `DELETE /admin/oauth-clients/:id` (root key). New tokens stop
+immediately and already-issued tokens are rejected too (KV denylist; if
+`RATE_LIMIT_KV` isn't bound they live out their hour). `GET /admin/oauth-clients`
+lists clients without secrets. Discovery metadata (RFC 8414):
+`GET /.well-known/oauth-authorization-server`. The token endpoint is limited
+to 10 requests/min per IP.
 
 ---
 

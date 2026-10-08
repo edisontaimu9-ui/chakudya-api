@@ -3,7 +3,22 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.28.0
+ * Version: 1.30.0
+ *
+ * v1.30.0 changes:
+ *  - Added OAuth 2.0 client_credentials (RFC 6749 §4.4) for machine-to-machine
+ *    callers (MCP server, Thanzi Coach, apps). POST /oauth/token exchanges
+ *    a client_id + client_secret (HTTP Basic or form/JSON body) for a
+ *    1-hour HS256 JWT bearer token carrying the client's role; GET
+ *    /.well-known/oauth-authorization-server publishes RFC 8414 metadata.
+ *    isAdmin() now accepts these JWTs alongside the root key and per-consumer
+ *    API keys, so the existing role gate, /batch forwarding and
+ *    reviewed_by attribution all work with no route changes. Clients are
+ *    managed root-only via POST/GET/DELETE /admin/oauth-clients (secret shown
+ *    once, only its SHA-256 hash stored; revoking also blocks already-issued
+ *    tokens via a KV denylist). Pure helpers live in src/oauth.js.
+ *    Requires: sql/014_add_oauth_clients.sql and the OAUTH_SIGNING_SECRET
+ *    secret. Existing API keys are unchanged and keep working.
  *
  * v1.28.0 changes:
  *  - Replaced pickBestFoodMatch()'s ranking logic entirely (now in the new
@@ -532,12 +547,23 @@ import {
   toCm,
 } from "./fhir.js";
 import { capSearchTerms } from "./searchTerms.js";
+import {
+  OAUTH_TOKEN_TTL_SECONDS,
+  signJwt,
+  verifyJwt,
+  looksLikeJwt,
+  generateClientCredentials,
+  timingSafeEqual,
+  parseClientCredentials,
+  resolveScope,
+  buildAccessTokenClaims,
+} from "./oauth.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.29.0";
+const CNR_VERSION = "1.30.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -668,6 +694,11 @@ async function isAdmin(request, env, db, ctx) {
 
   if (token === env.ADMIN_API_KEY) {
     return { valid: true, label: "root", isRoot: true, keyId: null, role: "admin" };
+  }
+
+  // OAuth 2.0 access token (JWT) minted by POST /oauth/token.
+  if (looksLikeJwt(token)) {
+    return await verifyOAuthToken(token, request, env);
   }
 
   if (!db) return { valid: false };
@@ -845,7 +876,9 @@ function routePolicy(resource, method, param, action) {
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
-  const isAdminKeys = resource === "admin" && param === "keys";
+  const isAdminKeys = resource === "admin" && (param === "keys" || param === "oauth-clients");
+  const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
+  const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
   const isBulkInsert =
     ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
@@ -860,6 +893,15 @@ function routePolicy(resource, method, param, action) {
   const isDrugInteractionsSearch =
     resource === "drug-interactions" && param === "search" && method === "GET";
   const isBatch = resource === "batch" && method === "POST";
+
+  // OAuth token endpoint — public (the client secret IS the credential),
+  // tightly capped per IP to blunt secret-guessing.
+  if (isOAuthToken) {
+    return { auth: "public", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
+  }
+  if (isOAuthMetadata) {
+    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+  }
 
   // Batch — fans out into up to BATCH_MAX_REQUESTS sub-requests, each of
   // which pays its own cost against its own resource's rate limit. This
@@ -7484,6 +7526,204 @@ async function handleAdminKeys(request, db, idOrAction) {
   return err("Method not allowed", 405);
 }
 
+// ─── OAUTH 2.0 (client_credentials) ──────────────────────────────────────────
+//
+// Machine-to-machine auth for the MCP server, Thanzi Coach and other apps:
+// instead of shipping a long-lived admin key everywhere, a client holds a
+// client_id/client_secret, exchanges it at POST /oauth/token for a 1-hour
+// JWT, and sends that as `Authorization: Bearer <jwt>` — same header as API
+// keys, so every existing admin route (and /batch) accepts it unchanged.
+//
+// Requires sql/014_add_oauth_clients.sql and env.OAUTH_SIGNING_SECRET
+// (>= 32 random chars, e.g. `openssl rand -hex 32`). Existing API keys are
+// untouched. Clients are managed root-only via /admin/oauth-clients.
+//
+// Revocation: DELETE /admin/oauth-clients/:id stops new tokens immediately
+// and writes a KV denylist entry (oauth_revoked:<client_id>) so tokens
+// already issued are rejected too. If RATE_LIMIT_KV isn't bound the denylist
+// check fails open, so an already-issued token then lives out its hour.
+
+const OAUTH_NO_STORE = { "Cache-Control": "no-store", Pragma: "no-cache" };
+
+function oauthError(error, description, status = 400, extraHeaders = {}) {
+  return json({ error, error_description: description }, status, { ...OAUTH_NO_STORE, ...extraHeaders });
+}
+
+function oauthIssuer(request) {
+  return new URL(request.url).origin;
+}
+
+/** Resolves a verified OAuth JWT to the same identity shape isAdmin() returns. */
+async function verifyOAuthToken(token, request, env) {
+  const claims = await verifyJwt(token, env.OAUTH_SIGNING_SECRET, { issuer: oauthIssuer(request) });
+  if (!claims) return { valid: false };
+
+  if (env.RATE_LIMIT_KV) {
+    const revokedAt = await env.RATE_LIMIT_KV.get(`oauth_revoked:${claims.sub}`);
+    if (revokedAt && claims.iat <= parseInt(revokedAt, 10)) return { valid: false };
+  }
+
+  return {
+    valid: true,
+    label: claims.label || claims.sub,
+    isRoot: false,
+    keyId: null,
+    role: claims.role,
+    oauthClientId: claims.sub,
+  };
+}
+
+/** POST /oauth/token — client_credentials grant (RFC 6749 §4.4). */
+async function handleOAuthToken(request, db, env) {
+  if (!env.OAUTH_SIGNING_SECRET || env.OAUTH_SIGNING_SECRET.length < 32) {
+    return oauthError("server_error", "OAuth is not configured on this server", 503);
+  }
+
+  // Body: application/x-www-form-urlencoded (standard) or JSON.
+  let params;
+  const ctype = request.headers.get("Content-Type") || "";
+  if (ctype.includes("application/json")) {
+    params = (await parseBody(request)) || {};
+  } else {
+    params = new URLSearchParams(await request.text().catch(() => ""));
+  }
+  const get = (k) => (params instanceof URLSearchParams ? params.get(k) : params[k]);
+
+  if (get("grant_type") !== "client_credentials") {
+    return oauthError("unsupported_grant_type", "Only grant_type=client_credentials is supported");
+  }
+
+  const authHeader = request.headers.get("Authorization");
+  const creds = parseClientCredentials(authHeader, params);
+  const challenge = /^Basic/i.test(authHeader || "") ? { "WWW-Authenticate": 'Basic realm="chakudya-api"' } : {};
+  if (!creds) {
+    return oauthError("invalid_client", "Client authentication required (HTTP Basic or client_id/client_secret)", 401, challenge);
+  }
+
+  const { ok, body } = await db.select("oauth_clients", {
+    filters: { client_id: `eq.${creds.clientId}`, revoked_at: "is.null" },
+    limit: 1,
+  });
+  const row = ok && Array.isArray(body) ? body[0] : null;
+
+  // Always hash + compare (even for an unknown client) so response timing
+  // doesn't reveal whether a client_id exists.
+  const presentedHash = await sha256Hex(creds.clientSecret);
+  const secretOk = timingSafeEqual(presentedHash, row?.secret_hash || "0".repeat(64));
+  if (!row || !secretOk) {
+    return oauthError("invalid_client", "Invalid client credentials", 401, challenge);
+  }
+
+  const scope = resolveScope(row.role, get("scope"));
+  if (scope.error) return oauthError(scope.error, scope.description);
+
+  const claims = buildAccessTokenClaims({
+    clientId: row.client_id,
+    label: row.label,
+    role: scope.role,
+    issuer: oauthIssuer(request),
+  });
+  const accessToken = await signJwt(claims, env.OAUTH_SIGNING_SECRET);
+
+  // Fire-and-forget last_used_at bump (never blocks or fails the request).
+  db.update("oauth_clients", row.id, { last_used_at: new Date().toISOString() }, "PATCH").catch(() => {});
+
+  return json(
+    { access_token: accessToken, token_type: "Bearer", expires_in: OAUTH_TOKEN_TTL_SECONDS, scope: scope.role },
+    200,
+    OAUTH_NO_STORE
+  );
+}
+
+/** GET /.well-known/oauth-authorization-server — RFC 8414 metadata. */
+function handleOAuthMetadata(request) {
+  const issuer = oauthIssuer(request);
+  return json(
+    {
+      issuer,
+      token_endpoint: `${issuer}/oauth/token`,
+      grant_types_supported: ["client_credentials"],
+      token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
+      scopes_supported: ["admin", "reviewer"],
+      response_types_supported: [],
+    },
+    200,
+    { "Cache-Control": "public, max-age=3600" }
+  );
+}
+
+/**
+ * /admin/oauth-clients (root key only — enforced in authAndRateGate).
+ *  POST   { label, role? } -> creates a client; client_secret shown ONCE
+ *  GET    -> lists clients (never returns secret or hash)
+ *  DELETE /admin/oauth-clients/:id -> revokes (soft) + denylists issued tokens
+ */
+async function handleAdminOAuthClients(request, db, env, id) {
+  const method = request.method;
+
+  if (method === "GET") {
+    const { ok, status, body } = await db.select("oauth_clients", {
+      filters: {},
+      order: "created_at.desc",
+      limit: 200,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    return success((Array.isArray(body) ? body : []).map(({ secret_hash, ...rest }) => rest));
+  }
+
+  if (method === "POST") {
+    const payload = await parseBody(request);
+    const label = (payload?.label || "").trim();
+    if (!label) return err("'label' is required (e.g. the integration name, like \"thanzi-coach\")");
+
+    const role = payload?.role ? String(payload.role).trim() : "admin";
+    if (!VALID_ROLES.includes(role)) {
+      return err(`'role' must be one of: ${VALID_ROLES.join(", ")} (got "${role}")`);
+    }
+
+    const { clientId, clientSecret } = generateClientCredentials();
+    const { ok, status, body } = await db.insert("oauth_clients", {
+      client_id: clientId,
+      secret_hash: await sha256Hex(clientSecret),
+      label,
+      role,
+    });
+    if (!ok) return err(body?.message || "Client creation failed", status);
+
+    const { secret_hash: _h, ...safeRow } = body || {};
+    return success(safeRow, {
+      message: "OAuth client created — save the client_secret now, it will not be shown again",
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+  }
+
+  if (method === "DELETE") {
+    if (!id) return err("Client id required, e.g. DELETE /admin/oauth-clients/3");
+    const { ok, status, body } = await db.update(
+      "oauth_clients",
+      id,
+      { revoked_at: new Date().toISOString() },
+      "PATCH"
+    );
+    if (!ok) return err(body?.message || "Revoke failed", status);
+    if (!body) return notFound("OAuth client");
+
+    // Invalidate tokens already issued to this client (see header comment).
+    if (env.RATE_LIMIT_KV && body.client_id) {
+      await env.RATE_LIMIT_KV.put(
+        `oauth_revoked:${body.client_id}`,
+        String(Math.floor(Date.now() / 1000)),
+        { expirationTtl: OAUTH_TOKEN_TTL_SECONDS + 300 }
+      );
+    }
+    const { secret_hash: _h, ...safeRow } = body;
+    return success(safeRow, { message: `OAuth client ${id} revoked` });
+  }
+
+  return err("Method not allowed", 405);
+}
+
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
 
 /**
@@ -7512,6 +7752,23 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
     case "admin": {
       if (param === "keys") {
         return await handleAdminKeys(request, db, action || null);
+      }
+      if (param === "oauth-clients") {
+        return await handleAdminOAuthClients(request, db, env, action || null);
+      }
+      return notFound();
+    }
+
+    case "oauth": {
+      if (param === "token") {
+        return await handleOAuthToken(request, db, env);
+      }
+      return notFound();
+    }
+
+    case ".well-known": {
+      if (param === "oauth-authorization-server") {
+        return handleOAuthMetadata(request);
       }
       return notFound();
     }
@@ -7766,8 +8023,8 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
 
     // Managing other API keys is root-only — a per-consumer key can't
     // mint or revoke keys, so a single leaked non-root key can't escalate.
-    if (resource === "admin" && param === "keys" && !admin.isRoot) {
-      return { response: unauthorized("Only the root admin key can manage API keys") };
+    if (resource === "admin" && (param === "keys" || param === "oauth-clients") && !admin.isRoot) {
+      return { response: unauthorized("Only the root admin key can manage API keys and OAuth clients") };
     }
 
     // Scoped roles — "reviewer" keys can only reach routes that opted into
