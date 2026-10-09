@@ -107,8 +107,12 @@ export function pdfPagesToMarkdown(pages) {
     if (cur.length) paras.push(cur.join(" ").replace(/\s+/g, " ").trim());
     cur = [];
   };
-  for (const page of pages) {
-    for (const raw of page.split("\n")) {
+  for (let pi = 0; pi < pages.length; pi++) {
+    // Page marker (consumed by chunkMarkdown, never reaches chunk text).
+    // Paragraphs break at page boundaries so every chunk knows its pages.
+    flush();
+    paras.push(`<!--p:${pi + 1}-->`);
+    for (const raw of pages[pi].split("\n")) {
       const l = raw.trim();
       if (!l || isNoise(l)) continue;
       if (isHeadingLine(l)) {
@@ -192,19 +196,27 @@ export function chunkMarkdown(text, { maxChars = 1200, minChars = 150 } = {}) {
   const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
   const blocks = [];
   let heading = null;
+  let page = null;
   let para = [];
   let table = [];
   const flushPara = () => {
-    if (para.length) blocks.push({ heading, type: "text", text: para.join("\n").trim() });
+    if (para.length) blocks.push({ heading, page, type: "text", text: para.join("\n").trim() });
     para = [];
   };
   const flushTable = () => {
-    if (table.length) blocks.push({ heading, type: "table", lines: table });
+    if (table.length) blocks.push({ heading, page, type: "table", lines: table });
     table = [];
   };
 
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
+    const pm = line.match(/^<!--p:(\d+)-->$/);
+    if (pm) {
+      flushPara();
+      flushTable();
+      page = Number(pm[1]);
+      continue;
+    }
     const h = line.match(/^#{1,6}\s+(.+)$/);
     if (h) {
       flushPara();
@@ -234,15 +246,18 @@ export function chunkMarkdown(text, { maxChars = 1200, minChars = 150 } = {}) {
   for (const b of blocks) {
     if (b.type === "table") {
       flushCur();
-      for (const t of splitTable(b.lines, maxChars)) chunks.push({ heading: b.heading, type: "table", body: t });
+      for (const t of splitTable(b.lines, maxChars)) {
+        chunks.push({ heading: b.heading, type: "table", body: t, page: b.page, pageEnd: b.page });
+      }
       continue;
     }
     for (const piece of splitLongText(b.text, maxChars)) {
       if (cur && cur.heading === b.heading && cur.body.length + piece.length + 2 <= maxChars) {
         cur.body += "\n\n" + piece;
+        cur.pageEnd = b.page;
       } else {
         flushCur();
-        cur = { heading: b.heading, type: "text", body: piece };
+        cur = { heading: b.heading, type: "text", body: piece, page: b.page, pageEnd: b.page };
       }
     }
   }
@@ -254,12 +269,15 @@ export function chunkMarkdown(text, { maxChars = 1200, minChars = 150 } = {}) {
     const prev = merged[merged.length - 1];
     if (prev && c.type === "text" && prev.type === "text" && prev.heading === c.heading && c.body.length < minChars) {
       prev.body += "\n\n" + c.body;
+      prev.pageEnd = c.pageEnd;
     } else merged.push({ ...c });
   }
 
   return merged.map((c) => ({
     type: c.type,
     heading: c.heading,
+    page: c.page ?? null,
+    pageEnd: c.pageEnd ?? null,
     content: c.heading ? `${c.heading}\n\n${c.body}` : c.body,
   }));
 }
@@ -341,6 +359,8 @@ export async function processJob(env, db, jobId) {
         doc: row.source,
         type: c.type,
         heading: c.heading || null,
+        ...(c.page ? { page: c.page } : {}),
+        ...(c.pageEnd && c.pageEnd !== c.page ? { page_end: c.pageEnd } : {}),
         chunk: i + j + 1,
         of: chunks.length,
         job_id: jobId,

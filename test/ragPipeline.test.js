@@ -81,3 +81,25 @@ test("dropReferenceChunks removes bibliography, keeps body", () => {
   assert.equal(chunks.length, 1);
   assert.equal(chunks[0].content, body);
 });
+
+test("chunkMarkdown tracks page and page_end from page markers", () => {
+  const md = "<!--p:3-->\n\nAlpha text on page three.\n\n<!--p:4-->\n\nBeta text on page four.";
+  const [c] = chunkMarkdown(md, { minChars: 5 });
+  assert.equal(c.page, 3);
+  assert.equal(c.pageEnd, 4);
+  assert.ok(!c.content.includes("<!--"));
+});
+
+test("a long section spanning pages keeps per-chunk pages", () => {
+  const filler = "This is a full sentence about hospital nutrition. ".repeat(60);
+  const md = `<!--p:1-->\n\n${filler}\n\n<!--p:2-->\n\n${filler}\n\n<!--p:3-->\n\n${filler}`;
+  const cs = chunkMarkdown(md, { maxChars: 1200, minChars: 5 });
+  assert.equal(cs[0].page, 1);
+  assert.equal(cs[cs.length - 1].pageEnd, 3);
+  assert.ok(cs.every((c) => c.page >= 1 && c.pageEnd <= 3 && c.pageEnd >= c.page));
+});
+
+test("pdfPagesToMarkdown emits page markers; text without markers has null pages", () => {
+  assert.ok(pdfPagesToMarkdown(["One.", "Two."]).includes("<!--p:2-->"));
+  assert.equal(chunkMarkdown("No markers here at all.", { minChars: 5 })[0].page, null);
+});
