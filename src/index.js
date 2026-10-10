@@ -532,6 +532,7 @@ import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVeloci
 import { parseWeightVelocityQuery, classifyWeightVelocity } from "./weightVelocity.js";
 import { parseMuacForAgeQuery, classifyMuacForAge } from "./muacForAge.js";
 import { parseMuacFixedQuery, classifyMuacFixed } from "./muacFixed.js";
+import { parseLhfaQuery, pickRowAndValue, classifyLhfa } from "./lengthHeightForAge.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -764,7 +765,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -901,7 +902,7 @@ function routePolicy(resource, method, param, action) {
   const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
   const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "fenton-preterm"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2573,6 +2574,64 @@ async function handleMuacFixed(request, url, param) {
     },
     { message: "MUAC classification" }
   );
+}
+
+// ─── LENGTH/HEIGHT-FOR-AGE (/length-height-for-age) ───────────────────────
+//
+// WHO length/height-for-age standards (cm), birth to 60 months (see
+// sql/022_add_who_length_height_for_age.sql and src/lengthHeightForAge.js).
+// Public reads; the table is filled once via POST /length-height-for-age/bulk
+// (admin). Returns the stunting band plus an exact z-score and percentile.
+// Length (lying) under 24 months, height (standing) from 24; a mismatched
+// measuring position is converted by 0.7 cm and reported. Screening aid only.
+async function handleLengthHeightForAge(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /length-height-for-age/bulk (admin).", 405);
+  }
+
+  if (param === "classify") {
+    const parsed = parseLhfaQuery(url.searchParams);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.select("who_length_height_for_age", {
+      filters: { sex: `eq.${parsed.sex}`, age_months: `eq.${parsed.ageMonths}` },
+      limit: 2,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const picked = pickRowAndValue(Array.isArray(body) ? body : [], parsed.measured, parsed.valueCm);
+    if (!picked) return notFound("Length/height-for-age reference row (has sql/022 been run and the table seeded?)");
+
+    const result = classifyLhfa(picked.row, picked.valueCm);
+    return success(
+      {
+        sex: parsed.sex,
+        age_months: picked.row.age_months,
+        measured: parsed.measured,
+        entered_cm: parsed.valueCm,
+        ...(picked.adjustment ? { position_adjustment: picked.adjustment } : {}),
+        ...result,
+        source: picked.row.source,
+        note: "Screening aid only, not a diagnosis. Length/height-for-age (stunting) as a WHO z-score: severely stunted < -3SD, stunted < -2SD, normal -2SD to +2SD, tall > +2SD, very tall > +3SD (tallness is rarely a problem). Length (lying) is used under 24 months and height (standing) from 24 months; if the child was measured the other way, 0.7 cm is added or subtracted and reported in position_adjustment. implausible = true when |z| > 6, which usually means a measuring or recording error. Interpret with weight-for-height/length and clinical context; confirm age and repeat the measurement.",
+      },
+      { message: "Length/height-for-age classification" }
+    );
+  }
+
+  if (param) return notFound("Length/height-for-age route");
+
+  const filters = {};
+  const sex = url.searchParams.get("sex");
+  if (sex) {
+    const n = normalizeHcSex(sex);
+    if (!n) return err("'sex' must be girls or boys");
+    filters.sex = `eq.${n}`;
+  }
+  const age = url.searchParams.get("age_months");
+  if (age) {
+    if (!Number.isInteger(Number(age))) return err("'age_months' must be a whole number");
+    filters.age_months = `eq.${Number(age)}`;
+  }
+  return await paginatedList(db, "who_length_height_for_age", url, { filters, order: "age_months.asc" });
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -6858,6 +6917,11 @@ function handleRoot(env) {
       muac: [
         "GET  /muac/classify?age_months=18&muac_cm=11.8  → fixed-cut-off MUAC class (severe / moderate / normal), 6 months to adult; or pass &muac_mm=; add &scheme=cmam for the 115/125 mm community cut-offs (6-59 months). Calculation only, no table. Screening aid",
       ],
+      length_height_for_age: [
+        "GET  /length-height-for-age/classify?sex=girls&age_months=18&length_cm=78  → WHO length/height-for-age stunting band + exact z-score and percentile (0-60 months; length = lying under 24 months, height = standing from 24; optional &measured=lying|standing converts by 0.7 cm if needed); screening aid, see sql/022_add_who_length_height_for_age.sql",
+        "GET  /length-height-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, cm, plus L/M/S)",
+        "POST /length-height-for-age/bulk    (admin) → body {items:[...]}, 124 rows; seed file: scripts/length_height_for_age_seed.json",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -8260,6 +8324,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "muac": {
       return await handleMuacFixed(request, url, param || null);
+    }
+
+    case "length-height-for-age": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "who_length_height_for_age", {
+          requiredField: "sex",
+          label: "length/height-for-age rows",
+        });
+      }
+      return await handleLengthHeightForAge(request, url, db, param || null);
     }
 
     case "fenton-preterm": {

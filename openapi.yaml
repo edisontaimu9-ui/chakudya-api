@@ -40,6 +40,7 @@ tags:
   - name: Weight velocity
   - name: MUAC for age
   - name: MUAC fixed cut-offs
+  - name: Length height for age
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -1545,6 +1546,116 @@ paths:
                           note: { type: string }
         "400": { $ref: "#/components/responses/BadRequest" }
         "429": { $ref: "#/components/responses/RateLimited" }
+
+  /length-height-for-age/classify:
+    get:
+      tags: [Length height for age]
+      summary: Classify length/height-for-age (stunting), birth to 60 months
+      description: >
+        WHO Child Growth Standards length/height-for-age as a z-score. Length
+        (lying) is used under 24 months, height (standing) from 24 months; if
+        measured the other way, 0.7 cm is added or subtracted and reported in
+        position_adjustment. Strict cut-offs: severely stunted below -3SD,
+        stunted below -2SD, normal -2SD to +2SD, tall above +2SD, very tall
+        above +3SD. implausible is true when |z| > 6. Screening aid only, not a
+        diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: age_months
+          in: query
+          required: true
+          description: Whole completed months
+          schema: { type: integer, minimum: 0, maximum: 60 }
+        - name: length_cm
+          in: query
+          description: Length or height in CENTIMETRES (height_cm is an alias)
+          schema: { type: number }
+        - name: height_cm
+          in: query
+          schema: { type: number }
+        - name: length_mm
+          in: query
+          description: Millimetres (height_mm is an alias); used if no cm value is given
+          schema: { type: number }
+        - name: measured
+          in: query
+          description: How the child was measured; default lying under 24 months, standing from 24
+          schema: { type: string, enum: [lying, standing] }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          age_months: { type: integer }
+                          measured: { type: string, enum: [lying, standing] }
+                          entered_cm: { type: number }
+                          position_adjustment:
+                            type: object
+                            description: Present only when 0.7 cm was added or subtracted
+                          status:
+                            type: string
+                            enum: [severely stunted, stunted, normal, tall, very tall]
+                          reference: { type: string, example: length (lying down) }
+                          value_cm: { type: number }
+                          z_score: { type: number, nullable: true }
+                          percentile: { type: number, nullable: true }
+                          implausible: { type: boolean, nullable: true }
+                          cutoffs:
+                            type: object
+                            additionalProperties: { type: number }
+                            description: Keys -3SD, -2SD, -1SD, median, +1SD, +2SD, +3SD (cm)
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /length-height-for-age:
+    get:
+      tags: [Length height for age]
+      summary: List WHO length/height-for-age rows (cm, with L/M/S)
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          schema: { type: string }
+        - name: age_months
+          in: query
+          schema: { type: integer }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /length-height-for-age/bulk:
+    post:
+      tags: [Length height for age]
+      summary: Bulk-create length/height-for-age rows (admin)
+      description: Seed file scripts/length_height_for_age_seed.json (124 rows). A unique (sex, age_months, measured) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /fenton-preterm/classify:
     get:
