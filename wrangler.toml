@@ -88,8 +88,24 @@ max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 
-# ── Workers Observability (optional, free tier) ────────────────
+# ── Workers Observability (synced with dashboard) ─────────────────────────────
 [observability]
+enabled = true
+head_sampling_rate = 1
+redact_query_string = false
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
+
+[observability.issue_detection]
 enabled = true
 
 # ── Build (no build step needed — plain JS) ───────────────────
