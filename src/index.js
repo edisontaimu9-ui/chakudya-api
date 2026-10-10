@@ -536,6 +536,7 @@ import { parseLhfaQuery, pickRowAndValue, classifyLhfa } from "./lengthHeightFor
 import { parseWeightForAgeQuery, classifyWeightForAge } from "./weightForAge.js";
 import { parseWflhQuery, resolveLookup, classifyWflh } from "./weightForLengthHeight.js";
 import { parseBmiUnder5Query, resolveBmi, classifyBmiUnder5 } from "./bmiForAgeUnder5.js";
+import { parseHcForAgeQuery, classifyHcForAge } from "./hcForAge.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -768,7 +769,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -905,7 +906,7 @@ function routePolicy(resource, method, param, action) {
   const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
   const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "fenton-preterm"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2833,6 +2834,60 @@ async function handleBmiForAgeUnder5(request, url, db, param) {
     filters.age_months = `eq.${Number(age)}`;
   }
   return await paginatedList(db, "who_bmi_for_age_under_5", url, { filters, order: "age_months.asc" });
+}
+
+// ─── HEAD CIRCUMFERENCE-FOR-AGE (/hc-for-age) ─────────────────────────────
+//
+// WHO head circumference-for-age (cm), birth to 5 years (see
+// sql/027_add_who_hc_for_age.sql and src/hcForAge.js). The 6-month increment
+// is /hc-velocity. Public reads; the table is filled once via
+// POST /hc-for-age/bulk (admin). Returns the microcephaly/macrocephaly band
+// plus an exact z-score and percentile. Screening aid only.
+async function handleHcForAge(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /hc-for-age/bulk (admin).", 405);
+  }
+
+  if (param === "classify") {
+    const parsed = parseHcForAgeQuery(url.searchParams);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.select("who_hc_for_age", {
+      filters: { sex: `eq.${parsed.sex}`, age_months: `eq.${parsed.ageMonths}` },
+      limit: 1,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const row = Array.isArray(body) ? body[0] : null;
+    if (!row) return notFound("Head circumference-for-age reference row (has sql/027 been run and the table seeded?)");
+
+    const result = classifyHcForAge(row, parsed.hcCm);
+    return success(
+      {
+        sex: parsed.sex,
+        age_months: row.age_months,
+        ...result,
+        source: row.source,
+        note: "Screening aid only, not a diagnosis. Head circumference-for-age as a WHO z-score: severe microcephaly < -3SD, microcephaly < -2SD, normal -2SD to +2SD, macrocephaly > +2SD, severe macrocephaly > +3SD. A single value outside the range is a reason to examine the child and track the trend (also consider parental head sizes, prematurity and the measuring technique), not a diagnosis. implausible = true when |z| > 5, which usually means a measuring or recording error. For growth in the last 6 months use /hc-velocity/classify.",
+      },
+      { message: "Head circumference-for-age classification" }
+    );
+  }
+
+  if (param) return notFound("Head circumference-for-age route");
+
+  const filters = {};
+  const sex = url.searchParams.get("sex");
+  if (sex) {
+    const n = normalizeHcSex(sex);
+    if (!n) return err("'sex' must be girls or boys");
+    filters.sex = `eq.${n}`;
+  }
+  const age = url.searchParams.get("age_months");
+  if (age) {
+    if (!Number.isInteger(Number(age))) return err("'age_months' must be a whole number");
+    filters.age_months = `eq.${Number(age)}`;
+  }
+  return await paginatedList(db, "who_hc_for_age", url, { filters, order: "age_months.asc" });
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -7138,6 +7193,11 @@ function handleRoot(env) {
         "GET  /bmi-for-age-under-5?sex=&age_months=   → raw reference rows (-3SD to +3SD, kg/m2, plus L/M/S)",
         "POST /bmi-for-age-under-5/bulk    (admin) → body {items:[...]}, 124 rows; seed file: scripts/bmi_for_age_under5_seed.json",
       ],
+      hc_for_age: [
+        "GET  /hc-for-age/classify?sex=girls&age_months=6&hc_cm=42  → WHO head circumference-for-age band (microcephaly / macrocephaly) + exact z-score and percentile (0-60 months; or pass &hc_mm=); screening aid, see sql/027_add_who_hc_for_age.sql. 6-month increments: /hc-velocity",
+        "GET  /hc-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, cm, plus L/M/S)",
+        "POST /hc-for-age/bulk    (admin) → body {items:[...]}, 122 rows; seed file: scripts/hc_for_age_seed.json",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -8584,6 +8644,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleBmiForAgeUnder5(request, url, db, param || null);
+    }
+
+    case "hc-for-age": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "who_hc_for_age", {
+          requiredField: "sex",
+          label: "head circumference-for-age rows",
+        });
+      }
+      return await handleHcForAge(request, url, db, param || null);
     }
 
     case "fenton-preterm": {

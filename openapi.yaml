@@ -44,6 +44,7 @@ tags:
   - name: Weight for age
   - name: Weight for length height
   - name: BMI for age under 5
+  - name: HC for age
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -1992,6 +1993,102 @@ paths:
       tags: [BMI for age under 5]
       summary: Bulk-create BMI-for-age (under 5) rows (admin)
       description: Seed file scripts/bmi_for_age_under5_seed.json (124 rows). A unique (sex, age_months, measured) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /hc-for-age/classify:
+    get:
+      tags: [HC for age]
+      summary: Classify head circumference-for-age, birth to 5 years
+      description: >
+        WHO Child Growth Standards head circumference-for-age as a z-score
+        (0-60 months). Strict cut-offs: severe microcephaly below -3SD,
+        microcephaly below -2SD, normal -2SD to +2SD, macrocephaly above +2SD,
+        severe macrocephaly above +3SD. implausible is true when |z| > 5. The
+        6-month increment is /hc-velocity/classify. Screening aid only, not a
+        diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: age_months
+          in: query
+          required: true
+          description: Whole completed months
+          schema: { type: integer, minimum: 0, maximum: 60 }
+        - name: hc_cm
+          in: query
+          description: Head circumference in CENTIMETRES
+          schema: { type: number }
+        - name: hc_mm
+          in: query
+          description: Head circumference in MILLIMETRES (used if hc_cm is absent)
+          schema: { type: number }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          age_months: { type: integer }
+                          status:
+                            type: string
+                            enum: [severe microcephaly, microcephaly, normal, macrocephaly, severe macrocephaly]
+                          hc_cm: { type: number }
+                          z_score: { type: number, nullable: true }
+                          percentile: { type: number, nullable: true }
+                          implausible: { type: boolean, nullable: true }
+                          cutoffs:
+                            type: object
+                            additionalProperties: { type: number }
+                            description: Keys -3SD, -2SD, -1SD, median, +1SD, +2SD, +3SD (cm)
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /hc-for-age:
+    get:
+      tags: [HC for age]
+      summary: List WHO head circumference-for-age rows (cm, with L/M/S)
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          schema: { type: string }
+        - name: age_months
+          in: query
+          schema: { type: integer }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /hc-for-age/bulk:
+    post:
+      tags: [HC for age]
+      summary: Bulk-create head circumference-for-age rows (admin)
+      description: Seed file scripts/hc_for_age_seed.json (122 rows). A unique (sex, age_months) constraint rejects re-seeding.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true

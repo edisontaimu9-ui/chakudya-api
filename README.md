@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height`, `/bmi-for-age-under-5` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height`, `/bmi-for-age-under-5`, `/hc-for-age` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -616,7 +616,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, `/weight-for-age/bulk`, `/weight-for-length-height/bulk`, `/bmi-for-age-under-5/bulk`, and
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, `/weight-for-age/bulk`, `/weight-for-length-height/bulk`, `/bmi-for-age-under-5/bulk`, `/hc-for-age/bulk`, and
 `/fenton-preterm/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
@@ -978,6 +978,24 @@ GET /bmi-for-age-under-5/classify?sex=girls&age_months=18&weight_kg=9.2&length_c
 ```
 
 Setup: run `sql/026_add_who_bmi_for_age_under_5.sql` in the Supabase SQL editor, then `POST /bmi-for-age-under-5/bulk` once with the seed file.
+
+### Head circumference-for-age (`/hc-for-age`)
+
+WHO Child Growth Standards **head circumference-for-age** (cm), birth to 5 years, girls and boys. Table: [`sql/027_add_who_hc_for_age.sql`](sql/027_add_who_hc_for_age.sql), 122 rows (months 0-60). Logic: [`src/hcForAge.js`](src/hcForAge.js). This is the head size for the child's age; the 6-month **increment** is [`/hc-velocity`](#head-circumference-velocity-hc-velocity).
+
+**Where the numbers come from:** each row stores the table's L, M, S (L is 1, so `z = (x - M) / (M*S)`), and the -3 SD to +3 SD cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal). A unit test re-checks every row. Head circumference is not weight-based, so there is no extension beyond +/-3 SD. Rebuild the seed with `python3 scripts/build_hcfa_seed.py <girls_0_5.xlsx> <boys_0_5.xlsx>`.
+
+- `GET /hc-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), and `hc_cm` or `hc_mm`. Returns `status`, `hc_cm`, `z_score`, `percentile`, `implausible` and the `cutoffs` (cm).
+- `GET /hc-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
+- `POST /hc-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/hc_for_age_seed.json`](scripts/hc_for_age_seed.json). A unique `(sex, age_months)` constraint rejects re-seeding.
+
+Bands (strict): severe microcephaly < -3SD, microcephaly < -2SD, normal -2SD to +2SD, macrocephaly > +2SD, severe macrocephaly > +3SD. `implausible` is true when |z| > 5. A single value outside the range is a reason to examine the child and track the trend, not a diagnosis. Screening aid only.
+
+```
+GET /hc-for-age/classify?sex=girls&age_months=6&hc_cm=42
+```
+
+Setup: run `sql/027_add_who_hc_for_age.sql` in the Supabase SQL editor, then `POST /hc-for-age/bulk` once with the seed file.
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 
