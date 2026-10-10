@@ -4,7 +4,7 @@
 // growth classification). This module covers the whole process as the
 // Academy of Nutrition and Dietetics defines it:
 //
-//   Screening  -> POST /fhir/Observation/$screen            (MUST, NRS-2002, MNA)
+//   Screening  -> POST /fhir/Observation/$screen            (MUST, NRS-2002, MNA, SGA)
 //   Assess     -> POST /fhir/Observation/$assess-nutrition  (A: BMI, weight
 //                 change, energy/protein needs + intake, GLIM, and generic
 //                 FH/AD/BD/PD/CH indicators)
@@ -467,6 +467,170 @@ function evaluateMna(p, ctx) {
   return okRes(collection([entryOf(ctx, obs)]));
 }
 
+// ─── $screen — SGA (Subjective Global Assessment, adults) ──────────────────
+//
+// As printed on the supplied NEMO / Queensland Health form (May 2009, adapted
+// from Detsky 1994). The form lists descriptors under columns A, B and C and
+// then an OVERALL SGA RATING of A, B or C. It gives NO rule for turning the
+// items into the overall rating: that is the assessor's global judgement, so
+// here it is a required clinician input and is never computed or suggested.
+// What the API does: derives % weight loss from usual vs current weight and
+// grades it, maps each history descriptor to its printed column(s), checks
+// each physical-examination grade against the columns the form actually has
+// for that site, and shapes everything into one Observation.
+// Two descriptors sit in two columns on the form ("Increase (1 level above)":
+// A and B; "Intake poor; no change": B and C): the clinician states which.
+// The form's GI "None; intermittent / Some / All (daily > 2 week)" is read
+// from the four symptoms: none daily > 2 weeks = A, one to three = B, all
+// four = C. The A/B/C labels (well nourished ...) are Detsky's, not printed.
+
+const SGA_GRADES = ["A", "B", "C"];
+const SGA_DESCRIPTORS = {
+  weightChange2Weeks: {
+    label: "weight change past 2 weeks",
+    codes: {
+      "no-change-normal-weight": ["A"], "increase-within-5-percent": ["A"], "increase-1-level-above": ["A", "B"],
+      "no-change-below-usual-weight": ["B"], "increase-within-5-10-percent": ["B"], decrease: ["C"],
+    },
+  },
+  dietaryIntake: {
+    label: "dietary intake",
+    codes: {
+      "no-change-adequate": ["A"], "no-change-inadequate": ["B"], "suboptimal-diet": ["B"], "full-liquid": ["B"],
+      "hypocaloric-liquid": ["C"], starvation: ["C"], "borderline-increasing": ["A"], "borderline-decreasing": ["B"],
+      "poor-no-change": ["B", "C"], "poor-increasing": ["B"], "poor-decreasing": ["C"],
+    },
+  },
+  functionalCapacity: {
+    label: "functional capacity",
+    codes: { "no-dysfunction": ["A"], "difficulty-with-activities": ["B"], "bed-chair-ridden": ["C"] },
+  },
+  functionalChange2Weeks: {
+    label: "functional capacity change past 2 weeks",
+    codes: { improved: ["A"], "no-change": ["B"], regressed: ["C"] },
+  },
+};
+const SGA_GI_PARAMS = ["nauseaDailyOver2Weeks", "vomitingDailyOver2Weeks", "diarrhoeaDailyOver2Weeks", "anorexiaDailyOver2Weeks"];
+const SGA_EXAM = [
+  { name: "underEyesFat", label: "Subcutaneous fat: under the eyes", grades: ["A", "C"] },
+  { name: "tricepsFat", label: "Subcutaneous fat: triceps", grades: ["A", "C"] },
+  { name: "bicepsFat", label: "Subcutaneous fat: biceps", grades: ["A", "C"] },
+  { name: "temple", label: "Muscle wasting: temple", grades: SGA_GRADES },
+  { name: "clavicle", label: "Muscle wasting: clavicle", grades: SGA_GRADES },
+  { name: "shoulder", label: "Muscle wasting: shoulder", grades: SGA_GRADES },
+  { name: "scapulaRibs", label: "Muscle wasting: scapula/ribs", grades: SGA_GRADES },
+  { name: "quadriceps", label: "Muscle wasting: quadriceps", grades: SGA_GRADES },
+  { name: "calf", label: "Muscle wasting: calf", grades: ["A", "C"] },
+  { name: "knee", label: "Muscle wasting: knee", grades: ["A", "C"] },
+  { name: "interosseousMuscle", label: "Muscle wasting: interosseous muscle between thumb and forefinger", grades: ["A", "C"] },
+  { name: "oedema", label: "Oedema (related to malnutrition)", grades: SGA_GRADES },
+  { name: "ascites", label: "Ascites (related to malnutrition)", grades: SGA_GRADES },
+];
+
+const sgaGradeOf = (v) => (typeof v === "string" ? v.trim().toUpperCase() : v);
+
+/** Resolves a descriptor parameter to one printed grade. Returns { grade } or { err } or { missing }. */
+function sgaDescriptor(p, name) {
+  const spec = SGA_DESCRIPTORS[name];
+  const code = str(p.get(name));
+  if (code === undefined) return { missing: name };
+  const grades = spec.codes[code];
+  if (!grades) return { err: bad(`'${name}' (${spec.label}) must be one of: ${Object.keys(spec.codes).join(", ")}.`) };
+  const chosen = sgaGradeOf(p.get(`${name}Grade`));
+  if (grades.length === 1) {
+    if (chosen !== undefined && chosen !== grades[0]) return { err: bad(`'${name}Grade' must be ${grades[0]} for '${code}' (the form lists it only in column ${grades[0]}).`) };
+    return { grade: grades[0], code };
+  }
+  if (!grades.includes(chosen)) return { err: bad(`'${code}' sits in columns ${grades.join(" and ")} on the form: send '${name}Grade' as ${grades.join(" or ")}.`) };
+  return { grade: chosen, code };
+}
+
+function evaluateSga(p, ctx) {
+  const base = ctx.base;
+  const age = ageYearsFrom(p, ctx.now);
+  if (isNum(age) && age < 18) return unprocessable("SGA here is for adults (18+).");
+  const missing = [];
+
+  // Weight change over 6 months: 0-<5% loss = A, 5-10% = B, >10% = C
+  let lossPct = isNum(p.get("weightLossPercent6Months")) ? p.get("weightLossPercent6Months") : null;
+  if (lossPct !== null && (lossPct < -100 || lossPct > 100)) return bad("'weightLossPercent6Months' must be a percent between -100 and 100 (negative = weight gain).");
+  if (lossPct === null) {
+    const usual = p.get("usualWeight") ? toKg(p.get("usualWeight")) : null;
+    const now = p.get("weight") ? toKg(p.get("weight")) : null;
+    if (usual === null || now === null) missing.push("weightLossPercent6Months (or usualWeight + weight)");
+    else if (!(usual > 0) || !(now > 0)) return bad("'usualWeight' and 'weight' must be positive.");
+    else lossPct = ((usual - now) / usual) * 100;
+  }
+
+  const items = {};
+  for (const name of Object.keys(SGA_DESCRIPTORS)) {
+    const r = sgaDescriptor(p, name);
+    if (r.err) return r.err;
+    if (r.missing) missing.push(r.missing); else items[name] = r;
+  }
+  const gi = [];
+  for (const name of SGA_GI_PARAMS) {
+    const v = p.get(name);
+    if (v === undefined) missing.push(name);
+    else if (typeof v !== "boolean") return bad(`'${name}' must be a boolean (true when the symptom has been present daily for more than 2 weeks).`);
+    else gi.push(v);
+  }
+  const overall = sgaGradeOf(p.get("overallRating"));
+  if (overall === undefined) missing.push("overallRating (A, B or C: the assessor's global judgement)");
+  else if (!SGA_GRADES.includes(overall)) return bad("'overallRating' must be A, B or C.");
+
+  const exam = [];
+  for (const site of SGA_EXAM) {
+    const g = sgaGradeOf(p.get(site.name));
+    if (g === undefined) continue;
+    if (!site.grades.includes(g)) {
+      return bad(`'${site.name}' (${site.label}) must be ${site.grades.length === 2 ? "A or C" : "A, B or C"}${site.grades.length === 2 ? ": the form has no column B descriptor for this site" : ""}.`);
+    }
+    exam.push({ site, grade: g });
+  }
+  if (missing.length) return bad(`SGA needs: ${missing.join(", ")}.`);
+
+  const wlGrade = lossPct < 5 ? "A" : lossPct <= 10 ? "B" : "C";
+  const giCount = gi.filter(Boolean).length;
+  const giGrade = giCount === 0 ? "A" : giCount === gi.length ? "C" : "B";
+
+  const obs = {
+    resourceType: "Observation",
+    status: "final",
+    category: [...stepCategory(base, "screening"), { coding: [{ system: OBS_CATEGORY, code: "survey" }] }],
+    code: { coding: [{ system: cs(base, "screening-tool"), code: "sga", display: "SGA (adult)" }], text: "Subjective Global Assessment (SGA)" },
+    effectiveDateTime: str(p.get("effectiveDateTime")) ?? ctx.now,
+    valueCodeableConcept: { coding: [{ system: cs(base, "sga-rating"), code: overall }] },
+    interpretation: [{ coding: [{ system: V3_INTERPRETATION, code: overall === "A" ? "N" : overall === "B" ? "A" : "AA" }] }],
+  };
+  const subj = p.get("subject") ? subjectRef(p.get("subject")) : null;
+  if (subj) obs.subject = subj;
+  const ind = (code, v) => ({ code: { coding: [{ system: cs(base, "ncp-indicator"), code }] }, ...v });
+  const grade = (code, g) => ind(code, { valueCodeableConcept: { coding: [{ system: cs(base, "sga-grade"), code: g }] } });
+  obs.component = [
+    ind("sga-weight-loss-percent-6-months", { valueQuantity: { value: round(lossPct, 1), unit: "%", system: UCUM, code: "%" } }),
+    grade("sga-weight-change-6-months-grade", wlGrade),
+    grade("sga-weight-change-2-weeks-grade", items.weightChange2Weeks.grade),
+    grade("sga-dietary-intake-grade", items.dietaryIntake.grade),
+    grade("sga-gi-symptoms-grade", giGrade),
+    grade("sga-functional-capacity-grade", items.functionalCapacity.grade),
+    grade("sga-functional-change-2-weeks-grade", items.functionalChange2Weeks.grade),
+    ...exam.map((e) => ({
+      code: { coding: [{ system: cs(base, "ncp-indicator"), code: "sga-physical-exam-finding" }], text: e.site.label },
+      valueCodeableConcept: { coding: [{ system: cs(base, "sga-grade"), code: e.grade }] },
+    })),
+  ];
+  const counts = SGA_GRADES.map((g) => `${exam.filter((e) => e.grade === g).length} ${g}`).join(", ");
+  const label = { A: "A (well nourished)", B: "B (moderately malnourished or suspected malnutrition)", C: "C (severely malnourished)" }[overall];
+  obs.note = [{
+    text: `Overall SGA rating ${label}, as entered by the assessor: the form has no rule for combining the items, so none is computed. ` +
+      `History grades: weight change 6 months ${wlGrade} (${round(lossPct, 1)}% loss), weight change 2 weeks ${items.weightChange2Weeks.grade}, dietary intake ${items.dietaryIntake.grade}, ` +
+      `GI symptoms ${giGrade} (${giCount} of ${gi.length} daily for over 2 weeks), functional capacity ${items.functionalCapacity.grade}, functional change 2 weeks ${items.functionalChange2Weeks.grade}. ` +
+      `Physical examination: ${exam.length} of ${SGA_EXAM.length} sites graded (${counts}). ${SCREENING_NOTE}`,
+  }];
+  return okRes(collection([entryOf(ctx, obs)]));
+}
+
 // ─── $screen — MUST (Malnutrition Universal Screening Tool, adults) ────────
 
 export function evaluateScreen(body, ctx) {
@@ -478,7 +642,8 @@ export function evaluateScreen(body, ctx) {
   const tool = str(p.get("tool")) ?? "must";
   if (tool === "nrs-2002") return evaluateNrs(p, ctx);
   if (tool === "mna") return evaluateMna(p, ctx);
-  if (tool !== "must") return bad("'tool' must be must (default), nrs-2002 or mna.");
+  if (tool === "sga") return evaluateSga(p, ctx);
+  if (tool !== "must") return bad("'tool' must be must (default), nrs-2002, mna or sga.");
 
   let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
   const kg = p.get("weight") ? toKg(p.get("weight")) : null;

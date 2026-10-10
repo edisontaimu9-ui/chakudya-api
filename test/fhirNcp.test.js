@@ -295,7 +295,108 @@ test("MNA: malformed inputs are 400 OperationOutcomes; missing screening items a
   assert.equal(none.ok, false);
   const text = JSON.stringify(none.outcome);
   for (const n of ["foodIntakeDeclineScore", "mobilityScore", "psychologicalStressOrAcuteDisease", "neuropsychologicalScore", "weightLossKg3Months", "bmi"]) assert.match(text, new RegExp(n));
-  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /nrs-2002 or mna/);
+  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /mna or sga/);
+});
+
+// ─── $screen — SGA ────────────────────────────────────────────────────────
+const SGA_PARAM_NAMES = ["weightLossPercent6Months", "weightChange2Weeks", "weightChange2WeeksGrade", "dietaryIntake", "dietaryIntakeGrade", "nauseaDailyOver2Weeks", "vomitingDailyOver2Weeks", "diarrhoeaDailyOver2Weeks", "anorexiaDailyOver2Weeks", "functionalCapacity", "functionalChange2Weeks", "overallRating", "underEyesFat", "temple"];
+const SGA_BASE = {
+  weightLossPercent6Months: 2, weightChange2Weeks: "no-change-normal-weight", dietaryIntake: "no-change-adequate",
+  nauseaDailyOver2Weeks: false, vomitingDailyOver2Weeks: false, diarrhoeaDailyOver2Weeks: false, anorexiaDailyOver2Weeks: false,
+  functionalCapacity: "no-dysfunction", functionalChange2Weeks: "no-change", overallRating: "A",
+};
+const sgaParam = ([name, v]) =>
+  typeof v === "boolean" ? { name, valueBoolean: v } : typeof v === "number" ? { name, valueDecimal: v } : { name, valueCode: v };
+const sga = (over = {}) =>
+  P([{ name: "tool", valueCode: "sga" }, ...Object.entries({ ...SGA_BASE, ...over }).filter(([, v]) => v !== undefined).map(sgaParam)]);
+const sgaObs = (b) => { const r = evaluateScreen(b, ctx); assert.equal(r.ok, true, JSON.stringify(r.outcome)); return r.body.entry[0].resource; };
+const sgaGrade = (o, code) => nrsComp(o, code).valueCodeableConcept.coding[0].code;
+const sgaFail = (b, status = 400) => { const r = evaluateScreen(b, ctx); assert.equal(r.ok, false); assert.equal(r.status, status); return JSON.stringify(r.outcome); };
+
+test("SGA: the overall rating is the assessor's input and is carried, never computed", () => {
+  for (const [rating, interp] of [["A", "N"], ["B", "A"], ["C", "AA"]]) {
+    // identical, all-A history; only the stated rating changes the result
+    const o = sgaObs(sga({ overallRating: rating.toLowerCase() }));
+    assert.equal(o.valueCodeableConcept.coding[0].code, rating);
+    assert.equal(o.interpretation[0].coding[0].code, interp);
+    assert.equal(o.code.coding[0].code, "sga");
+  }
+  assert.match(sgaObs(sga({ overallRating: "C" })).note[0].text, /no rule for combining/);
+  assert.match(sgaFail(sga({ overallRating: undefined })), /overallRating/);
+  assert.match(sgaFail(sga({ overallRating: "D" })), /A, B or C/);
+});
+
+test("SGA: % weight loss over 6 months is derived and graded (0-<5 A, 5-10 B, >10 C)", () => {
+  const g = (pct) => sgaGrade(sgaObs(sga({ weightLossPercent6Months: pct })), "sga-weight-change-6-months-grade");
+  assert.deepEqual([-3, 0, 4.9, 5, 10, 10.1, 25].map(g), ["A", "A", "A", "B", "B", "C", "C"]);
+  const o = sgaObs(P([{ name: "tool", valueCode: "sga" }, ...Object.entries({ ...SGA_BASE, weightLossPercent6Months: undefined }).filter(([, v]) => v !== undefined).map(sgaParam),
+    { name: "usualWeight", valueQuantity: q(80, "kg") }, { name: "weight", valueQuantity: q(70, "kg") }]));
+  assert.equal(nrsComp(o, "sga-weight-loss-percent-6-months").valueQuantity.value, 12.5);
+  assert.equal(sgaGrade(o, "sga-weight-change-6-months-grade"), "C");
+  assert.match(sgaFail(sga({ weightLossPercent6Months: undefined })), /usualWeight/);
+});
+
+test("SGA: history descriptors map to the printed columns; two-column descriptors need the assessor's pick", () => {
+  const w = (code, grade) => sgaGrade(sgaObs(sga({ weightChange2Weeks: code, weightChange2WeeksGrade: grade })), "sga-weight-change-2-weeks-grade");
+  assert.deepEqual(["no-change-normal-weight", "increase-within-5-percent"].map((c) => w(c)), ["A", "A"]);
+  assert.deepEqual(["no-change-below-usual-weight", "increase-within-5-10-percent"].map((c) => w(c)), ["B", "B"]);
+  assert.equal(w("decrease"), "C");
+  assert.equal(w("increase-1-level-above", "A"), "A");
+  assert.equal(w("increase-1-level-above", "B"), "B");
+  assert.match(sgaFail(sga({ weightChange2Weeks: "increase-1-level-above" })), /columns A and B/);
+  assert.match(sgaFail(sga({ weightChange2Weeks: "increase-1-level-above", weightChange2WeeksGrade: "C" })), /columns A and B/);
+  assert.match(sgaFail(sga({ weightChange2Weeks: "decrease", weightChange2WeeksGrade: "A" })), /only in column C/);
+
+  const d = (code, grade) => sgaGrade(sgaObs(sga({ dietaryIntake: code, dietaryIntakeGrade: grade })), "sga-dietary-intake-grade");
+  const expected = { "no-change-adequate": "A", "borderline-increasing": "A", "no-change-inadequate": "B", "suboptimal-diet": "B", "full-liquid": "B", "borderline-decreasing": "B",
+    "poor-increasing": "B", "hypocaloric-liquid": "C", starvation: "C", "poor-decreasing": "C" };
+  for (const [code, grade] of Object.entries(expected)) assert.equal(d(code), grade, code);
+  assert.equal(d("poor-no-change", "B"), "B");
+  assert.equal(d("poor-no-change", "C"), "C");
+  assert.match(sgaFail(sga({ dietaryIntake: "poor-no-change" })), /columns B and C/);
+
+  const f = (code) => sgaGrade(sgaObs(sga({ functionalCapacity: code })), "sga-functional-capacity-grade");
+  assert.deepEqual(["no-dysfunction", "difficulty-with-activities", "bed-chair-ridden"].map(f), ["A", "B", "C"]);
+  const fc = (code) => sgaGrade(sgaObs(sga({ functionalChange2Weeks: code })), "sga-functional-change-2-weeks-grade");
+  assert.deepEqual(["improved", "no-change", "regressed"].map(fc), ["A", "B", "C"]);
+  assert.match(sgaFail(sga({ dietaryIntake: "feasting" })), /must be one of/);
+});
+
+test("SGA: GI symptoms graded none = A, one to three = B, all four = C", () => {
+  const gi = (...flags) => sgaGrade(sgaObs(sga({ nauseaDailyOver2Weeks: flags[0], vomitingDailyOver2Weeks: flags[1], diarrhoeaDailyOver2Weeks: flags[2], anorexiaDailyOver2Weeks: flags[3] })), "sga-gi-symptoms-grade");
+  assert.equal(gi(false, false, false, false), "A");
+  assert.equal(gi(true, false, false, false), "B");
+  assert.equal(gi(true, true, true, false), "B");
+  assert.equal(gi(true, true, true, true), "C");
+  assert.match(sgaFail(sga({ nauseaDailyOver2Weeks: undefined })), /nauseaDailyOver2Weeks/);
+  assert.match(sgaFail(sga({ vomitingDailyOver2Weeks: "yes" })), /boolean/);
+});
+
+test("SGA: physical examination is optional, graded per site, and checked against the form's columns", () => {
+  const none = sgaObs(sga());
+  assert.equal(none.component.filter((c) => c.code.coding[0].code === "sga-physical-exam-finding").length, 0);
+  assert.match(none.note[0].text, /0 of 13 sites graded/);
+
+  const o = sgaObs(sga({ tricepsFat: "C", temple: "B", clavicle: "A", oedema: "C", calf: "A" }));
+  const exam = o.component.filter((c) => c.code.coding[0].code === "sga-physical-exam-finding");
+  assert.equal(exam.length, 5);
+  const byLabel = Object.fromEntries(exam.map((c) => [c.code.text, c.valueCodeableConcept.coding[0].code]));
+  assert.equal(byLabel["Subcutaneous fat: triceps"], "C");
+  assert.equal(byLabel["Muscle wasting: temple"], "B");
+  assert.equal(byLabel["Oedema (related to malnutrition)"], "C");
+  assert.match(o.note[0].text, /5 of 13 sites graded \(2 A, 1 B, 2 C\)/);
+
+  // sites whose form row has only columns A and C reject B
+  for (const site of ["underEyesFat", "tricepsFat", "bicepsFat", "calf", "knee", "interosseousMuscle"]) assert.match(sgaFail(sga({ [site]: "B" })), /no column B descriptor/);
+  for (const site of ["temple", "clavicle", "shoulder", "scapulaRibs", "quadriceps", "oedema", "ascites"]) assert.equal(sgaObs(sga({ [site]: "B" })).component.length, 7 + 1);
+  assert.match(sgaFail(sga({ temple: "D" })), /A, B or C/);
+});
+
+test("SGA: adults only; no hidden age rule", () => {
+  assert.equal(evaluateScreen(sga({ ageYears: 12 }), ctx).status, 422);
+  assert.equal(sgaObs(sga({ ageYears: 40 })).valueCodeableConcept.coding[0].code, "A");
+  assert.match(sgaFail(P([{ name: "tool", valueCode: "sga" }])), /weightChange2Weeks/);
+  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /mna or sga/);
 });
 
 // ─── $assess-nutrition ────────────────────────────────────────────────────
@@ -712,6 +813,9 @@ function emittedSamples() {
   keep(evaluateScreen(mna(MNA_ASSESS_MAX), ctx));
   keep(evaluateScreen(mna({ ...MNA_ASSESS_MAX, selfViewNutritionScore: 0, fluidCupsPerDay: 4 }), ctx));
   keep(evaluateScreen(mna(), ctx));
+  // SGA: every rating, every descriptor column, and a full examination
+  for (const rating of ["A", "B", "C"]) keep(evaluateScreen(sga({ overallRating: rating, subject: "Patient/42", tricepsFat: "C", temple: "B", oedema: "A" }), ctx));
+  keep(evaluateScreen(sga({ weightChange2Weeks: "increase-1-level-above", weightChange2WeeksGrade: "B", dietaryIntake: "poor-no-change", dietaryIntakeGrade: "C", functionalCapacity: "bed-chair-ridden", functionalChange2Weeks: "regressed", nauseaDailyOver2Weeks: true, vomitingDailyOver2Weeks: true, diarrhoeaDailyOver2Weeks: true, anorexiaDailyOver2Weeks: true, weightLossPercent6Months: 12, underEyesFat: "C", bicepsFat: "A", clavicle: "C", shoulder: "B", scapulaRibs: "A", quadriceps: "C", calf: "C", knee: "A", interosseousMuscle: "C", ascites: "B", overallRating: "C" }), ctx));
   // Assessment: everything on, then intake-only (no factor), then several loss intervals and BMI classes
   keep(evaluateAssessNutrition(P([
     ...adult, sub,
@@ -800,7 +904,7 @@ test("OperationDefinitions describe the parameters each operation reads", () => 
   const names = (id) => operationDefinitionResource(BASE, id).parameter.filter((p) => p.use === "in").map((p) => p.name);
   for (const n of ["tool", "acuteDiseaseNoIntake", "bmi", "effectiveDateTime", "height", "subject", "usualWeight", "weight", "weightLossPercent3to6Months",
     "ageYears", "birthDate", "weightLossPercent", "weightLossPeriodMonths", "intakePercentOfRequirement", "impairedGeneralCondition", "diseaseSeverityScore", "severelyIll", "reducedIntakeLastWeek",
-    ...[...MNA_SCREEN_ITEM_NAMES, ...MNA_ASSESS_ITEM_NAMES]]) {
+    ...[...MNA_SCREEN_ITEM_NAMES, ...MNA_ASSESS_ITEM_NAMES], ...SGA_PARAM_NAMES]) {
     assert.ok(names("Observation-screen").includes(n), `Observation-screen is missing parameter ${n}`);
   }
   for (const n of ["subject", "diagnosis"]) assert.ok(names("Condition-diagnose").includes(n));

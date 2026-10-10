@@ -89,6 +89,14 @@ const CODE_SYSTEMS = {
       c("mna-screening-score", "MNA screening score (0-14)", "Items A-F of the Mini Nutritional Assessment."),
       c("mna-assessment-score", "MNA assessment score (0-16)", "Items G-R; present only when the screening score is 11 or less."),
       c("mna-risk-category", "MNA risk category", "From the Malnutrition Indicator Score when the assessment was done, otherwise from the screening score."),
+      c("sga-weight-loss-percent-6-months", "SGA weight loss over 6 months (%)", "Positive = loss."),
+      c("sga-weight-change-6-months-grade", "SGA weight change over 6 months (A/B/C)", "0-<5% loss A, 5-10% B, >10% C."),
+      c("sga-weight-change-2-weeks-grade", "SGA weight change over 2 weeks (A/B/C)"),
+      c("sga-dietary-intake-grade", "SGA dietary intake (A/B/C)"),
+      c("sga-gi-symptoms-grade", "SGA gastrointestinal symptoms (A/B/C)", "None daily for over 2 weeks A, some B, all four C."),
+      c("sga-functional-capacity-grade", "SGA functional capacity (A/B/C)"),
+      c("sga-functional-change-2-weeks-grade", "SGA functional capacity change over 2 weeks (A/B/C)"),
+      c("sga-physical-exam-finding", "SGA physical examination finding", "One component per graded site; the site is in code.text."),
     ],
   },
   "screening-tool": {
@@ -98,6 +106,7 @@ const CODE_SYSTEMS = {
       c("must", "MUST score (adult)", "Malnutrition Universal Screening Tool: BMI score + weight-loss score + acute-disease score."),
       c("nrs-2002", "NRS-2002 (adult)", "Nutritional Risk Screening 2002: initial screening, then nutritional-status + disease-severity score, +1 if age 70 or over."),
       c("mna", "MNA (older adults)", "Mini Nutritional Assessment: screening items A-F (max 14), then assessment items G-R (max 16) when the screening score is 11 or less; total max 30."),
+      c("sga", "SGA (adult)", "Subjective Global Assessment: history and physical-examination descriptors under columns A, B, C, then an overall rating A, B or C entered by the assessor."),
     ],
   },
   "must-risk": {
@@ -121,6 +130,20 @@ const CODE_SYSTEMS = {
       c("normal", "Normal nutritional status", "Total 24-30, or screening score 12-14."),
       c("at-risk", "At risk of malnutrition", "Total 17-23.5."),
       c("malnourished", "Malnourished", "Total below 17."),
+    ],
+  },
+  "sga-grade": {
+    title: "SGA form column",
+    description: "Column of the SGA form that a descriptor or examination finding sits in.",
+    concepts: [c("A", "Column A"), c("B", "Column B"), c("C", "Column C")],
+  },
+  "sga-rating": {
+    title: "SGA overall rating",
+    description: "Overall SGA rating entered by the assessor. The labels are Detsky's standard wording, not printed on the form.",
+    concepts: [
+      c("A", "A: well nourished"),
+      c("B", "B: moderately malnourished or suspected malnutrition"),
+      c("C", "C: severely malnourished"),
     ],
   },
   "who-adult-bmi-class": {
@@ -234,13 +257,14 @@ const OPERATIONS = {
     ],
   },
   "Observation-screen": {
-    resource: "Observation", code: "screen", title: "Nutrition screening (MUST, NRS-2002 or MNA)",
+    resource: "Observation", code: "screen", title: "Nutrition screening (MUST, NRS-2002, MNA or SGA)",
     description:
       "tool=must (default): Malnutrition Universal Screening Tool score and risk category; provide bmi, or weight + height; and weightLossPercent3to6Months, or usualWeight + weight. " +
       "tool=nrs-2002: two-stage NRS-2002 as printed in the source appendix (initial screening, then nutritional status + disease severity + age 70+); disease severity and impaired general condition are clinician inputs. " +
-      "tool=mna: Mini Nutritional Assessment as printed on the Nestle form; screening items A-F always, assessment items G-R only when the screening score is 11 or less (12-14 stops at normal). Measured items are scored from raw values, judgement items are sent as the printed option score." + QUANTITY_NOTE,
+      "tool=mna: Mini Nutritional Assessment as printed on the Nestle form; screening items A-F always, assessment items G-R only when the screening score is 11 or less (12-14 stops at normal). Measured items are scored from raw values, judgement items are sent as the printed option score. " +
+      "tool=sga: Subjective Global Assessment as printed on the NEMO form; history descriptors are mapped to their printed columns, % weight loss is derived, physical-examination grades are checked against the columns the form has, and the overall A/B/C rating is the assessor's own input (the form gives no rule to compute it)." + QUANTITY_NOTE,
     parameters: [
-      P("tool", "code", 0, "1", "must (default) | nrs-2002 | mna"),
+      P("tool", "code", 0, "1", "must (default) | nrs-2002 | mna | sga"),
       P("bmi", "decimal", 0, "1", "BMI in kg/m2. Alternative to weight + height."),
       P("weight", "Quantity", 0, "1", "Current weight."),
       P("height", "Quantity", 0, "1", "Height."),
@@ -276,6 +300,20 @@ const OPERATIONS = {
       P("selfViewHealthScore", "decimal", 0, "1", "MNA P: health compared with others of the same age: 0 not as good, 0.5 does not know, 1 as good, 2 better."),
       P("midArmCircumferenceCm", "decimal", 0, "1", "MNA Q: mid-arm circumference in cm (under 21 scores 0, 21 to 22 scores 0.5, over 22 scores 1)."),
       P("calfCircumferenceCm", "decimal", 0, "1", "MNA R: calf circumference in cm (under 31 scores 0, 31 or more scores 1)."),
+      P("weightLossPercent6Months", "decimal", 0, "1", "SGA: weight loss over 6 months in percent (negative = gain). Alternative to usualWeight + weight."),
+      P("weightChange2Weeks", "code", 0, "1", "SGA (required): no-change-normal-weight | increase-within-5-percent | increase-1-level-above | no-change-below-usual-weight | increase-within-5-10-percent | decrease."),
+      P("weightChange2WeeksGrade", "code", 0, "1", "SGA: A or B, required when weightChange2Weeks is increase-1-level-above (listed in both columns)."),
+      P("dietaryIntake", "code", 0, "1", "SGA (required): no-change-adequate | no-change-inadequate | suboptimal-diet | full-liquid | hypocaloric-liquid | starvation | borderline-increasing | borderline-decreasing | poor-no-change | poor-increasing | poor-decreasing."),
+      P("dietaryIntakeGrade", "code", 0, "1", "SGA: B or C, required when dietaryIntake is poor-no-change (listed in both columns)."),
+      P("nauseaDailyOver2Weeks", "boolean", 0, "1", "SGA (required): nausea daily for more than 2 weeks."),
+      P("vomitingDailyOver2Weeks", "boolean", 0, "1", "SGA (required): vomiting daily for more than 2 weeks."),
+      P("diarrhoeaDailyOver2Weeks", "boolean", 0, "1", "SGA (required): diarrhoea daily for more than 2 weeks."),
+      P("anorexiaDailyOver2Weeks", "boolean", 0, "1", "SGA (required): anorexia daily for more than 2 weeks. GI grade: none A, one to three B, all four C."),
+      P("functionalCapacity", "code", 0, "1", "SGA (required): no-dysfunction | difficulty-with-activities | bed-chair-ridden."),
+      P("functionalChange2Weeks", "code", 0, "1", "SGA (required): improved | no-change | regressed."),
+      P("overallRating", "code", 0, "1", "SGA (required): the assessor's overall rating, A, B or C. Never computed."),
+      P("underEyesFat", "code", 0, "1", "SGA exam grade A or C (the form has no B for this site). Same for tricepsFat, bicepsFat, calf, knee, interosseousMuscle."),
+      P("temple", "code", 0, "1", "SGA exam grade A, B or C. Same for clavicle, shoulder, scapulaRibs, quadriceps, oedema, ascites. All exam sites are optional."),
       SUBJECT_OPT, EFFECTIVE,
     ],
   },
