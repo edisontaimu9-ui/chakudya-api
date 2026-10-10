@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -886,6 +886,26 @@ GET /muac-for-age/classify?sex=girls&age_months=12&muac_cm=13.5
 ```
 
 Setup: run `sql/021_add_who_muac_for_age.sql` in the Supabase SQL editor, then `POST /muac-for-age/bulk` with the seed file.
+
+### MUAC fixed cut-offs (`/muac`)
+
+Severe / moderate / normal classification of mid-upper arm circumference by age group, 6 months to adult. Logic: [`src/muacFixed.js`](src/muacFixed.js). No database table and nothing to seed. Source: WHO, *Guideline for Integrated Approach to the National Care of HIV Infected Children (6 months - 14 years)*, 2008, as reproduced in the FANTA Ethiopia MUAC chart.
+
+| Age | Severe | Moderate | Normal |
+|---|---|---|---|
+| 6-11 months | < 11 cm | 11-12 cm | > 12 cm |
+| 12-59 months | < 11 cm | 11-13 cm | > 13 cm |
+| 5-9 years | < 13.5 cm | 13.5-14.5 cm | > 14.5 cm |
+| 10-14 years | < 16 cm | 16-18 cm | > 18 cm |
+| Adults (15 y+) | < 18 cm | 18-21 cm | > 21 cm |
+
+- `GET /muac/classify` *(public, rate-limited, cached 1h)* — `age_months` (6 or more, whole months) and `muac_cm` or `muac_mm`. Returns `age_group`, `status`, `muac_cm` and the `cutoffs_cm` used. Moderate includes both end values.
+
+**Check your programme's cut-offs:** for 6-59 months the WHO/UNICEF community screening cut-offs most CMAM programmes use are 115 mm (severe) and 125 mm (moderate), which differ from this chart. For MUAC as a z-score for age see [`/muac-for-age`](#muac-for-age-muac-for-age).
+
+```
+GET /muac/classify?age_months=18&muac_cm=11.8
+```
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 

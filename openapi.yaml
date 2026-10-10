@@ -39,6 +39,7 @@ tags:
   - name: Length velocity
   - name: Weight velocity
   - name: MUAC for age
+  - name: MUAC fixed cut-offs
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -1484,6 +1485,58 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/BulkSuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /muac/classify:
+    get:
+      tags: [MUAC fixed cut-offs]
+      summary: Classify MUAC with fixed age-group cut-offs (6 months to adult)
+      description: >
+        Severe / moderate / normal by age group (WHO 2008 HIV paediatric
+        guideline, as reproduced by FANTA Ethiopia). Pure calculation, no
+        table. Moderate includes both end values. For 6-59 months these differ
+        from the WHO/UNICEF 115 / 125 mm community screening cut-offs. Screening
+        aid only, not a diagnosis.
+      security: []
+      parameters:
+        - name: age_months
+          in: query
+          required: true
+          description: Whole completed months (6 or more; adults are 180 or more)
+          schema: { type: integer, minimum: 6 }
+        - name: muac_cm
+          in: query
+          description: MUAC in CENTIMETRES
+          schema: { type: number }
+        - name: muac_mm
+          in: query
+          description: MUAC in MILLIMETRES (used if muac_cm is absent)
+          schema: { type: number }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          age_months: { type: integer }
+                          age_group: { type: string, enum: [6-11 months, 12-59 months, 5-9 years, 10-14 years, adults] }
+                          status: { type: string, enum: [severe, moderate, normal] }
+                          muac_cm: { type: number }
+                          cutoffs_cm:
+                            type: object
+                            properties:
+                              severe_below: { type: number }
+                              normal_above: { type: number }
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /fenton-preterm/classify:
     get:

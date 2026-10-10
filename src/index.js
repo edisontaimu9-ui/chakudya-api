@@ -531,6 +531,7 @@ import { parseHcVelocityQuery, classifyHcVelocity, normalizeSex as normalizeHcSe
 import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVelocity.js";
 import { parseWeightVelocityQuery, classifyWeightVelocity } from "./weightVelocity.js";
 import { parseMuacForAgeQuery, classifyMuacForAge } from "./muacForAge.js";
+import { parseMuacFixedQuery, classifyMuacFixed } from "./muacFixed.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -763,7 +764,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -2546,6 +2547,28 @@ async function handleMuacForAge(request, url, db, param) {
     filters.age_months = `eq.${Number(age)}`;
   }
   return await paginatedList(db, "who_muac_for_age", url, { filters, order: "age_months.asc" });
+}
+
+// ─── MUAC fixed cut-offs (/muac/classify) ─────────────────────────────────
+//
+// Severe / moderate / normal by age group, 6 months to adult (see
+// src/muacFixed.js). Pure calculation: no database table, no seeding. Screening
+// aid, not a diagnosis. Separate from the z-score route /muac-for-age.
+async function handleMuacFixed(request, url, param) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+  if (param !== "classify") return notFound("MUAC route (use /muac/classify)");
+  const parsed = parseMuacFixedQuery(url.searchParams);
+  if (parsed.error) return err(parsed.error);
+  const result = classifyMuacFixed(parsed.ageMonths, parsed.muacCm);
+  return success(
+    {
+      age_months: parsed.ageMonths,
+      ...result,
+      source: "WHO, Guideline for Integrated Approach to the National Care of HIV Infected Children (6 months - 14 years), 2008, as reproduced in the FANTA Ethiopia MUAC classification chart",
+      note: "Screening aid only, not a diagnosis. Fixed MUAC cut-offs by age group: severe below the first value, moderate from there up to and including the second, normal above it. Adults means 15 years and over (both sexes; pregnancy is not distinguished). For 6-59 months these cut-offs differ from the WHO/UNICEF community screening cut-offs (115 mm severe, 125 mm moderate) that most CMAM programmes use: check which one your programme follows. For MUAC as a WHO z-score for age (3-60 months) use /muac-for-age/classify.",
+    },
+    { message: "MUAC classification" }
+  );
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -6828,6 +6851,9 @@ function handleRoot(env) {
         "GET  /muac-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, cm, plus L/M/S)",
         "POST /muac-for-age/bulk    (admin) → body {items:[...]}; seed file: scripts/muac_for_age_seed.json",
       ],
+      muac: [
+        "GET  /muac/classify?age_months=18&muac_cm=11.8  → fixed-cut-off MUAC class (severe / moderate / normal), 6 months to adult; or pass &muac_mm=. Calculation only, no table. Screening aid",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -8226,6 +8252,10 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleMuacForAge(request, url, db, param || null);
+    }
+
+    case "muac": {
+      return await handleMuacFixed(request, url, param || null);
     }
 
     case "fenton-preterm": {
