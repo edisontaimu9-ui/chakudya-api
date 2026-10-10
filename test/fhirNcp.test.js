@@ -166,6 +166,138 @@ test("NRS-2002: explicit initial-question overrides are honoured; default tool s
   assert.equal(must.body.entry[0].resource.code.coding[0].code, "must");
 });
 
+// ─── $screen — MNA ────────────────────────────────────────────────────────
+const MNA_SCREEN_ITEM_NAMES = ["foodIntakeDeclineScore", "weightLossKg3Months", "weightLossUnknown", "mobilityScore", "psychologicalStressOrAcuteDisease", "neuropsychologicalScore"];
+const MNA_ASSESS_ITEM_NAMES = ["livesIndependently", "moreThan3PrescriptionDrugs", "pressureSoresOrUlcers", "fullMealsPerDay", "dairyDaily", "legumesOrEggsTwiceWeekly", "meatFishPoultryDaily", "fruitOrVegetablesTwoPlusServings", "fluidCupsPerDay", "modeOfFeedingScore", "selfViewNutritionScore", "selfViewHealthScore", "midArmCircumferenceCm", "calfCircumferenceCm"];
+const MNA_SCREEN_10 = { foodIntakeDeclineScore: 2, weightLossKg3Months: 0, mobilityScore: 2, psychologicalStressOrAcuteDisease: true, neuropsychologicalScore: 2, bmi: 20 }; // 2+3+2+0+2+1 = 10
+const MNA_SCREEN_14 = { ...MNA_SCREEN_10, psychologicalStressOrAcuteDisease: false, bmi: 24 }; // 2+3+2+2+2+3 = 14
+const MNA_ASSESS_0 = {
+  livesIndependently: false, moreThan3PrescriptionDrugs: true, pressureSoresOrUlcers: true, fullMealsPerDay: 1,
+  dairyDaily: false, legumesOrEggsTwiceWeekly: false, meatFishPoultryDaily: false, fruitOrVegetablesTwoPlusServings: false,
+  fluidCupsPerDay: 2, modeOfFeedingScore: 0, selfViewNutritionScore: 0, selfViewHealthScore: 0, midArmCircumferenceCm: 18, calfCircumferenceCm: 25,
+};
+const MNA_ASSESS_MAX = {
+  livesIndependently: true, moreThan3PrescriptionDrugs: false, pressureSoresOrUlcers: false, fullMealsPerDay: 3,
+  dairyDaily: true, legumesOrEggsTwiceWeekly: true, meatFishPoultryDaily: true, fruitOrVegetablesTwoPlusServings: true,
+  fluidCupsPerDay: 6, modeOfFeedingScore: 2, selfViewNutritionScore: 2, selfViewHealthScore: 2, midArmCircumferenceCm: 23, calfCircumferenceCm: 32,
+};
+const mnaParam = ([name, v]) =>
+  typeof v === "boolean" ? { name, valueBoolean: v } : Number.isInteger(v) ? { name, valueInteger: v } : { name, valueDecimal: v };
+const mna = (over = {}, base = { ...MNA_SCREEN_10, ...MNA_ASSESS_0 }) =>
+  P([{ name: "tool", valueCode: "mna" }, ...Object.entries({ ...base, ...over }).filter(([, v]) => v !== undefined).map(mnaParam)]);
+const mnaObs = (b) => { const r = evaluateScreen(b, ctx); assert.equal(r.ok, true, JSON.stringify(r.outcome)); return r.body.entry[0].resource; };
+const mnaRisk = (o) => nrsComp(o, "mna-risk-category").valueCodeableConcept.coding[0].code;
+const mnaAssessed = (over) => nrsComp(mnaObs(mna(over)), "mna-assessment-score").valueQuantity.value;
+
+test("MNA: screening score 12-14 stops at normal (no assessment, no total)", () => {
+  const o = mnaObs(mna({}, MNA_SCREEN_14));
+  assert.equal(nrsComp(o, "mna-screening-score").valueInteger, 14);
+  assert.equal(mnaRisk(o), "normal");
+  assert.equal(o.valueQuantity, undefined);
+  assert.equal(nrsComp(o, "mna-assessment-score"), undefined);
+  assert.equal(o.interpretation[0].coding[0].code, "N");
+  assert.match(o.note[0].text, /normal nutritional status \(12-14\)/);
+  // exactly 12 still stops; assessment items sent anyway are ignored
+  const twelve = mnaObs(mna({ bmi: 18, ...MNA_ASSESS_MAX }, MNA_SCREEN_14)); // 2+3+2+2+2+0 = 11 -> assessment needed
+  assert.equal(nrsComp(twelve, "mna-screening-score").valueInteger, 11);
+  const stop = mnaObs(mna({ bmi: 20, ...MNA_ASSESS_0 }, MNA_SCREEN_14)); // 2+3+2+2+2+1 = 12
+  assert.equal(nrsComp(stop, "mna-screening-score").valueInteger, 12);
+  assert.equal(nrsComp(stop, "mna-assessment-score"), undefined);
+});
+
+test("MNA: screening 11 or less requires the assessment items and names the missing ones", () => {
+  const noAssess = evaluateScreen(mna({}, MNA_SCREEN_10), ctx);
+  assert.equal(noAssess.ok, false);
+  assert.equal(noAssess.status, 400);
+  const msg = noAssess.outcome.issue[0].diagnostics ?? JSON.stringify(noAssess.outcome);
+  assert.match(msg, /11 or less/);
+  for (const n of ["livesIndependently", "fluidCupsPerDay", "midArmCircumferenceCm", "calfCircumferenceCm"]) assert.match(msg, new RegExp(n));
+  const partial = evaluateScreen(mna({ calfCircumferenceCm: undefined }), ctx);
+  assert.equal(partial.ok, false);
+  assert.match(JSON.stringify(partial.outcome), /calfCircumferenceCm/);
+});
+
+test("MNA: total = screening + assessment; Malnutrition Indicator Score bands (24 / 23.5 / 17 / 16.5)", () => {
+  const full = mnaObs(mna(MNA_ASSESS_MAX)); // 10 + 16
+  assert.equal(full.valueQuantity.value, 26);
+  assert.equal(nrsComp(full, "mna-assessment-score").valueQuantity.value, 16);
+  assert.equal(mnaRisk(full), "normal");
+  const t24 = mnaObs(mna({ ...MNA_ASSESS_MAX, selfViewNutritionScore: 0 })); // 10 + 14
+  assert.equal(t24.valueQuantity.value, 24);
+  assert.equal(mnaRisk(t24), "normal");
+  const t235 = mnaObs(mna({ ...MNA_ASSESS_MAX, selfViewNutritionScore: 0, fluidCupsPerDay: 4 })); // 10 + 13.5
+  assert.equal(t235.valueQuantity.value, 23.5);
+  assert.equal(mnaRisk(t235), "at-risk");
+  assert.equal(t235.interpretation[0].coding[0].code, "A");
+  const t17 = mnaObs(mna({ livesIndependently: true, moreThan3PrescriptionDrugs: false, pressureSoresOrUlcers: false, fullMealsPerDay: 3, dairyDaily: true, legumesOrEggsTwiceWeekly: true, meatFishPoultryDaily: true, fruitOrVegetablesTwoPlusServings: true })); // 10 + 7
+  assert.equal(t17.valueQuantity.value, 17);
+  assert.equal(mnaRisk(t17), "at-risk");
+  const t165 = mnaObs(mna({ livesIndependently: true, moreThan3PrescriptionDrugs: false, pressureSoresOrUlcers: false, fullMealsPerDay: 3, dairyDaily: true, legumesOrEggsTwiceWeekly: true, fruitOrVegetablesTwoPlusServings: true })); // 10 + 6.5
+  assert.equal(t165.valueQuantity.value, 16.5);
+  assert.equal(mnaRisk(t165), "malnourished");
+  assert.equal(t165.interpretation[0].coding[0].code, "AA");
+  assert.equal(mnaRisk(mnaObs(mna({}, { ...MNA_SCREEN_10, ...MNA_ASSESS_0 }))), "malnourished");
+});
+
+test("MNA: assessment item scoring and boundaries (J, K, M, N-P, Q, R)", () => {
+  assert.equal(mnaAssessed({}), 0);
+  assert.deepEqual([1, 2, 3, 4].map((v) => mnaAssessed({ fullMealsPerDay: v })), [0, 1, 2, 2]);
+  const k = (a, b, c) => mnaAssessed({ dairyDaily: a, legumesOrEggsTwiceWeekly: b, meatFishPoultryDaily: c });
+  assert.deepEqual([k(false, false, false), k(true, false, false), k(true, true, false), k(true, true, true)], [0, 0, 0.5, 1]);
+  assert.deepEqual([2.9, 3, 5, 5.1].map((v) => mnaAssessed({ fluidCupsPerDay: v })), [0, 0.5, 0.5, 1]);
+  assert.deepEqual([20.9, 21, 22, 22.1].map((v) => mnaAssessed({ midArmCircumferenceCm: v })), [0, 0.5, 0.5, 1]);
+  assert.deepEqual([30.9, 31].map((v) => mnaAssessed({ calfCircumferenceCm: v })), [0, 1]);
+  assert.deepEqual([0, 0.5, 1, 2].map((v) => mnaAssessed({ selfViewHealthScore: v })), [0, 0.5, 1, 2]);
+  assert.deepEqual([0, 1, 2].map((v) => mnaAssessed({ modeOfFeedingScore: v })), [0, 1, 2]);
+  assert.deepEqual([0, 1, 2].map((v) => mnaAssessed({ selfViewNutritionScore: v })), [0, 1, 2]);
+  assert.equal(mnaAssessed({ livesIndependently: true }), 1);
+  assert.equal(mnaAssessed({ moreThan3PrescriptionDrugs: false }), 1);
+  assert.equal(mnaAssessed({ pressureSoresOrUlcers: false }), 1);
+  assert.equal(mnaAssessed({ fruitOrVegetablesTwoPlusServings: true }), 1);
+});
+
+test("MNA: screening item scoring (B weight loss, F BMI, D stress) and disclosed gaps", () => {
+  // screening subtotal read back from the screening-only path (keeps BMI >= 23 so A+C+E stay at max)
+  const scr = (over) => nrsComp(mnaObs(mna(over, { ...MNA_SCREEN_14, ...MNA_ASSESS_0 })), "mna-screening-score").valueInteger;
+  const b = (kg) => scr({ weightLossKg3Months: kg }) - 11; // A2 + C2 + D2 + E2 + F3 = 11
+  assert.deepEqual([4, 3.01, 3, 1, 0.5, 0, -2].map(b), [0, 0, 2, 2, 3, 3, 3]);
+  assert.equal(scr({ weightLossKg3Months: undefined, weightLossUnknown: true }) - 11, 1);
+  const f = (bmi) => scr({ bmi }) - 10; // A2 + B3 + C2 + D2 + E2 = 11 -> F = scr - 11
+  assert.deepEqual([18.9, 19, 20.9, 21, 22.9, 23].map((v) => f(v) - 1), [0, 1, 1, 2, 2, 3]);
+  assert.equal(scr({ psychologicalStressOrAcuteDisease: true }), 12);
+  const gap = mnaObs(mna({ weightLossKg3Months: 0.5 }, { ...MNA_SCREEN_14, ...MNA_ASSESS_0 }));
+  assert.match(gap.note[0].text, /no band for a weight loss under 1 kg/);
+  assert.doesNotMatch(mnaObs(mna({}, MNA_SCREEN_14)).note[0].text, /no band/);
+});
+
+test("MNA: BMI from weight + height; age handling; subject carried", () => {
+  const wh = P([{ name: "tool", valueCode: "mna" }, ...Object.entries({ ...MNA_SCREEN_14, bmi: undefined }).filter(([, v]) => v !== undefined).map(mnaParam),
+    { name: "weight", valueQuantity: q(72, "kg") }, { name: "height", valueQuantity: q(170, "cm") }, { name: "subject", valueString: "Patient/42" }, { name: "ageYears", valueInteger: 78 }]);
+  const o = mnaObs(wh);
+  assert.equal(o.subject.reference, "Patient/42");
+  assert.equal(o.component.at(-1).valueQuantity.value, 24.9);
+  assert.doesNotMatch(o.note[0].text, /developed for older adults/);
+  assert.match(mnaObs(mna({ ageYears: 50 }, MNA_SCREEN_14)).note[0].text, /developed for older adults and this patient is 50/);
+  assert.equal(evaluateScreen(mna({ ageYears: 12 }, MNA_SCREEN_14), ctx).status, 422);
+});
+
+test("MNA: malformed inputs are 400 OperationOutcomes; missing screening items are all listed", () => {
+  const bad400 = (over, base) => { const r = evaluateScreen(mna(over, base), ctx); assert.equal(r.ok, false); assert.equal(r.status, 400); assert.equal(r.outcome.resourceType, "OperationOutcome"); return JSON.stringify(r.outcome); };
+  bad400({ foodIntakeDeclineScore: 3 }, MNA_SCREEN_14);
+  bad400({ mobilityScore: 1.5 }, MNA_SCREEN_14);
+  bad400({ psychologicalStressOrAcuteDisease: 1 }, MNA_SCREEN_14);
+  bad400({ weightLossKg3Months: 500 }, MNA_SCREEN_14);
+  bad400({ bmi: 150 }, MNA_SCREEN_14);
+  bad400({ selfViewHealthScore: 1.5 });
+  bad400({ midArmCircumferenceCm: 400 });
+  bad400({ fullMealsPerDay: -1 });
+  const none = evaluateScreen(P([{ name: "tool", valueCode: "mna" }]), ctx);
+  assert.equal(none.ok, false);
+  const text = JSON.stringify(none.outcome);
+  for (const n of ["foodIntakeDeclineScore", "mobilityScore", "psychologicalStressOrAcuteDisease", "neuropsychologicalScore", "weightLossKg3Months", "bmi"]) assert.match(text, new RegExp(n));
+  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /nrs-2002 or mna/);
+});
+
 // ─── $assess-nutrition ────────────────────────────────────────────────────
 const adult = [
   { name: "sex", valueCode: "male" },
@@ -575,6 +707,11 @@ function emittedSamples() {
   keep(evaluateScreen(nrs({ bmi: 17.5, impaired: true, loss: 0, intake: 40, sev: 2, age: 75 }), ctx));
   keep(evaluateScreen(nrs({ bmi: 19, impaired: false, loss: 0, intake: 90, sev: 0, age: 50 }), ctx));
   keep(evaluateScreen(nrs({ bmi: 24, loss: 0, intake: 100, sev: 1, age: 50 }), ctx));
+  // MNA: screening-only normal, then full assessment at every risk category
+  keep(evaluateScreen(mna({ subject: "Patient/42", ageYears: 80 }, MNA_SCREEN_14), ctx));
+  keep(evaluateScreen(mna(MNA_ASSESS_MAX), ctx));
+  keep(evaluateScreen(mna({ ...MNA_ASSESS_MAX, selfViewNutritionScore: 0, fluidCupsPerDay: 4 }), ctx));
+  keep(evaluateScreen(mna(), ctx));
   // Assessment: everything on, then intake-only (no factor), then several loss intervals and BMI classes
   keep(evaluateAssessNutrition(P([
     ...adult, sub,
@@ -662,7 +799,8 @@ test("CapabilityStatement operation links and OperationDefinitions match one to 
 test("OperationDefinitions describe the parameters each operation reads", () => {
   const names = (id) => operationDefinitionResource(BASE, id).parameter.filter((p) => p.use === "in").map((p) => p.name);
   for (const n of ["tool", "acuteDiseaseNoIntake", "bmi", "effectiveDateTime", "height", "subject", "usualWeight", "weight", "weightLossPercent3to6Months",
-    "ageYears", "birthDate", "weightLossPercent", "weightLossPeriodMonths", "intakePercentOfRequirement", "impairedGeneralCondition", "diseaseSeverityScore", "severelyIll", "reducedIntakeLastWeek"]) {
+    "ageYears", "birthDate", "weightLossPercent", "weightLossPeriodMonths", "intakePercentOfRequirement", "impairedGeneralCondition", "diseaseSeverityScore", "severelyIll", "reducedIntakeLastWeek",
+    ...[...MNA_SCREEN_ITEM_NAMES, ...MNA_ASSESS_ITEM_NAMES]]) {
     assert.ok(names("Observation-screen").includes(n), `Observation-screen is missing parameter ${n}`);
   }
   for (const n of ["subject", "diagnosis"]) assert.ok(names("Condition-diagnose").includes(n));

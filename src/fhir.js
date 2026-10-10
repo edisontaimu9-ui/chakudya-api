@@ -312,7 +312,7 @@ export function buildCapabilityStatement(base) {
                   "them). Covers Fenton preterm (22-50 weeks gestation) and WHO 2007 BMI-for-age " +
                   "(5y1m-19y0m) only — see chakudya-api README, Fenton Preterm / BMI-for-Age sections."
               ),
-              op("screen", "Observation", "NCP screening for adults: MUST (default) or NRS-2002 (tool=nrs-2002). Returns a Bundle containing one screening Observation."),
+              op("screen", "Observation", "NCP screening for adults: MUST (default), NRS-2002 (tool=nrs-2002) or MNA (tool=mna). Returns a Bundle containing one screening Observation."),
               op(
                 "assess-nutrition",
                 "Observation",

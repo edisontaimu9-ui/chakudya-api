@@ -4,7 +4,7 @@
 // growth classification). This module covers the whole process as the
 // Academy of Nutrition and Dietetics defines it:
 //
-//   Screening  -> POST /fhir/Observation/$screen            (MUST, adults)
+//   Screening  -> POST /fhir/Observation/$screen            (MUST, NRS-2002, MNA)
 //   Assess     -> POST /fhir/Observation/$assess-nutrition  (A: BMI, weight
 //                 change, energy/protein needs + intake, GLIM, and generic
 //                 FH/AD/BD/PD/CH indicators)
@@ -324,6 +324,149 @@ function evaluateNrs(p, ctx) {
   return okRes(collection([entryOf(ctx, obs)]));
 }
 
+// ─── $screen — MNA (Mini Nutritional Assessment, older adults) ─────────────
+//
+// Full MNA as printed on the supplied form (Nestlé Nutrition Institute,
+// revision 2009). Screening items A-F (max 14); a screening score of 12-14 is
+// normal and the form stops there, 11 or less continues to assessment items
+// G-R (max 16). Total max 30: 24-30 normal, 17-23.5 at risk, < 17 malnourished.
+// Items answered by an observation or a measurement (weight loss, BMI, fluid
+// cups, protein markers, MAC, CC, meals) are scored here from the raw value;
+// items that are a clinical or patient judgement are sent as the printed
+// option score. The MNA-SF "calf circumference instead of BMI" substitution is
+// not on this form and is not implemented.
+
+const MNA_SCORE3 = [0, 1, 2];
+const mnaBool = (key, name, rule, score) => ({ key, name, kind: "bool", rule: `must be a boolean (${rule})`, score });
+const mnaChoice = (key, name, allowed, rule) => ({ key, name, kind: "choice", allowed, rule: `must be one of ${allowed.join(", ")} (${rule})`, score: (v) => v });
+const mnaNum = (key, name, min, max, rule, score) => ({ key, name, kind: "num", min, max, rule: `must be a number between ${min} and ${max} (${rule})`, score });
+
+const MNA_SCREENING_ITEMS = [
+  mnaChoice("A", "foodIntakeDeclineScore", MNA_SCORE3, "food intake over the past 3 months: 0 severe decrease, 1 moderate decrease, 2 no decrease"),
+  mnaChoice("C", "mobilityScore", MNA_SCORE3, "0 bed or chair bound, 1 gets out of bed/chair but does not go out, 2 goes out"),
+  mnaBool("D", "psychologicalStressOrAcuteDisease", "psychological stress or acute disease in the past 3 months: true scores 0, false scores 2", (v) => (v ? 0 : 2)),
+  mnaChoice("E", "neuropsychologicalScore", MNA_SCORE3, "0 severe dementia or depression, 1 mild dementia, 2 no psychological problems"),
+];
+
+const MNA_ASSESSMENT_ITEMS = [
+  mnaBool("G", "livesIndependently", "not in a nursing home or hospital: true scores 1, false 0", (v) => (v ? 1 : 0)),
+  mnaBool("H", "moreThan3PrescriptionDrugs", "more than 3 prescription drugs per day: true scores 0, false 1", (v) => (v ? 0 : 1)),
+  mnaBool("I", "pressureSoresOrUlcers", "pressure sores or skin ulcers: true scores 0, false 1", (v) => (v ? 0 : 1)),
+  mnaNum("J", "fullMealsPerDay", 0, 10, "full meals eaten daily: 1 or fewer scores 0, 2 scores 1, 3 or more scores 2", (v) => (v >= 3 ? 2 : v >= 2 ? 1 : 0)),
+  mnaBool("K1", "dairyDaily", "at least one serving of dairy products per day", () => 0),
+  mnaBool("K2", "legumesOrEggsTwiceWeekly", "two or more servings of legumes or eggs per week", () => 0),
+  mnaBool("K3", "meatFishPoultryDaily", "meat, fish or poultry every day", () => 0),
+  mnaBool("L", "fruitOrVegetablesTwoPlusServings", "two or more servings of fruit or vegetables per day: true scores 1, false 0", (v) => (v ? 1 : 0)),
+  mnaNum("M", "fluidCupsPerDay", 0, 40, "cups of fluid per day: under 3 scores 0, 3 to 5 scores 0.5, over 5 scores 1", (v) => (v > 5 ? 1 : v >= 3 ? 0.5 : 0)),
+  mnaChoice("N", "modeOfFeedingScore", MNA_SCORE3, "0 unable to eat without assistance, 1 self-fed with some difficulty, 2 self-fed without any problem"),
+  mnaChoice("O", "selfViewNutritionScore", MNA_SCORE3, "0 views self as malnourished, 1 uncertain, 2 sees no nutritional problem"),
+  mnaChoice("P", "selfViewHealthScore", [0, 0.5, 1, 2], "health compared with others of the same age: 0 not as good, 0.5 does not know, 1 as good, 2 better"),
+  mnaNum("Q", "midArmCircumferenceCm", 5, 60, "MAC in cm: under 21 scores 0, 21 to 22 scores 0.5, over 22 scores 1", (v) => (v > 22 ? 1 : v >= 21 ? 0.5 : 0)),
+  mnaNum("R", "calfCircumferenceCm", 10, 80, "CC in cm: under 31 scores 0, 31 or more scores 1", (v) => (v >= 31 ? 1 : 0)),
+];
+
+/** Reads and validates a list of item specs. Returns { err } on the first malformed value, else { vals, missing }. */
+function mnaRead(p, specs) {
+  const vals = {};
+  const missing = [];
+  for (const s of specs) {
+    const v = p.get(s.name);
+    if (v === undefined) { missing.push(s.name); continue; }
+    const valid = s.kind === "bool" ? typeof v === "boolean" : s.kind === "choice" ? s.allowed.includes(v) : isNum(v) && v >= s.min && v <= s.max;
+    if (!valid) return { err: bad(`'${s.name}' ${s.rule}.`) };
+    vals[s.name] = v;
+  }
+  return { vals, missing };
+}
+
+const mnaScreeningCategory = (s) => (s >= 12 ? "normal" : s >= 8 ? "at-risk" : "malnourished");
+const mnaTotalCategory = (t) => (t >= 24 ? "normal" : t >= 17 ? "at-risk" : "malnourished");
+
+function evaluateMna(p, ctx) {
+  const base = ctx.base;
+  const age = ageYearsFrom(p, ctx.now);
+  if (isNum(age) && age < 18) return unprocessable("MNA here is for adults (18+); it was developed for older adults.");
+
+  // Screening: A, B (weight loss), C, D, E, F (BMI)
+  const sc = mnaRead(p, MNA_SCREENING_ITEMS);
+  if (sc.err) return sc.err;
+  const missing = [...sc.missing];
+
+  const lossUnknown = p.get("weightLossUnknown");
+  if (lossUnknown !== undefined && typeof lossUnknown !== "boolean") return bad("'weightLossUnknown' must be a boolean (true when the patient does not know whether weight was lost: scores 1).");
+  const lossKg = p.get("weightLossKg3Months");
+  if (lossKg !== undefined && !(isNum(lossKg) && lossKg >= -100 && lossKg <= 100)) return bad("'weightLossKg3Months' must be a number in kg (weight lost over the last 3 months; 0 or negative if none).");
+  if (lossUnknown !== true && lossKg === undefined) missing.push("weightLossKg3Months (or weightLossUnknown = true)");
+
+  let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
+  if (bmi === null) {
+    const kg = p.get("weight") ? toKg(p.get("weight")) : null;
+    const cm = p.get("height") ? toCm(p.get("height")) : null;
+    if (kg !== null && cm !== null) bmi = kg / (cm / 100) ** 2;
+    else missing.push("bmi (or weight + height)");
+  }
+  if (missing.length) return bad(`MNA screening needs: ${missing.join(", ")}.`);
+  if (!Number.isFinite(bmi) || bmi <= 0 || bmi > 100) return bad("Computed/provided BMI is not plausible.");
+
+  const bScore = lossUnknown === true ? 1 : lossKg > 3 ? 0 : lossKg >= 1 ? 2 : 3;
+  const fScore = bmi < 19 ? 0 : bmi < 21 ? 1 : bmi < 23 ? 2 : 3;
+  const itemScores = { A: MNA_SCREENING_ITEMS[0].score(sc.vals.foodIntakeDeclineScore), B: bScore };
+  for (const s of MNA_SCREENING_ITEMS.slice(1)) itemScores[s.key] = s.score(sc.vals[s.name]);
+  itemScores.F = fScore;
+  const screeningScore = ["A", "B", "C", "D", "E", "F"].reduce((sum, k) => sum + itemScores[k], 0);
+  const screenNotes = [];
+  if (lossUnknown !== true && lossKg > 0 && lossKg < 1) screenNotes.push("the form has no band for a weight loss under 1 kg: scored as no weight loss (3)");
+  if (isNum(age) && age < 65) screenNotes.push(`the MNA was developed for older adults and this patient is ${age}: interpret with care`);
+
+  const obs = {
+    resourceType: "Observation",
+    status: "final",
+    category: [...stepCategory(base, "screening"), { coding: [{ system: OBS_CATEGORY, code: "survey" }] }],
+    code: { coding: [{ system: cs(base, "screening-tool"), code: "mna", display: "MNA (older adults)" }], text: "Mini Nutritional Assessment (MNA)" },
+    effectiveDateTime: str(p.get("effectiveDateTime")) ?? ctx.now,
+  };
+  const subj = p.get("subject") ? subjectRef(p.get("subject")) : null;
+  if (subj) obs.subject = subj;
+  const ind = (code, v) => ({ code: { coding: [{ system: cs(base, "ncp-indicator"), code }] }, ...v });
+  const score = (value) => ({ valueQuantity: { value, unit: "score", system: UCUM, code: "{score}" } });
+  const category = (code) => ind("mna-risk-category", { valueCodeableConcept: { coding: [{ system: cs(base, "mna-risk"), code }] } });
+  const bmiComponent = { code: { coding: [{ system: LOINC, code: "39156-5", display: "Body mass index (BMI)" }] }, valueQuantity: { value: round(bmi, 1), unit: "kg/m2", system: UCUM, code: "kg/m2" } };
+  const interp = (cat) => [{ coding: [{ system: V3_INTERPRETATION, code: cat === "normal" ? "N" : cat === "at-risk" ? "A" : "AA" }] }];
+  const itemList = (keys) => keys.map((k) => `${k} ${itemScores[k]}`).join(", ");
+  const extra = screenNotes.length ? ` Note: ${screenNotes.join("; ")}.` : "";
+
+  // Screening 12-14: the form stops here.
+  if (screeningScore >= 12) {
+    obs.interpretation = interp("normal");
+    obs.component = [ind("mna-screening-score", { valueInteger: screeningScore }), category("normal"), bmiComponent];
+    obs.note = [{ text: `MNA screening score ${screeningScore} of 14 (${itemList(["A", "B", "C", "D", "E", "F"])}): normal nutritional status (12-14). The form continues to the assessment only when the screening score is 11 or less.${extra} ${SCREENING_NOTE}` }];
+    return okRes(collection([entryOf(ctx, obs)]));
+  }
+
+  // Screening 0-11: assessment G-R is required.
+  const as = mnaRead(p, MNA_ASSESSMENT_ITEMS);
+  if (as.err) return as.err;
+  if (as.missing.length) return bad(`MNA screening score is ${screeningScore} (11 or less), so the assessment items are needed too: ${as.missing.join(", ")}.`);
+  for (const s of MNA_ASSESSMENT_ITEMS) if (s.key[0] !== "K") itemScores[s.key] = s.score(as.vals[s.name]);
+  const kYes = [as.vals.dairyDaily, as.vals.legumesOrEggsTwiceWeekly, as.vals.meatFishPoultryDaily].filter(Boolean).length;
+  itemScores.K = kYes === 3 ? 1 : kYes === 2 ? 0.5 : 0;
+  const assessmentScore = ["G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R"].reduce((sum, k) => sum + itemScores[k], 0);
+  const total = screeningScore + assessmentScore;
+  const cat = mnaTotalCategory(total);
+
+  obs.interpretation = interp(cat);
+  obs.valueQuantity = score(total).valueQuantity;
+  obs.component = [
+    ind("mna-screening-score", { valueInteger: screeningScore }),
+    ind("mna-assessment-score", score(assessmentScore)),
+    category(cat),
+    bmiComponent,
+  ];
+  const label = { normal: "normal nutritional status (24-30)", "at-risk": "at risk of malnutrition (17-23.5)", malnourished: "malnourished (below 17)" }[cat];
+  obs.note = [{ text: `MNA total ${total} of 30: ${label}. Screening ${screeningScore} of 14 (${itemList(["A", "B", "C", "D", "E", "F"])}; screening alone read ${mnaScreeningCategory(screeningScore).replace("-", " ")}), assessment ${assessmentScore} of 16 (${itemList(["G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R"])}).${extra} ${SCREENING_NOTE}` }];
+  return okRes(collection([entryOf(ctx, obs)]));
+}
+
 // ─── $screen — MUST (Malnutrition Universal Screening Tool, adults) ────────
 
 export function evaluateScreen(body, ctx) {
@@ -334,7 +477,8 @@ export function evaluateScreen(body, ctx) {
 
   const tool = str(p.get("tool")) ?? "must";
   if (tool === "nrs-2002") return evaluateNrs(p, ctx);
-  if (tool !== "must") return bad("'tool' must be must (default) or nrs-2002.");
+  if (tool === "mna") return evaluateMna(p, ctx);
+  if (tool !== "must") return bad("'tool' must be must (default), nrs-2002 or mna.");
 
   let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
   const kg = p.get("weight") ? toKg(p.get("weight")) : null;

@@ -86,6 +86,9 @@ const CODE_SYSTEMS = {
       c("nrs-disease-severity-score", "NRS-2002 severity of disease score (0-3)"),
       c("nrs-age-adjustment", "NRS-2002 age adjustment", "1 if age is 70 or over, else 0."),
       c("nrs-risk-category", "NRS-2002 risk category"),
+      c("mna-screening-score", "MNA screening score (0-14)", "Items A-F of the Mini Nutritional Assessment."),
+      c("mna-assessment-score", "MNA assessment score (0-16)", "Items G-R; present only when the screening score is 11 or less."),
+      c("mna-risk-category", "MNA risk category", "From the Malnutrition Indicator Score when the assessment was done, otherwise from the screening score."),
     ],
   },
   "screening-tool": {
@@ -94,6 +97,7 @@ const CODE_SYSTEMS = {
     concepts: [
       c("must", "MUST score (adult)", "Malnutrition Universal Screening Tool: BMI score + weight-loss score + acute-disease score."),
       c("nrs-2002", "NRS-2002 (adult)", "Nutritional Risk Screening 2002: initial screening, then nutritional-status + disease-severity score, +1 if age 70 or over."),
+      c("mna", "MNA (older adults)", "Mini Nutritional Assessment: screening items A-F (max 14), then assessment items G-R (max 16) when the screening score is 11 or less; total max 30."),
     ],
   },
   "must-risk": {
@@ -108,6 +112,15 @@ const CODE_SYSTEMS = {
       c("at-risk", "Nutritionally at risk", "Age-adjusted total score 3 or more: initiate a nutritional care plan."),
       c("not-at-risk", "Not at risk", "Age-adjusted total score below 3: re-screen weekly."),
       c("final-screening-not-required", "Final screening not required", "All four initial questions answered no: re-screen weekly."),
+    ],
+  },
+  "mna-risk": {
+    title: "MNA risk category",
+    description: "Malnutrition Indicator Score: 24-30 normal, 17-23.5 at risk, below 17 malnourished. When only screening was done: 12-14 normal.",
+    concepts: [
+      c("normal", "Normal nutritional status", "Total 24-30, or screening score 12-14."),
+      c("at-risk", "At risk of malnutrition", "Total 17-23.5."),
+      c("malnourished", "Malnourished", "Total below 17."),
     ],
   },
   "who-adult-bmi-class": {
@@ -221,12 +234,13 @@ const OPERATIONS = {
     ],
   },
   "Observation-screen": {
-    resource: "Observation", code: "screen", title: "Nutrition screening (MUST or NRS-2002, adults)",
+    resource: "Observation", code: "screen", title: "Nutrition screening (MUST, NRS-2002 or MNA)",
     description:
       "tool=must (default): Malnutrition Universal Screening Tool score and risk category; provide bmi, or weight + height; and weightLossPercent3to6Months, or usualWeight + weight. " +
-      "tool=nrs-2002: two-stage NRS-2002 as printed in the source appendix (initial screening, then nutritional status + disease severity + age 70+); disease severity and impaired general condition are clinician inputs." + QUANTITY_NOTE,
+      "tool=nrs-2002: two-stage NRS-2002 as printed in the source appendix (initial screening, then nutritional status + disease severity + age 70+); disease severity and impaired general condition are clinician inputs. " +
+      "tool=mna: Mini Nutritional Assessment as printed on the Nestle form; screening items A-F always, assessment items G-R only when the screening score is 11 or less (12-14 stops at normal). Measured items are scored from raw values, judgement items are sent as the printed option score." + QUANTITY_NOTE,
     parameters: [
-      P("tool", "code", 0, "1", "must (default) | nrs-2002"),
+      P("tool", "code", 0, "1", "must (default) | nrs-2002 | mna"),
       P("bmi", "decimal", 0, "1", "BMI in kg/m2. Alternative to weight + height."),
       P("weight", "Quantity", 0, "1", "Current weight."),
       P("height", "Quantity", 0, "1", "Height."),
@@ -242,6 +256,26 @@ const OPERATIONS = {
       P("diseaseSeverityScore", "integer", 0, "1", "NRS-2002: severity of disease 0 absent, 1 mild, 2 moderate, 3 severe. Required when initial screening is positive."),
       P("severelyIll", "boolean", 0, "1", "NRS-2002 initial question 4. Defaults to diseaseSeverityScore = 3."),
       P("reducedIntakeLastWeek", "boolean", 0, "1", "NRS-2002 initial question 3. Defaults to intakePercentOfRequirement < 100."),
+      P("foodIntakeDeclineScore", "integer", 0, "1", "MNA A (required): food intake over the past 3 months. 0 severe decrease, 1 moderate decrease, 2 no decrease."),
+      P("weightLossKg3Months", "decimal", 0, "1", "MNA B: kg lost over the last 3 months (0 or negative if none): over 3 scores 0, 1 to 3 scores 2, none scores 3. Required unless weightLossUnknown is true."),
+      P("weightLossUnknown", "boolean", 0, "1", "MNA B: true when the patient does not know whether weight was lost (scores 1)."),
+      P("mobilityScore", "integer", 0, "1", "MNA C (required): 0 bed or chair bound, 1 gets out of bed/chair but does not go out, 2 goes out."),
+      P("psychologicalStressOrAcuteDisease", "boolean", 0, "1", "MNA D (required): psychological stress or acute disease in the past 3 months (true scores 0, false 2)."),
+      P("neuropsychologicalScore", "integer", 0, "1", "MNA E (required): 0 severe dementia or depression, 1 mild dementia, 2 no psychological problems."),
+      P("livesIndependently", "boolean", 0, "1", "MNA G: lives independently, not in a nursing home or hospital. Required when the screening score is 11 or less."),
+      P("moreThan3PrescriptionDrugs", "boolean", 0, "1", "MNA H: more than 3 prescription drugs per day."),
+      P("pressureSoresOrUlcers", "boolean", 0, "1", "MNA I: pressure sores or skin ulcers."),
+      P("fullMealsPerDay", "decimal", 0, "1", "MNA J: full meals eaten daily (1 or fewer 0, 2 scores 1, 3 or more scores 2)."),
+      P("dairyDaily", "boolean", 0, "1", "MNA K: at least one serving of dairy products per day."),
+      P("legumesOrEggsTwiceWeekly", "boolean", 0, "1", "MNA K: two or more servings of legumes or eggs per week."),
+      P("meatFishPoultryDaily", "boolean", 0, "1", "MNA K: meat, fish or poultry every day. K scores 0 for 0-1 yes, 0.5 for 2, 1 for 3."),
+      P("fruitOrVegetablesTwoPlusServings", "boolean", 0, "1", "MNA L: two or more servings of fruit or vegetables per day."),
+      P("fluidCupsPerDay", "decimal", 0, "1", "MNA M: cups of fluid per day (under 3 scores 0, 3 to 5 scores 0.5, over 5 scores 1)."),
+      P("modeOfFeedingScore", "integer", 0, "1", "MNA N: 0 unable to eat without assistance, 1 self-fed with some difficulty, 2 self-fed without any problem."),
+      P("selfViewNutritionScore", "integer", 0, "1", "MNA O: 0 views self as malnourished, 1 uncertain, 2 sees no nutritional problem."),
+      P("selfViewHealthScore", "decimal", 0, "1", "MNA P: health compared with others of the same age: 0 not as good, 0.5 does not know, 1 as good, 2 better."),
+      P("midArmCircumferenceCm", "decimal", 0, "1", "MNA Q: mid-arm circumference in cm (under 21 scores 0, 21 to 22 scores 0.5, over 22 scores 1)."),
+      P("calfCircumferenceCm", "decimal", 0, "1", "MNA R: calf circumference in cm (under 31 scores 0, 31 or more scores 1)."),
       SUBJECT_OPT, EFFECTIVE,
     ],
   },
