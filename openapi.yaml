@@ -41,6 +41,7 @@ tags:
   - name: MUAC for age
   - name: MUAC fixed cut-offs
   - name: Length height for age
+  - name: Weight for age
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -1647,6 +1648,102 @@ paths:
       tags: [Length height for age]
       summary: Bulk-create length/height-for-age rows (admin)
       description: Seed files scripts/length_height_for_age_seed.json (124 rows, 0-60 months) and scripts/height_for_age_5_19_seed.json (336 rows, 61-228 months; run sql/023 first). A unique (sex, age_months, measured) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /weight-for-age/classify:
+    get:
+      tags: [Weight for age]
+      summary: Classify weight-for-age (underweight), birth to 10 years
+      description: >
+        WHO weight-for-age as a z-score (2006 standards to 60 months, 2007
+        reference 61-120 months). Strict cut-offs: severely underweight below
+        -3SD, underweight below -2SD, normal -2SD to +2SD, high weight-for-age
+        above +2SD, very high above +3SD. Not used to diagnose overweight; use
+        weight-for-length/height or BMI-for-age. implausible is true when z < -6
+        or z > +5. Screening aid only, not a diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: age_months
+          in: query
+          required: true
+          description: Whole completed months
+          schema: { type: integer, minimum: 0, maximum: 120 }
+        - name: weight_kg
+          in: query
+          description: Weight in KILOGRAMS
+          schema: { type: number }
+        - name: weight_g
+          in: query
+          description: Weight in GRAMS (used if weight_kg is absent)
+          schema: { type: number }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          age_months: { type: integer }
+                          status:
+                            type: string
+                            enum: [severely underweight, underweight, normal, high weight-for-age, very high weight-for-age]
+                          weight_kg: { type: number }
+                          z_score: { type: number, nullable: true }
+                          percentile: { type: number, nullable: true }
+                          implausible: { type: boolean, nullable: true }
+                          cutoffs:
+                            type: object
+                            additionalProperties: { type: number }
+                            description: Keys -3SD, -2SD, -1SD, median, +1SD, +2SD, +3SD (kg)
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /weight-for-age:
+    get:
+      tags: [Weight for age]
+      summary: List WHO weight-for-age rows (kg, with L/M/S)
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          schema: { type: string }
+        - name: age_months
+          in: query
+          schema: { type: integer }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /weight-for-age/bulk:
+    post:
+      tags: [Weight for age]
+      summary: Bulk-create weight-for-age rows (admin)
+      description: Seed file scripts/weight_for_age_seed.json (242 rows). A unique (sex, age_months) constraint rejects re-seeding.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true

@@ -533,6 +533,7 @@ import { parseWeightVelocityQuery, classifyWeightVelocity } from "./weightVeloci
 import { parseMuacForAgeQuery, classifyMuacForAge } from "./muacForAge.js";
 import { parseMuacFixedQuery, classifyMuacFixed } from "./muacFixed.js";
 import { parseLhfaQuery, pickRowAndValue, classifyLhfa } from "./lengthHeightForAge.js";
+import { parseWeightForAgeQuery, classifyWeightForAge } from "./weightForAge.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -765,7 +766,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -902,7 +903,7 @@ function routePolicy(resource, method, param, action) {
   const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
   const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "fenton-preterm"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2632,6 +2633,61 @@ async function handleLengthHeightForAge(request, url, db, param) {
     filters.age_months = `eq.${Number(age)}`;
   }
   return await paginatedList(db, "who_length_height_for_age", url, { filters, order: "age_months.asc" });
+}
+
+// ─── WEIGHT-FOR-AGE (/weight-for-age) ─────────────────────────────────────
+//
+// WHO weight-for-age (kg), birth to 10 years: 2006 standards to 60 months,
+// 2007 reference 61-120 months (see sql/024_add_who_weight_for_age.sql and
+// src/weightForAge.js). Public reads; the table is filled once via
+// POST /weight-for-age/bulk (admin). Returns the underweight band plus an
+// exact z-score and percentile. Screening aid only; not for diagnosing
+// overweight (use weight-for-length/height or BMI-for-age).
+async function handleWeightForAge(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /weight-for-age/bulk (admin).", 405);
+  }
+
+  if (param === "classify") {
+    const parsed = parseWeightForAgeQuery(url.searchParams);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.select("who_weight_for_age", {
+      filters: { sex: `eq.${parsed.sex}`, age_months: `eq.${parsed.ageMonths}` },
+      limit: 1,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const row = Array.isArray(body) ? body[0] : null;
+    if (!row) return notFound("Weight-for-age reference row (has sql/024 been run and the table seeded?)");
+
+    const result = classifyWeightForAge(row, parsed.weightKg);
+    return success(
+      {
+        sex: parsed.sex,
+        age_months: row.age_months,
+        ...result,
+        source: row.source,
+        note: "Screening aid only, not a diagnosis. Weight-for-age as a WHO z-score: severely underweight < -3SD, underweight < -2SD, normal -2SD to +2SD, high weight-for-age > +2SD, very high > +3SD. Weight-for-age is not used to diagnose overweight or obesity: a high value means check weight-for-length/height (under 5 years) or BMI-for-age (5 years and over). It also cannot tell wasting from stunting, so interpret with length/height-for-age and weight-for-length/height. WHO publishes weight-for-age only to 10 years. Beyond +/-3SD the z-score is extended linearly as in the WHO tables; implausible = true when z < -6 or z > +5, which usually means a measuring or recording error. Confirm the age and repeat the weighing.",
+      },
+      { message: "Weight-for-age classification" }
+    );
+  }
+
+  if (param) return notFound("Weight-for-age route");
+
+  const filters = {};
+  const sex = url.searchParams.get("sex");
+  if (sex) {
+    const n = normalizeHcSex(sex);
+    if (!n) return err("'sex' must be girls or boys");
+    filters.sex = `eq.${n}`;
+  }
+  const age = url.searchParams.get("age_months");
+  if (age) {
+    if (!Number.isInteger(Number(age))) return err("'age_months' must be a whole number");
+    filters.age_months = `eq.${Number(age)}`;
+  }
+  return await paginatedList(db, "who_weight_for_age", url, { filters, order: "age_months.asc" });
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -6922,6 +6978,11 @@ function handleRoot(env) {
         "GET  /length-height-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, cm, plus L/M/S)",
         "POST /length-height-for-age/bulk    (admin) → body {items:[...]}; seed files: scripts/length_height_for_age_seed.json (124 rows, 0-60 months) and scripts/height_for_age_5_19_seed.json (336 rows, 61-228 months; run sql/023 first)",
       ],
+      weight_for_age: [
+        "GET  /weight-for-age/classify?sex=girls&age_months=12&weight_kg=8.5  → WHO weight-for-age underweight band + exact z-score and percentile (0-120 months = birth to 10 years; or pass &weight_g=); screening aid, see sql/024_add_who_weight_for_age.sql",
+        "GET  /weight-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, kg, plus L/M/S)",
+        "POST /weight-for-age/bulk    (admin) → body {items:[...]}, 242 rows; seed file: scripts/weight_for_age_seed.json",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -8335,6 +8396,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleLengthHeightForAge(request, url, db, param || null);
+    }
+
+    case "weight-for-age": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "who_weight_for_age", {
+          requiredField: "sex",
+          label: "weight-for-age rows",
+        });
+      }
+      return await handleWeightForAge(request, url, db, param || null);
     }
 
     case "fenton-preterm": {

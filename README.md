@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -616,7 +616,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, and
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, `/weight-for-age/bulk`, and
 `/fenton-preterm/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
@@ -924,6 +924,24 @@ GET /length-height-for-age/classify?sex=girls&age_months=18&length_cm=78
 ```
 
 Setup: run `sql/022_add_who_length_height_for_age.sql` then `sql/023_extend_length_height_for_age_to_19y.sql` in the Supabase SQL editor, then `POST /length-height-for-age/bulk` once with each seed file.
+
+### Weight-for-age (`/weight-for-age`)
+
+WHO **weight-for-age** (kg), birth to 10 years, girls and boys (the underweight indicator): the 2006 Child Growth Standards for 0-60 months and the 2007 growth reference for 61-120 months. WHO does not publish weight-for-age beyond 10 years; older children use [BMI-for-age](#bmi-for-age-bmi-for-age). Table: [`sql/024_add_who_weight_for_age.sql`](sql/024_add_who_weight_for_age.sql), 242 rows. Logic: [`src/weightForAge.js`](src/weightForAge.js).
+
+**Where the numbers come from:** each row stores the table's L, M, S. The 0-60 month cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal); the 61-120 month cut-offs are WHO's printed 3-decimal values. A unit test re-checks every row. `z = ((x/M)^L - 1) / (L*S)`, and beyond +/-3 SD WHO's linear extension is used. Rebuild the seed with `python3 scripts/build_wfa_seed.py <girls_0_5.xlsx> <boys_0_5.xlsx> <girls_5_10.xlsx> <boys_5_10.xlsx>`.
+
+- `GET /weight-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-120), and `weight_kg` or `weight_g`. Returns `status`, `weight_kg`, `z_score`, `percentile`, `implausible` and the `cutoffs` (kg) used.
+- `GET /weight-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
+- `POST /weight-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/weight_for_age_seed.json`](scripts/weight_for_age_seed.json). A unique `(sex, age_months)` constraint rejects re-seeding.
+
+Bands (strict): severely underweight < -3SD, underweight < -2SD, normal -2SD to +2SD, high weight-for-age > +2SD, very high > +3SD. `implausible` is true when z < -6 or z > +5 (usually a measuring or recording error). Weight-for-age is **not** used to diagnose overweight or obesity (use weight-for-length/height under 5 years, BMI-for-age from 5 years), and it cannot tell wasting from stunting. There is a small step at 60/61 months where WHO switches from the 2006 standards to the 2007 reference. Screening aid only, not a diagnosis.
+
+```
+GET /weight-for-age/classify?sex=girls&age_months=12&weight_kg=8.5
+```
+
+Setup: run `sql/024_add_who_weight_for_age.sql` in the Supabase SQL editor, then `POST /weight-for-age/bulk` once with the seed file.
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 
