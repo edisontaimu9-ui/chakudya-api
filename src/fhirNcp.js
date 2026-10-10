@@ -4,7 +4,7 @@
 // growth classification). This module covers the whole process as the
 // Academy of Nutrition and Dietetics defines it:
 //
-//   Screening  -> POST /fhir/Observation/$screen            (MUST, NRS-2002, MNA, SGA, PG-SGA)
+//   Screening  -> POST /fhir/Observation/$screen            (MUST, NRS-2002, MNA, SGA, PG-SGA, NACS classification)
 //   Assess     -> POST /fhir/Observation/$assess-nutrition  (A: BMI, weight
 //                 change, energy/protein needs + intake, GLIM, and generic
 //                 FH/AD/BD/PD/CH indicators)
@@ -855,6 +855,193 @@ function evaluatePgSga(p, ctx) {
   return okRes(collection([entryOf(ctx, obs)]));
 }
 
+// ─── $screen — NACS classification (MUAC, BMI, BMI-for-age, bilateral pitting edema) ──
+//
+// As printed in the FANTA NACS User's Guide, Module 2 (May 2016, version 2),
+// "Anthropometric assessment" and "Clinical assessment". Cutoffs are the
+// guide's "recommended standards"; countries may use different ones.
+// Implemented as printed: MUAC cutoffs for children 6-59 months, 5-9 and 10-14
+// years and for adults (separate columns for pregnant/postpartum), the adult
+// BMI bands, the BMI-for-age z-score bands (5-18 years), the pre-pregnancy
+// BMI table, and bilateral pitting edema (severe malnutrition on its own,
+// regardless of anthropometry; grade +++ inpatient, grades + and ++ outpatient
+// only with appetite and no medical complications).
+// Not in the guide, so not implemented: weight-for-height z-score cutoffs
+// (the guide names the index but prints no cutoffs), MUAC cutoffs for 15-17
+// year-olds or for pregnant women under 18, and any rule for combining
+// several indicators into one status: each is reported on its own, and a
+// top-level value is set only when exactly one indicator was classified.
+// BMI is rounded to 1 decimal before banding, to match the 1-decimal cutoffs.
+
+const NACS_STATUS = {
+  sam: "severe acute malnutrition (SAM)", mam: "moderate acute malnutrition (MAM)", "severe-malnutrition": "severe malnutrition",
+  "moderate-malnutrition": "moderate malnutrition", "mild-malnutrition": "mild malnutrition", normal: "normal nutritional status",
+  overweight: "overweight", obesity: "obesity",
+};
+// [from months, to months (exclusive), label, SAM below mm, MAM below mm]
+const NACS_CHILD_MUAC = [[6, 60, "6-59 months", 115, 125], [60, 120, "5-9 years", 135, 145], [120, 180, "10-14 years", 160, 185]];
+const NACS_ADULT_MUAC = { standard: { label: "adults (not pregnant or postpartum)", sam: 185, mod: 220 }, pregnant: { label: "adults (pregnant or up to 6 months postpartum)", sam: 190, mod: 230 } };
+
+function nacsAgeMonths(p, now) {
+  const m = p.get("ageMonths");
+  if (m !== undefined) return isNum(m) && Number.isInteger(m) && m >= 0 && m <= 1500 ? { months: m } : { err: bad("'ageMonths' must be a whole number of months (0 to 1500).") };
+  const birth = str(p.get("birthDate"));
+  if (birth) {
+    const b = new Date(birth);
+    const at = new Date(str(p.get("effectiveDateTime")) ?? now);
+    if (isNaN(b) || isNaN(at)) return { err: bad("'birthDate' and 'effectiveDateTime' must be valid dates.") };
+    let months = (at.getFullYear() - b.getFullYear()) * 12 + (at.getMonth() - b.getMonth());
+    if (at.getDate() < b.getDate()) months -= 1;
+    return months >= 0 ? { months } : { err: bad("'birthDate' is after the assessment date.") };
+  }
+  const y = p.get("ageYears");
+  if (y !== undefined) {
+    if (!isNum(y) || y < 0 || y > 120) return { err: bad("'ageYears' must be between 0 and 120.") };
+    if (y < 5) return { err: bad("Under 5 years the classification depends on the month: send 'ageMonths' or 'birthDate'.") };
+    return { months: Math.floor(y) * 12 };
+  }
+  return { months: null };
+}
+
+function nacsMuac(mm, ageMonths, pregnant) {
+  if (ageMonths === null) return { err: bad("MUAC classification needs 'ageMonths', 'ageYears' (5 or over) or 'birthDate'.") };
+  if (ageMonths < 6) return { err: unprocessable("The guide says MUAC is not currently recommended for infants under 6 months.") };
+  if (ageMonths < 216) {
+    if (pregnant) return { err: unprocessable("The guide prints pregnant/postpartum MUAC cutoffs for adults only; none for under 18.") };
+    const row = NACS_CHILD_MUAC.find(([from, to]) => ageMonths >= from && ageMonths < to);
+    if (!row) return { err: unprocessable("The guide prints MUAC cutoffs for children 6 months to 14 years; none for 15 to 17 years.") };
+    const [, , label, sam, mam] = row;
+    return { status: mm < sam ? "sam" : mm < mam ? "mam" : "normal", cutoffs: `children ${label}: SAM under ${sam} mm, MAM ${sam} to under ${mam} mm, normal ${mam} mm or more` };
+  }
+  const t = pregnant ? NACS_ADULT_MUAC.pregnant : NACS_ADULT_MUAC.standard;
+  return { status: mm < t.sam ? "sam" : mm < t.mod ? "moderate-malnutrition" : "normal", cutoffs: `${t.label}: SAM under ${t.sam} mm, moderate malnutrition ${t.sam} to under ${t.mod} mm, normal ${t.mod} mm or more` };
+}
+
+const nacsAdultBmi = (b) => (b < 16 ? "severe-malnutrition" : b < 17 ? "moderate-malnutrition" : b < 18.5 ? "mild-malnutrition" : b < 25 ? "normal" : b < 30 ? "overweight" : "obesity");
+const nacsBmiForAge = (z) => (z < -3 ? "severe-malnutrition" : z < -2 ? "moderate-malnutrition" : z <= 1 ? "normal" : z <= 2 ? "overweight" : "obesity");
+const nacsPrePregnancyBmi = (b) => (b < 18.5 ? "underweight" : b < 25 ? "normal-weight" : b < 30 ? "overweight" : "obese");
+
+function evaluateNacs(p, ctx) {
+  const base = ctx.base;
+  const ind = (code, v, text) => ({ code: { coding: [{ system: cs(base, "ncp-indicator"), code }], ...(text ? { text } : {}) }, ...v });
+  const statusComp = (code, status) => ind(code, { valueCodeableConcept: { coding: [{ system: cs(base, "nacs-status"), code: status }] } });
+
+  const edemaGrade = p.get("edemaGrade");
+  if (edemaGrade !== undefined && !(Number.isInteger(edemaGrade) && edemaGrade >= 0 && edemaGrade <= 3)) return bad("'edemaGrade' must be an integer 0-3 (0 none, 1 grade +, 2 grade ++, 3 grade +++).");
+  const pregnant = p.get("pregnantOrPostpartum");
+  if (pregnant !== undefined && typeof pregnant !== "boolean") return bad("'pregnantOrPostpartum' must be a boolean (pregnant or up to 6 months postpartum).");
+  const obs = {
+    resourceType: "Observation",
+    status: "final",
+    category: [...stepCategory(base, "screening"), { coding: [{ system: OBS_CATEGORY, code: "survey" }] }],
+    code: { coding: [{ system: cs(base, "screening-tool"), code: "nacs", display: "NACS classification" }], text: "NACS nutritional status classification (MUAC, BMI, BMI-for-age, bilateral pitting edema)" },
+    effectiveDateTime: str(p.get("effectiveDateTime")) ?? ctx.now,
+  };
+  const subj = p.get("subject") ? subjectRef(p.get("subject")) : null;
+  if (subj) obs.subject = subj;
+
+  // Bilateral pitting edema: severe malnutrition on its own, whatever the anthropometry says
+  let edemaNote = "";
+  if (edemaGrade > 0) {
+    const both = p.get("edemaBothFeetOrLegs");
+    if (typeof both !== "boolean") return bad("'edemaBothFeetOrLegs' (boolean) is required when edemaGrade is above 0: the guide counts edema as a sign of severe malnutrition ONLY if it is in both feet or both legs.");
+    if (both) {
+      let disposition;
+      if (edemaGrade === 3) disposition = "inpatient-sam-management";
+      else {
+        const appetite = p.get("hasAppetite");
+        const complications = p.get("hasMedicalComplications");
+        if (typeof appetite !== "boolean" || typeof complications !== "boolean") return bad("'hasAppetite' and 'hasMedicalComplications' (booleans) are required for edema grade 1 or 2: the guide's outpatient route is for grades + and ++ with appetite and no medical complications.");
+        disposition = appetite && !complications ? "outpatient-sam-treatment" : "not-stated-by-guide";
+      }
+      obs.valueCodeableConcept = { coding: [{ system: cs(base, "nacs-status"), code: "sam" }] };
+      obs.component = [
+        ind("nacs-edema-grade", { valueInteger: edemaGrade }, ["", "+", "++", "+++"][edemaGrade]),
+        ind("nacs-edema-disposition", { valueCodeableConcept: { coding: [{ system: cs(base, "nacs-disposition"), code: disposition }] } }),
+      ];
+      const dispText = {
+        "inpatient-sam-management": "grade +++ is admitted for inpatient management of severe acute malnutrition, even with appetite and no medical complications",
+        "outpatient-sam-treatment": `grade ${["", "+", "++"][edemaGrade]} with appetite and no medical complications is treated for severe acute malnutrition on an outpatient basis`,
+        "not-stated-by-guide": `the guide states the outpatient route only for grades + and ++ with appetite and no medical complications; for this case it says nothing, so the clinician decides`,
+      }[disposition];
+      obs.note = [{ text: `Bilateral pitting edema grade ${["", "+", "++", "+++"][edemaGrade]}: severe acute malnutrition on its own, regardless of anthropometric results, so no anthropometric indicator was classified. In adults edema often has non-nutritional causes (for example heart, lymphatic or kidney disease), which the clinician rules out. Management per the guide: ${dispText}. ${SCREENING_NOTE}` }];
+      return okRes(collection([entryOf(ctx, obs)]));
+    }
+    edemaNote = " Edema was reported but not in both feet or legs, so it was not counted as a sign of severe malnutrition.";
+  }
+
+  const age = nacsAgeMonths(p, ctx.now);
+  if (age.err) return age.err;
+  const results = [];
+  const comps = [];
+  const cutoffNotes = [];
+  const notes = [];
+
+  // MUAC
+  const muac = p.get("muacMm");
+  if (muac !== undefined) {
+    if (!(isNum(muac) && muac >= 50 && muac <= 500)) return bad("'muacMm' must be the MUAC in millimetres (50 to 500).");
+    const r = nacsMuac(muac, age.months, pregnant === true);
+    if (r.err) return r.err;
+    results.push({ kind: "MUAC", status: r.status });
+    comps.push(ind("nacs-muac", { valueQuantity: { value: muac, unit: "mm", system: UCUM, code: "mm" } }), statusComp("nacs-muac-status", r.status));
+    cutoffNotes.push(`MUAC ${muac} mm, ${r.cutoffs}`);
+    if (edemaGrade > 0) notes.push("the guide says MUAC should not be used to assess nutritional status in people with edema: interpret with care");
+  }
+
+  // BMI (adults) / BMI-for-age (5-17 years)
+  const hasBmiInput = p.get("bmi") !== undefined || (p.get("weight") !== undefined && p.get("height") !== undefined);
+  if (hasBmiInput && pregnant === true) return unprocessable("The guide says BMI is not an accurate indicator of nutritional status in pregnant women: use MUAC (and 'prePregnancyBmi' for the pre-pregnancy category).");
+  const z = p.get("bmiForAgeZScore");
+  if (z !== undefined && !(isNum(z) && z >= -10 && z <= 10)) return bad("'bmiForAgeZScore' must be a z-score between -10 and 10.");
+  if (z !== undefined) {
+    if (age.months === null) return bad("BMI-for-age needs 'ageMonths', 'ageYears' (5 or over) or 'birthDate'.");
+    if (age.months < 60 || age.months >= 216) return unprocessable("The guide uses BMI-for-age for children and adolescents 5 to 17 years; adults (18 and over) use BMI.");
+    const status = nacsBmiForAge(z);
+    results.push({ kind: "BMI-for-age", status });
+    comps.push(ind("nacs-bmi-for-age-z-score", { valueQuantity: { value: round(z, 2), unit: "z-score", system: UCUM, code: "{z-score}" } }), statusComp("nacs-bmi-for-age-status", status));
+    cutoffNotes.push(`BMI-for-age z-score ${round(z, 2)}: under -3 severe, -3 to under -2 moderate, -2 to +1 normal, over +1 to +2 overweight, over +2 obesity`);
+  }
+  if (hasBmiInput && z === undefined) {
+    if (age.months === null) return bad("BMI classification needs 'ageMonths', 'ageYears' (5 or over) or 'birthDate'.");
+    if (age.months < 216) return bad("Under 18 the guide uses the BMI-for-age z-score, which needs age- and sex-specific WHO reference tables: send 'bmiForAgeZScore' (Observation/$evaluate-growth computes it from 5 to 19 years).");
+    let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
+    if (bmi === null) {
+      const kg = toKg(p.get("weight"));
+      const cm = toCm(p.get("height"));
+      if (kg === null || cm === null) return bad("Provide 'bmi', or both 'weight' (kg/g) and 'height' (cm/m) Quantities.");
+      bmi = kg / (cm / 100) ** 2;
+    }
+    if (!Number.isFinite(bmi) || bmi < 5 || bmi > 100) return bad("Computed/provided BMI is not plausible.");
+    const b = round(bmi, 1);
+    const status = nacsAdultBmi(b);
+    results.push({ kind: "BMI", status });
+    comps.push(ind("nacs-bmi", { valueQuantity: { value: b, unit: "kg/m2", system: UCUM, code: "kg/m2" } }), statusComp("nacs-bmi-status", status));
+    cutoffNotes.push(`BMI ${b}: under 16 severe, 16 to under 17 moderate, 17 to under 18.5 mild, 18.5 to under 25 normal, 25 to under 30 overweight, 30 or more obesity`);
+    if (edemaGrade > 0) notes.push("the guide says BMI is not accurate in adults with edema and MUAC should be used instead, but also says MUAC is not for people with edema: the clinician decides");
+  }
+
+  // Pre-pregnancy BMI category (recommended pre-pregnancy BMI table)
+  const pre = p.get("prePregnancyBmi");
+  if (pre !== undefined) {
+    if (!(isNum(pre) && pre >= 5 && pre <= 100)) return bad("'prePregnancyBmi' must be a plausible BMI in kg/m2.");
+    const cat = nacsPrePregnancyBmi(round(pre, 1));
+    comps.push(ind("nacs-pre-pregnancy-bmi", { valueQuantity: { value: round(pre, 1), unit: "kg/m2", system: UCUM, code: "kg/m2" } }),
+      ind("nacs-pre-pregnancy-bmi-category", { valueCodeableConcept: { coding: [{ system: cs(base, "nacs-prepregnancy-bmi"), code: cat }] } }));
+    cutoffNotes.push(`pre-pregnancy BMI ${round(pre, 1)}: ${cat.replace("-", " ")} (under 18.5 underweight, 18.5-24.9 normal weight, 25.0-29.9 overweight, 30 or more obese)`);
+  }
+
+  if (comps.length === 0) return bad("NACS needs something to classify: 'muacMm', 'bmi' (or 'weight' + 'height'; 'bmiForAgeZScore' under 18), 'prePregnancyBmi', or 'edemaGrade' above 0 with 'edemaBothFeetOrLegs' true.");
+  if (edemaGrade !== undefined) comps.push(ind("nacs-edema-grade", { valueInteger: edemaGrade }, ["none", "+", "++", "+++"][edemaGrade]));
+  obs.component = comps;
+  if (results.length === 1) obs.valueCodeableConcept = { coding: [{ system: cs(base, "nacs-status"), code: results[0].status }] };
+  const summary = results.length === 0 ? "No nutritional status indicator was classified."
+    : results.length === 1 ? `${results[0].kind}: ${NACS_STATUS[results[0].status]}.`
+      : `${results.map((r) => `${r.kind}: ${NACS_STATUS[r.status]}`).join("; ")}. The guide gives no rule for combining indicators, so each is reported on its own and there is no single value.`;
+  obs.note = [{ text: `${summary} Cutoffs used: ${cutoffNotes.join("; ")}.${notes.length ? ` Note: ${notes.join("; ")}.` : ""}${edemaNote} The cutoffs are the NACS guide's recommended standards; countries may use different ones. ${SCREENING_NOTE}` }];
+  return okRes(collection([entryOf(ctx, obs)]));
+}
+
 // ─── $screen — MUST (Malnutrition Universal Screening Tool, adults) ────────
 
 export function evaluateScreen(body, ctx) {
@@ -868,7 +1055,8 @@ export function evaluateScreen(body, ctx) {
   if (tool === "mna") return evaluateMna(p, ctx);
   if (tool === "sga") return evaluateSga(p, ctx);
   if (tool === "pg-sga") return evaluatePgSga(p, ctx);
-  if (tool !== "must") return bad("'tool' must be must (default), nrs-2002, mna, sga or pg-sga.");
+  if (tool === "nacs") return evaluateNacs(p, ctx);
+  if (tool !== "must") return bad("'tool' must be must (default), nrs-2002, mna, sga, pg-sga or nacs.");
 
   let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
   const kg = p.get("weight") ? toKg(p.get("weight")) : null;

@@ -817,6 +817,15 @@ function emittedSamples() {
   for (const rating of ["A", "B", "C"]) keep(evaluateScreen(sga({ overallRating: rating, subject: "Patient/42", tricepsFat: "C", temple: "B", oedema: "A" }), ctx));
   keep(evaluateScreen(sga({ weightChange2Weeks: "increase-1-level-above", weightChange2WeeksGrade: "B", dietaryIntake: "poor-no-change", dietaryIntakeGrade: "C", functionalCapacity: "bed-chair-ridden", functionalChange2Weeks: "regressed", nauseaDailyOver2Weeks: true, vomitingDailyOver2Weeks: true, diarrhoeaDailyOver2Weeks: true, anorexiaDailyOver2Weeks: true, weightLossPercent6Months: 12, underEyesFat: "C", bicepsFat: "A", clavicle: "C", shoulder: "B", scapulaRibs: "A", quadriceps: "C", calf: "C", knee: "A", interosseousMuscle: "C", ascites: "B", overallRating: "C" }), ctx));
   // Assessment: everything on, then intake-only (no factor), then several loss intervals and BMI classes
+  // NACS: every status, edema route and the pre-pregnancy categories
+  for (const mm of [100, 120, 130]) keep(evaluateScreen(nacs({ ageMonths: 24, muacMm: mm, subject: "Patient/42" }), ctx));
+  for (const mm of [180, 200, 230]) keep(evaluateScreen(nacs({ ageYears: 30, muacMm: mm }), ctx));
+  for (const bmi of [15, 16.5, 18, 22, 27, 32]) keep(evaluateScreen(nacs({ ageYears: 40, bmi }), ctx));
+  for (const zs of [-3.5, -2.5, 0, 1.5, 2.5]) keep(evaluateScreen(nacs({ ageYears: 10, bmiForAgeZScore: zs }), ctx));
+  for (const pre of [17, 22, 27, 32]) keep(evaluateScreen(nacs({ ageYears: 28, pregnantOrPostpartum: true, muacMm: 240, prePregnancyBmi: pre }), ctx));
+  keep(evaluateScreen(nacs({ edemaGrade: 3, edemaBothFeetOrLegs: true }), ctx));
+  for (const [ap, comp] of [[true, false], [false, false]]) keep(evaluateScreen(nacs({ edemaGrade: 1, edemaBothFeetOrLegs: true, hasAppetite: ap, hasMedicalComplications: comp }), ctx));
+  keep(evaluateScreen(nacs({ ageMonths: 30, muacMm: 130, edemaGrade: 2, edemaBothFeetOrLegs: false }), ctx));
   // PG-SGA: every triage band, the optional global category, ratings and symptoms
   for (const deficit of ["none", "mild", "moderate", "severe"]) keep(evaluateScreen(pg({ physicalExamDeficit: deficit, subject: "Patient/42" }), ctx));
   keep(evaluateScreen(pg({ physicalExamDeficit: "severe", pgsgaSymptom: ["no-appetite", "mouth-sores", "constipation"], pgsgaGlobalCategory: "C", muscleStatusRating: 3, fatStoresRating: 2, fluidStatusRating: 0, weightLossPercent1Month: undefined, weightLossPercent6Months: 12, cancer: true, feverTemperatureC: 39, feverDurationHours: 80, corticosteroidPrednisoneEquivalentMgPerDay: 40 }), ctx));
@@ -908,7 +917,7 @@ test("OperationDefinitions describe the parameters each operation reads", () => 
   const names = (id) => operationDefinitionResource(BASE, id).parameter.filter((p) => p.use === "in").map((p) => p.name);
   for (const n of ["tool", "acuteDiseaseNoIntake", "bmi", "effectiveDateTime", "height", "subject", "usualWeight", "weight", "weightLossPercent3to6Months",
     "ageYears", "birthDate", "weightLossPercent", "weightLossPeriodMonths", "intakePercentOfRequirement", "impairedGeneralCondition", "diseaseSeverityScore", "severelyIll", "reducedIntakeLastWeek",
-    ...[...MNA_SCREEN_ITEM_NAMES, ...MNA_ASSESS_ITEM_NAMES], ...SGA_PARAM_NAMES, ...PGSGA_PARAM_NAMES]) {
+    ...[...MNA_SCREEN_ITEM_NAMES, ...MNA_ASSESS_ITEM_NAMES], ...SGA_PARAM_NAMES, ...PGSGA_PARAM_NAMES, ...NACS_PARAM_NAMES]) {
     assert.ok(names("Observation-screen").includes(n), `Observation-screen is missing parameter ${n}`);
   }
   for (const n of ["subject", "diagnosis"]) assert.ok(names("Condition-diagnose").includes(n));
@@ -1077,4 +1086,127 @@ test("PG-SGA: adults only, age is required", () => {
   const o = pgObs({ ageYears: undefined, birthDate: "1950-01-01", effectiveDateTime: "2026-06-01" });
   assert.equal(pgInt(o, "pgsga-disease-score"), 1);
   assert.match(o.note[0].text, /Screening\/assessment aid only/);
+});
+
+// ─── $screen — NACS classification ────────────────────────────────────────
+const NACS_PARAM_NAMES = ["ageMonths", "pregnantOrPostpartum", "muacMm", "bmiForAgeZScore", "prePregnancyBmi", "edemaGrade", "edemaBothFeetOrLegs", "hasAppetite", "hasMedicalComplications"];
+const nacsParam = ([name, v]) =>
+  v && typeof v === "object" ? { name, valueQuantity: v }
+    : typeof v === "boolean" ? { name, valueBoolean: v }
+      : typeof v === "number" ? { name, [Number.isInteger(v) && /^(ageMonths|ageYears|edemaGrade)$/.test(name) ? "valueInteger" : "valueDecimal"]: v }
+        : { name, valueString: v };
+const nacs = (o = {}) => P([{ name: "tool", valueCode: "nacs" }, ...Object.entries(o).filter(([, v]) => v !== undefined).map(nacsParam)]);
+const nacsRun = (o) => evaluateScreen(nacs(o), ctx);
+const nacsOk = (o) => { const r = nacsRun(o); assert.equal(r.ok, true, JSON.stringify(r.outcome)); return r.body.entry[0].resource; };
+const nacsValue = (ob) => ob.valueCodeableConcept?.coding[0].code;
+const nacsFail = (o, status = 400) => { const r = nacsRun(o); assert.equal(r.ok, false, JSON.stringify(r.body)); assert.equal(r.status, status); return JSON.stringify(r.outcome); };
+
+test("NACS: MUAC cutoffs for children 6-59 months, 5-9 and 10-14 years", () => {
+  const grid = [
+    [{ ageMonths: 6 }, [[114, "sam"], [115, "mam"], [124, "mam"], [125, "normal"]]],
+    [{ ageMonths: 59 }, [[114.9, "sam"], [124.9, "mam"], [125, "normal"]]],
+    [{ ageMonths: 60 }, [[134, "sam"], [135, "mam"], [144, "mam"], [145, "normal"]]],
+    [{ ageYears: 9 }, [[134, "sam"], [144, "mam"], [145, "normal"]]],
+    [{ ageMonths: 120 }, [[159, "sam"], [160, "mam"], [184, "mam"], [185, "normal"]]],
+    [{ ageYears: 14 }, [[159, "sam"], [184, "mam"], [185, "normal"]]],
+  ];
+  for (const [age, cases] of grid) for (const [mm, want] of cases) assert.equal(nacsValue(nacsOk({ ...age, muacMm: mm })), want, `${JSON.stringify(age)} ${mm} mm`);
+  const o = nacsOk({ ageMonths: 24, muacMm: 118 });
+  assert.equal(nrsComp(o, "nacs-muac").valueQuantity.value, 118);
+  assert.equal(nrsComp(o, "nacs-muac-status").valueCodeableConcept.coding[0].code, "mam");
+  assert.match(o.note[0].text, /children 6-59 months/);
+  assert.equal(o.code.coding[0].code, "nacs");
+});
+
+test("NACS: adult MUAC, with the pregnant/postpartum column", () => {
+  for (const [mm, want] of [[184, "sam"], [185, "moderate-malnutrition"], [219, "moderate-malnutrition"], [220, "normal"]]) {
+    assert.equal(nacsValue(nacsOk({ ageYears: 30, muacMm: mm })), want, `adult ${mm}`);
+  }
+  for (const [mm, want] of [[189, "sam"], [190, "moderate-malnutrition"], [229, "moderate-malnutrition"], [230, "normal"]]) {
+    assert.equal(nacsValue(nacsOk({ ageYears: 30, pregnantOrPostpartum: true, muacMm: mm })), want, `pregnant ${mm}`);
+  }
+  // 188 mm differs between the two columns
+  assert.equal(nacsValue(nacsOk({ ageYears: 30, muacMm: 188 })), "moderate-malnutrition");
+  assert.equal(nacsValue(nacsOk({ ageYears: 30, pregnantOrPostpartum: true, muacMm: 188 })), "sam");
+});
+
+test("NACS: MUAC is refused where the guide gives no cutoffs", () => {
+  assert.match(nacsFail({ ageMonths: 5, muacMm: 130 }, 422), /under 6 months/);
+  assert.match(nacsFail({ ageYears: 16, muacMm: 200 }, 422), /15 to 17/);
+  assert.match(nacsFail({ ageYears: 16, pregnantOrPostpartum: true, muacMm: 200 }, 422), /under 18/);
+  assert.match(nacsFail({ muacMm: 130 }), /ageMonths/);
+  assert.match(nacsFail({ ageYears: 3, muacMm: 130 }), /ageMonths/); // under 5 needs months
+  assert.match(nacsFail({ ageYears: 30, muacMm: 20 }), /50 to 500/);
+});
+
+test("NACS: age from birthDate counts completed months", () => {
+  const at = (birthDate) => nacsValue(nacsOk({ birthDate, effectiveDateTime: "2026-10-10", muacMm: 120 }));
+  assert.equal(at("2026-04-10"), "mam"); // exactly 6 months: 6-59 table, 120 mm
+  assert.equal(at("2021-10-11"), "mam"); // 4 years 11 months: 6-59 table
+  assert.equal(at("2021-10-10"), "sam"); // exactly 5 years: 5-9 table, 120 < 135
+  assert.match(nacsFail({ birthDate: "2026-06-11", effectiveDateTime: "2026-10-10", muacMm: 120 }, 422), /under 6 months/); // 3 months 29 days
+});
+
+test("NACS: adult BMI bands, banded on the 1-decimal value", () => {
+  const b = (bmi) => nacsValue(nacsOk({ ageYears: 40, bmi }));
+  for (const [v, want] of [[15.9, "severe-malnutrition"], [16, "moderate-malnutrition"], [16.9, "moderate-malnutrition"], [17, "mild-malnutrition"], [18.4, "mild-malnutrition"],
+    [18.5, "normal"], [24.9, "normal"], [25, "overweight"], [29.9, "overweight"], [30, "obesity"], [18.45, "normal"], [15.95, "moderate-malnutrition"]]) assert.equal(b(v), want, `BMI ${v}`);
+  const o = nacsOk({ ageYears: 40, weight: { value: 50, unit: "kg" }, height: { value: 160, unit: "cm" } });
+  assert.equal(nrsComp(o, "nacs-bmi").valueQuantity.value, 19.5);
+  assert.equal(nacsValue(o), "normal");
+  assert.match(nacsFail({ ageYears: 40, weight: { value: 50, unit: "kg" }, height: { value: 160, unit: "in" } }), /weight/);
+});
+
+test("NACS: BMI-for-age bands for 5-17 years; BMI alone under 18 is refused", () => {
+  const z = (v) => nacsValue(nacsOk({ ageYears: 10, bmiForAgeZScore: v }));
+  for (const [v, want] of [[-3.1, "severe-malnutrition"], [-3, "moderate-malnutrition"], [-2.01, "moderate-malnutrition"], [-2, "normal"], [1, "normal"], [1.01, "overweight"], [2, "overweight"], [2.01, "obesity"]]) assert.equal(z(v), want, `z ${v}`);
+  assert.match(nacsFail({ ageYears: 10, bmi: 14 }), /bmiForAgeZScore/);
+  assert.match(nacsFail({ ageMonths: 48, bmiForAgeZScore: -1 }, 422), /5 to 17/);
+  assert.match(nacsFail({ ageYears: 30, bmiForAgeZScore: -1 }, 422), /adults/);
+  assert.match(nacsFail({ ageYears: 10, bmiForAgeZScore: 12 }), /-10 and 10/);
+});
+
+test("NACS: BMI is refused for pregnant/postpartum women; pre-pregnancy BMI has its own table", () => {
+  assert.match(nacsFail({ ageYears: 28, pregnantOrPostpartum: true, bmi: 22 }, 422), /use MUAC/);
+  const pre = (v) => nrsComp(nacsOk({ ageYears: 28, pregnantOrPostpartum: true, muacMm: 240, prePregnancyBmi: v }), "nacs-pre-pregnancy-bmi-category").valueCodeableConcept.coding[0].code;
+  for (const [v, want] of [[18.4, "underweight"], [18.5, "normal-weight"], [24.9, "normal-weight"], [25, "overweight"], [29.9, "overweight"], [30, "obese"]]) assert.equal(pre(v), want, `pre-pregnancy ${v}`);
+  const o = nacsOk({ ageYears: 28, pregnantOrPostpartum: true, muacMm: 240, prePregnancyBmi: 17 });
+  assert.equal(nacsValue(o), "normal"); // the pre-pregnancy category is not a status indicator
+});
+
+test("NACS: several indicators are reported separately with no combined value", () => {
+  const o = nacsOk({ ageYears: 40, bmi: 17.5, muacMm: 190 });
+  assert.equal(nacsValue(o), undefined);
+  assert.equal(nrsComp(o, "nacs-bmi-status").valueCodeableConcept.coding[0].code, "mild-malnutrition");
+  assert.equal(nrsComp(o, "nacs-muac-status").valueCodeableConcept.coding[0].code, "moderate-malnutrition");
+  assert.match(o.note[0].text, /no rule for combining/);
+  assert.equal(nacsValue(nacsOk({ ageYears: 40, bmi: 17.5 })), "mild-malnutrition");
+});
+
+test("NACS: bilateral pitting edema is SAM on its own and sets the management route", () => {
+  const e = (extra) => nacsOk({ edemaGrade: 3, edemaBothFeetOrLegs: true, ...extra });
+  const o3 = e({ muacMm: 200, ageMonths: 30 }); // normal MUAC is ignored
+  assert.equal(nacsValue(o3), "sam");
+  assert.equal(nrsComp(o3, "nacs-edema-disposition").valueCodeableConcept.coding[0].code, "inpatient-sam-management");
+  assert.equal(o3.component.some((c) => c.code.coding[0].code === "nacs-muac"), false);
+  assert.match(o3.note[0].text, /regardless of anthropometric/);
+  const d = (grade, hasAppetite, hasMedicalComplications) => nrsComp(nacsOk({ edemaGrade: grade, edemaBothFeetOrLegs: true, hasAppetite, hasMedicalComplications }), "nacs-edema-disposition").valueCodeableConcept.coding[0].code;
+  assert.equal(d(1, true, false), "outpatient-sam-treatment");
+  assert.equal(d(2, true, false), "outpatient-sam-treatment");
+  assert.equal(d(2, false, false), "not-stated-by-guide");
+  assert.equal(d(1, true, true), "not-stated-by-guide");
+  assert.match(nacsFail({ edemaGrade: 1, edemaBothFeetOrLegs: true }), /hasAppetite/);
+  assert.match(nacsFail({ edemaGrade: 2 }), /edemaBothFeetOrLegs/);
+  assert.match(nacsFail({ edemaGrade: 4, edemaBothFeetOrLegs: true }), /0-3/);
+});
+
+test("NACS: edema in one foot is not counted, edema with MUAC carries the guide's caution, input is required", () => {
+  const o = nacsOk({ ageMonths: 30, muacMm: 130, edemaGrade: 2, edemaBothFeetOrLegs: false });
+  assert.equal(nacsValue(o), "normal");
+  assert.match(o.note[0].text, /not in both feet or legs/);
+  assert.match(o.note[0].text, /MUAC should not be used/);
+  assert.equal(nacsValue(nacsOk({ ageMonths: 30, muacMm: 130, edemaGrade: 0 })), "normal");
+  assert.match(nacsFail({}), /something to classify/);
+  assert.match(nacsFail({ edemaGrade: 0 }), /something to classify/);
+  assert.match(nacsFail({ ageYears: 30, pregnantOrPostpartum: "yes", muacMm: 200 }), /boolean/);
 });

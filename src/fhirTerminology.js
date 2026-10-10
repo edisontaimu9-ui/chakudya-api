@@ -110,6 +110,16 @@ const CODE_SYSTEMS = {
       c("pgsga-global-category", "PG-SGA global category (Stage A/B/C)", "Entered by the assessor; never computed."),
       c("pgsga-nutrition-impact-symptom", "PG-SGA nutrition impact symptom", "One component per symptom checked in Box 3; the symptom is in code.text and the points are the value."),
       c("pgsga-body-composition-rating", "PG-SGA global body composition rating (0-3)", "Muscle, fat or fluid rating from Worksheet 4, recorded only; the rating is in code.text."),
+      c("nacs-muac", "MUAC (mm)", "Mid-upper arm circumference of the left arm, in millimetres."),
+      c("nacs-muac-status", "NACS MUAC nutritional status", "Cutoffs depend on age group and pregnancy/postpartum status."),
+      c("nacs-bmi", "BMI (NACS, adults)", "kg/m2, rounded to 1 decimal before banding."),
+      c("nacs-bmi-status", "NACS adult BMI nutritional status"),
+      c("nacs-bmi-for-age-z-score", "BMI-for-age z-score (5-17 years)", "As supplied by the caller."),
+      c("nacs-bmi-for-age-status", "NACS BMI-for-age nutritional status"),
+      c("nacs-pre-pregnancy-bmi", "Pre-pregnancy BMI", "kg/m2, rounded to 1 decimal before banding."),
+      c("nacs-pre-pregnancy-bmi-category", "Pre-pregnancy BMI category"),
+      c("nacs-edema-grade", "Bilateral pitting edema grade", "0 none, 1 grade +, 2 grade ++, 3 grade +++; the grade text is in code.text."),
+      c("nacs-edema-disposition", "Management route for bilateral pitting edema", "As stated in the NACS guide."),
     ],
   },
   "screening-tool": {
@@ -121,6 +131,7 @@ const CODE_SYSTEMS = {
       c("mna", "MNA (older adults)", "Mini Nutritional Assessment: screening items A-F (max 14), then assessment items G-R (max 16) when the screening score is 11 or less; total max 30."),
       c("sga", "SGA (adult)", "Subjective Global Assessment: history and physical-examination descriptors under columns A, B, C, then an overall rating A, B or C entered by the assessor."),
       c("pg-sga", "PG-SGA (adult)", "Scored Patient-Generated Subjective Global Assessment: boxes 1-4 (A) + disease (B) + metabolic demand (C) + physical exam (D), triaged 0-1, 2-3, 4-8, 9 or more."),
+      c("nacs", "NACS classification", "NACS User's Guide Module 2 classification: MUAC by age group and pregnancy status, adult BMI, BMI-for-age z-score, pre-pregnancy BMI and bilateral pitting edema. Children and adults."),
     ],
   },
   "must-risk": {
@@ -174,6 +185,34 @@ const CODE_SYSTEMS = {
     title: "PG-SGA global category",
     description: "Global PG-SGA category rating entered by the assessor (Worksheet 5). The form lists descriptors per stage but no rule to compute it.",
     concepts: [c("A", "Stage A", "Well-nourished."), c("B", "Stage B", "Moderate or suspected malnutrition."), c("C", "Stage C", "Severely malnourished.")],
+  },
+  "nacs-status": {
+    title: "NACS nutritional status",
+    description: "Nutritional status classes as printed in the NACS User's Guide Module 2. Not one scale: children's MUAC uses sam/mam/normal, adult MUAC uses sam/moderate-malnutrition/normal, adult BMI and BMI-for-age use the severe/moderate/mild/normal/overweight/obesity classes.",
+    concepts: [
+      c("sam", "Severe acute malnutrition (SAM)", "MUAC under the severe cutoff, or bilateral pitting edema."),
+      c("mam", "Moderate acute malnutrition (MAM)", "Children's MUAC between the severe and normal cutoffs."),
+      c("severe-malnutrition", "Severe malnutrition", "Adult BMI under 16, or BMI-for-age z-score under -3."),
+      c("moderate-malnutrition", "Moderate malnutrition", "Adult BMI 16 to under 17, BMI-for-age z-score -3 to under -2, or adult MUAC between the SAM and normal cutoffs."),
+      c("mild-malnutrition", "Mild malnutrition", "Adult BMI 17 to under 18.5."),
+      c("normal", "Normal nutritional status"),
+      c("overweight", "Overweight", "Adult BMI 25 to under 30, or BMI-for-age z-score over +1 to +2."),
+      c("obesity", "Obesity", "Adult BMI 30 or more, or BMI-for-age z-score over +2."),
+    ],
+  },
+  "nacs-disposition": {
+    title: "NACS management route for bilateral pitting edema",
+    description: "The guide states: grade +++ is admitted for inpatient management of severe acute malnutrition; grades + or ++ with appetite and no medical complications are treated on an outpatient basis. Other combinations are not stated.",
+    concepts: [
+      c("inpatient-sam-management", "Inpatient management of SAM", "Grade +++, even with appetite and no medical complications."),
+      c("outpatient-sam-treatment", "Outpatient treatment of SAM", "Grade + or ++ with appetite and no medical complications."),
+      c("not-stated-by-guide", "Not stated by the guide", "Grade + or ++ without appetite or with medical complications: the clinician decides."),
+    ],
+  },
+  "nacs-prepregnancy-bmi": {
+    title: "NACS recommended pre-pregnancy BMI category",
+    description: "Underweight under 18.5, normal weight 18.5-24.9, overweight 25.0-29.9, obese 30 or more.",
+    concepts: [c("underweight", "Underweight"), c("normal-weight", "Normal weight"), c("overweight", "Overweight"), c("obese", "Obese")],
   },
   "who-adult-bmi-class": {
     title: "WHO adult BMI class",
@@ -286,15 +325,16 @@ const OPERATIONS = {
     ],
   },
   "Observation-screen": {
-    resource: "Observation", code: "screen", title: "Nutrition screening (MUST, NRS-2002, MNA, SGA or PG-SGA)",
+    resource: "Observation", code: "screen", title: "Nutrition screening (MUST, NRS-2002, MNA, SGA, PG-SGA or NACS classification)",
     description:
       "tool=must (default): Malnutrition Universal Screening Tool score and risk category; provide bmi, or weight + height; and weightLossPercent3to6Months, or usualWeight + weight. " +
       "tool=nrs-2002: two-stage NRS-2002 as printed in the source appendix (initial screening, then nutritional status + disease severity + age 70+); disease severity and impaired general condition are clinician inputs. " +
       "tool=mna: Mini Nutritional Assessment as printed on the Nestle form; screening items A-F always, assessment items G-R only when the screening score is 11 or less (12-14 stops at normal). Measured items are scored from raw values, judgement items are sent as the printed option score. " +
       "tool=sga: Subjective Global Assessment as printed on the NEMO form; history descriptors are mapped to their printed columns, % weight loss is derived, physical-examination grades are checked against the columns the form has, and the overall A/B/C rating is the assessor's own input (the form gives no rule to compute it). " +
-      "tool=pg-sga: scored PG-SGA as printed on the form (v3.22.15): total = boxes 1-4 + disease + metabolic demand + physical exam, triaged 0-1, 2-3, 4-8, 9 or more; the physical-exam score is the clinician's overall deficit rating and the Stage A/B/C category is an optional assessor input." + QUANTITY_NOTE,
+      "tool=pg-sga: scored PG-SGA as printed on the form (v3.22.15): total = boxes 1-4 + disease + metabolic demand + physical exam, triaged 0-1, 2-3, 4-8, 9 or more; the physical-exam score is the clinician's overall deficit rating and the Stage A/B/C category is an optional assessor input. " +
+      "tool=nacs: NACS User's Guide Module 2 classification, children and adults: MUAC by age group and pregnancy status, adult BMI, BMI-for-age z-score, pre-pregnancy BMI, and bilateral pitting edema (severe malnutrition on its own). Each indicator is reported separately; a single value is set only when exactly one was classified." + QUANTITY_NOTE,
     parameters: [
-      P("tool", "code", 0, "1", "must (default) | nrs-2002 | mna | sga | pg-sga"),
+      P("tool", "code", 0, "1", "must (default) | nrs-2002 | mna | sga | pg-sga | nacs"),
       P("bmi", "decimal", 0, "1", "BMI in kg/m2. Alternative to weight + height."),
       P("weight", "Quantity", 0, "1", "Current weight."),
       P("height", "Quantity", 0, "1", "Height."),
@@ -359,6 +399,15 @@ const OPERATIONS = {
       P("physicalExamDeficit", "code", 0, "1", "PG-SGA Worksheet 4 (required): the clinician's overall rating of total body deficit: none (0) | mild (1) | moderate (2) | severe (3). Muscle deficit takes precedence over fat or fluid on the form. Never computed."),
       P("muscleStatusRating", "integer", 0, "1", "PG-SGA Worksheet 4, optional, recorded only: global muscle rating 0-3. Same for fatStoresRating and fluidStatusRating."),
       P("pgsgaGlobalCategory", "code", 0, "1", "PG-SGA Worksheet 5, optional: the assessor's Stage A, B or C. Never computed."),
+      P("ageMonths", "integer", 0, "1", "NACS: age in months (required under 5 years; alternatively birthDate). ageYears (5 or over) also works."),
+      P("pregnantOrPostpartum", "boolean", 0, "1", "NACS: pregnant or up to 6 months postpartum. Selects the pregnancy MUAC column; BMI is refused (422) for this group."),
+      P("muacMm", "decimal", 0, "1", "NACS: mid-upper arm circumference in millimetres (50 to 500). Not for infants under 6 months (422)."),
+      P("bmiForAgeZScore", "decimal", 0, "1", "NACS: BMI-for-age z-score for 5 to 17 years (Observation/$evaluate-growth can compute it). Under 18 a bmi or weight + height alone is a 400."),
+      P("prePregnancyBmi", "decimal", 0, "1", "NACS: pre-pregnancy BMI; reported as underweight, normal weight, overweight or obese."),
+      P("edemaGrade", "integer", 0, "1", "NACS: bilateral pitting edema grade 0-3 (0 none, 1 +, 2 ++, 3 +++). Above 0 needs edemaBothFeetOrLegs."),
+      P("edemaBothFeetOrLegs", "boolean", 0, "1", "NACS: edema is in both feet or both legs. Only then is it a sign of severe malnutrition; the result is SAM and no anthropometry is classified."),
+      P("hasAppetite", "boolean", 0, "1", "NACS: required for edema grade 1 or 2 (outpatient route needs appetite)."),
+      P("hasMedicalComplications", "boolean", 0, "1", "NACS: required for edema grade 1 or 2 (outpatient route needs no medical complications)."),
       SUBJECT_OPT, EFFECTIVE,
     ],
   },
