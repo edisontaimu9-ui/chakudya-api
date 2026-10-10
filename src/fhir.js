@@ -359,6 +359,11 @@ export function buildCapabilityStatement(base) {
             ],
           },
           {
+            type: "CodeSystem",
+            interaction: [{ code: "read" }],
+            documentation: "Only id 'ncp-diagnosis' (NCP nutrition diagnostic terminology, 2006 edition).",
+          },
+          {
             type: "Bundle",
             interaction: [],
             operation: [

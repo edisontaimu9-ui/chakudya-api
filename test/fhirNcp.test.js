@@ -8,6 +8,8 @@ import {
   evaluateGoals,
   evaluateNcpDocument,
   ncpOperationFor,
+  diagnosisCodesRequested,
+  buildNcpCodeSystem,
 } from "../src/fhirNcp.js";
 import { buildCapabilityStatement } from "../src/fhir.js";
 
@@ -380,6 +382,72 @@ test("registry and CapabilityStatement agree", () => {
   for (const [t, a] of ops) assert.equal(typeof ncpOperationFor(t, a), "function", `${t}/${a}`);
   assert.equal(ncpOperationFor("Observation", "$evaluate-growth"), null); // handled by the Phase 1 route
   const cap = buildCapabilityStatement("https://x.test");
-  const declared = cap.rest[0].resource.flatMap((r) => r.operation.map((o) => `${r.type}/$${o.name}`));
+  const declared = cap.rest[0].resource.flatMap((r) => (r.operation ?? []).map((o) => `${r.type}/$${o.name}`));
   for (const [t, a] of ops) assert.ok(declared.includes(`${t}/${a}`), `${t}/${a} missing from CapabilityStatement`);
+});
+
+// ─── Supabase-backed diagnostic terminology ───────────────────────────────
+const TERMS = {
+  "NI-5.2": { code: "NI-5.2", term: "Evident protein-energy malnutrition", domain: "intake", class_name: "Nutrient Intake", specify_required: false, use_with_caution: false, edition: "2006" },
+  "NI-5.1": { code: "NI-5.1", term: "Increased nutrient needs", domain: "intake", class_name: "Nutrient Intake", specify_required: true, use_with_caution: false, specify_options: null, edition: "2006" },
+  "NI-55.1": { code: "NI-55.1", term: "Inadequate mineral intake", domain: "intake", class_name: "Mineral", specify_required: true, use_with_caution: false, specify_options: ["Calcium", "Iron", "Potassium", "Zinc", "Other"], edition: "2006" },
+  "NB-1.2": { code: "NB-1.2", term: "Harmful beliefs/attitudes about food or nutrition-related topics", domain: "behavioral-environmental", class_name: "Knowledge and Beliefs", specify_required: false, use_with_caution: true, edition: "2006" },
+};
+const tctx = { ...ctx, terms: TERMS };
+const pesParts = [{ name: "etiology", valueString: "inadequate intake" }, { name: "signsSymptoms", valueString: "BMI 16.2" }];
+const dxBody = (extra) => P([{ name: "subject", valueString: "Patient/1" }, part("diagnosis", [...pesParts, ...extra])]);
+
+test("diagnosisCodesRequested only returns NI/NC/NB codes without a custom system", () => {
+  const b = P([
+    part("diagnosis", [{ name: "problemCode", valueString: "ni-5.2" }]),
+    part("diagnosis", [{ name: "problemCode", valueString: "NC-3.1" }]),
+    part("diagnosis", [{ name: "problemCode", valueString: "NI-2.1" }, { name: "problemSystem", valueString: "urn:own" }]),
+    part("diagnosis", [{ name: "problemCode", valueString: "malnutrition" }]),
+    part("diagnosis", [{ name: "problemCode", valueString: "NI-5.2" }]),
+  ]);
+  assert.deepEqual(diagnosisCodesRequested(b).sort(), ["NC-3.1", "NI-5.2"]);
+});
+
+test("diagnose: an NI code resolves problem text, domain and coding from the terminology", () => {
+  const r = evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NI-5.2" }]), tctx);
+  assert.equal(r.ok, true);
+  const c = r.body.entry[0].resource;
+  assert.equal(c.code.text, "Evident protein-energy malnutrition");
+  assert.deepEqual(c.code.coding[0], { system: "https://x.test/fhir/CodeSystem/ncp-diagnosis", version: "2006", code: "NI-5.2", display: "Evident protein-energy malnutrition" });
+  assert.equal(c.category[2].coding[0].code, "intake");
+  assert.match(c.note[0].text, /^Evident protein-energy malnutrition related to inadequate intake as evidenced by BMI 16.2\.$/);
+});
+
+test("diagnose: unknown code, domain conflict, and unavailable terminology are explicit errors", () => {
+  assert.match(evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NI-9.9" }]), tctx).outcome.issue[0].diagnostics, /not in the NCP diagnostic terminology/);
+  assert.match(evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NI-5.2" }, { name: "domain", valueCode: "clinical" }]), tctx).outcome.issue[0].diagnostics, /conflicts/);
+  const down = evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NI-5.2" }]), { ...ctx, termsError: "relation does not exist" });
+  assert.equal(down.status, 503);
+  assert.match(down.outcome.issue[0].diagnostics, /sql\/017/);
+});
+
+test("diagnose: (specify) terms need problemSpecify and show the sheet's options", () => {
+  const miss = evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NI-55.1" }]), tctx);
+  assert.equal(miss.ok, false);
+  assert.match(miss.outcome.issue[0].diagnostics, /problemSpecify.*Calcium, Iron/);
+  const ok = evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NI-55.1" }, { name: "problemSpecify", valueString: "Iron" }]), tctx);
+  assert.equal(ok.body.entry[0].resource.code.text, "Inadequate mineral intake (Iron)");
+  assert.ok(ok.body.entry[0].resource.extension.some((x) => x.url.endsWith("pes-specify") && x.valueString === "Iron"));
+});
+
+test("diagnose: use-with-caution terms add a note; an explicit problem text is kept", () => {
+  const r = evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NB-1.2" }, { name: "problem", valueString: "Harmful beliefs about breastfeeding" }]), tctx);
+  const c = r.body.entry[0].resource;
+  assert.equal(c.code.text, "Harmful beliefs about breastfeeding");
+  assert.equal(c.note.length, 2);
+  assert.match(c.note[1].text, /use with caution/);
+});
+
+test("CodeSystem: concepts, count and properties built from rows", () => {
+  const cs = buildNcpCodeSystem("https://x.test", Object.values(TERMS));
+  assert.equal(cs.resourceType, "CodeSystem");
+  assert.equal(cs.url, "https://x.test/fhir/CodeSystem/ncp-diagnosis");
+  assert.equal(cs.count, 4);
+  const c = cs.concept.find((x) => x.code === "NB-1.2");
+  assert.equal(c.property.find((p) => p.code === "use-with-caution").valueBoolean, true);
 });

@@ -1444,7 +1444,7 @@ paths:
       tags: [FHIR]
       summary: NCP Step 2 — nutrition diagnosis (PES statement)
       description: >
-        Validates and shapes clinician-supplied PES statements (problem, etiology, signs/symptoms) into Condition resources. Does not choose the diagnosis; eNCPT terminology is not bundled.
+        Validates and shapes clinician-supplied PES statements (problem, etiology, signs/symptoms) into Condition resources. Does not choose the diagnosis. problemCode values like NI-5.2 are resolved against the NCP diagnostic terminology in Supabase (503 if sql/017 has not been run).
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success
         is a Bundle; errors are OperationOutcomes. See README "NCP operations".
       security: []
@@ -1582,6 +1582,23 @@ paths:
               schema: { type: object }
         "422":
           description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/CodeSystem/ncp-diagnosis:
+    get:
+      tags: [FHIR]
+      summary: NCP nutrition diagnostic terminology (2006 edition) as a FHIR CodeSystem
+      description: >
+        62 terms (Intake NI, Clinical NC, Behavioral-Environmental NB) read from
+        the Supabase table ncp_diagnosis_terms (sql/017). Used by
+        Condition/$diagnose to resolve problemCode values such as NI-5.2.
+      security: []
+      responses:
+        "200":
+          description: FHIR CodeSystem
           content:
             application/json:
               schema: { type: object }

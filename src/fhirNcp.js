@@ -26,9 +26,11 @@
 // logic, goal progress). It does NOT choose a nutrition diagnosis, an
 // intervention or a goal for the clinician — the PES statement, orders and
 // goals are the dietitian's inputs, which this module validates and shapes
-// into FHIR. The eNCPT diagnosis terminology is proprietary, so it is never
-// bundled: a caller may pass its own code (system + code) through, otherwise
-// the problem is carried as text.
+// into FHIR. The nutrition diagnostic terminology (2006 edition, NI/NC/NB
+// codes) lives in Supabase (table ncp_diagnosis_terms, sql/017) rather than
+// in code: the Worker pre-fetches the codes a request names and passes them in
+// as ctx.terms, which keeps these functions pure. A caller may still pass its
+// own code (problemSystem + problemCode) through, or just free text.
 
 import { operationOutcome, toKg, toCm } from "./fhir.js";
 
@@ -600,6 +602,19 @@ const PROBLEM_SHORTCUTS = {
   "obesity": [{ system: SNOMED, code: "414916001", display: "Obesity" }],
 };
 
+const TERM_CODE_RE = /^N[ICB]-\d{1,2}\.\d{1,2}$/i;
+
+/** Codes (NI-5.2 style, no problemSystem) a $diagnose body asks to resolve —
+ * the Worker fetches exactly these from ncp_diagnosis_terms. */
+export function diagnosisCodesRequested(body) {
+  const out = new Set();
+  for (const d of readParams(body).all("diagnosis")) {
+    const code = str(d?.get?.("problemCode"));
+    if (code && !str(d.get("problemSystem")) && TERM_CODE_RE.test(code)) out.add(code.toUpperCase());
+  }
+  return [...out].slice(0, 50);
+}
+
 export function evaluateDiagnose(body, ctx) {
   const e = requireParameters(body);
   if (e) return e;
@@ -615,10 +630,30 @@ export function evaluateDiagnose(body, ctx) {
   const entries = [];
   for (const [i, d] of diagnoses.entries()) {
     const label = `diagnosis[${i}]`;
-    const domain = str(d.get("domain"));
+    const sys = str(d.get("problemSystem"));
+    const code = str(d.get("problemCode"));
+
+    // Resolve an NI-/NC-/NB- code against the Supabase terminology (unless
+    // the caller names its own code system).
+    let term = null;
+    if (code && !sys && TERM_CODE_RE.test(code)) {
+      if (ctx.termsError) return bad(`Nutrition diagnosis terminology lookup failed (${ctx.termsError}). Has sql/017_add_ncp_diagnosis_terms.sql been run?`, 503);
+      term = ctx.terms?.[code.toUpperCase()];
+      if (!term) return bad(`${label}.problemCode "${code}" is not in the NCP diagnostic terminology (2006 edition). See GET /fhir/CodeSystem/ncp-diagnosis.`);
+    }
+
+    const domain = str(d.get("domain")) ?? term?.domain;
     if (!PES_DOMAINS[domain]) return bad(`${label}.domain must be intake, clinical or behavioral-environmental.`);
-    const problem = str(d.get("problem"));
-    if (!problem) return bad(`${label}.problem (the nutrition diagnosis label) is required.`);
+    if (term && domain !== term.domain) return bad(`${label}: domain "${domain}" conflicts with ${term.code}, which is a ${term.domain} term.`);
+
+    const specify = str(d.get("problemSpecify"));
+    if (term?.specify_required && !specify) {
+      const hint = term.specify_options?.length ? ` (e.g. ${term.specify_options.join(", ")})` : "";
+      return bad(`${label}: ${term.code} "${term.term}" is a "(specify)" term — add 'problemSpecify'${hint}.`);
+    }
+    const problem = str(d.get("problem")) ?? (term ? `${term.term}${specify ? ` (${specify})` : ""}` : undefined);
+    if (!problem) return bad(`${label}.problem (the nutrition diagnosis label) is required unless 'problemCode' is an NI/NC/NB term.`);
+
     const etiology = d.all("etiology").map(str).filter(Boolean);
     const signs = d.all("signsSymptoms").map(str).filter(Boolean);
     if (etiology.length === 0) return bad(`${label}: a PES statement needs at least one 'etiology' (the "related to" part).`);
@@ -629,11 +664,10 @@ export function evaluateDiagnose(body, ctx) {
     if (!["provisional", "confirmed"].includes(status)) return bad(`${label}.verificationStatus must be provisional or confirmed.`);
 
     const coding = [];
-    const sys = str(d.get("problemSystem"));
-    const code = str(d.get("problemCode"));
-    if (sys && code) coding.push({ system: sys, code, display: str(d.get("problemDisplay")) ?? problem });
+    if (term) coding.push({ system: cs(base, "ncp-diagnosis"), version: term.edition ?? "2006", code: term.code, display: term.term });
+    else if (sys && code) coding.push({ system: sys, code, display: str(d.get("problemDisplay")) ?? problem });
     else if (code && PROBLEM_SHORTCUTS[code]) coding.push(...PROBLEM_SHORTCUTS[code]);
-    else if (code && !sys) return bad(`${label}.problemCode "${code}" needs a 'problemSystem', or use one of: ${Object.keys(PROBLEM_SHORTCUTS).join(", ")}.`);
+    else if (code) return bad(`${label}.problemCode "${code}" needs a 'problemSystem', or use an NI-/NC-/NB- code, or one of: ${Object.keys(PROBLEM_SHORTCUTS).join(", ")}.`);
 
     const pes = `${problem} related to ${etiology.join("; ")} as evidenced by ${signs.join("; ")}.`;
     const evidenceRefs = d.all("evidence").map(str).filter(Boolean);
@@ -654,16 +688,59 @@ export function evaluateDiagnose(body, ctx) {
         ...signs.map((s) => ({ code: [{ text: s }] })),
         ...(evidenceRefs.length ? [{ detail: evidenceRefs.map((reference) => ({ reference })) }] : []),
       ],
-      note: [{ text: pes }],
+      note: [
+        { text: pes },
+        ...(term?.use_with_caution ? [{ text: `Terminology flags "${term.term}" as use with caution.` }] : []),
+      ],
       extension: [
         { url: `${base}/fhir/StructureDefinition/pes-etiology`, valueString: etiology.join("; ") },
         { url: `${base}/fhir/StructureDefinition/pes-signs-symptoms`, valueString: signs.join("; ") },
+        ...(specify ? [{ url: `${base}/fhir/StructureDefinition/pes-specify`, valueString: specify }] : []),
       ],
     };
     if (severity) cond.severity = { coding: [{ system: SNOMED, ...SEVERITY[severity] }] };
     entries.push(entryOf(ctx, cond));
   }
   return okRes(collection(entries));
+}
+
+/** FHIR CodeSystem for the nutrition diagnostic terminology, from the
+ * ncp_diagnosis_terms rows (GET /fhir/CodeSystem/ncp-diagnosis). */
+export function buildNcpCodeSystem(base, rows) {
+  const prop = (code, description, type) => ({ code, description, type });
+  return {
+    resourceType: "CodeSystem",
+    id: "ncp-diagnosis",
+    url: cs(base, "ncp-diagnosis"),
+    version: "2006",
+    name: "NcpDiagnosisTerminology",
+    title: "Nutrition Care Process nutrition diagnostic terminology (2006 edition)",
+    status: "active",
+    date: "2026-10-10",
+    publisher: "Chakudya Nutrition Registry",
+    description:
+      "Nutrition diagnostic terms (Intake NI, Clinical NC, Behavioral-Environmental NB), 2006 edition. " +
+      "The terminology belongs to the Academy of Nutrition and Dietetics; it is served here as reference data for coding PES statements.",
+    caseSensitive: true,
+    content: "complete",
+    count: rows.length,
+    property: [
+      prop("domain", "intake | clinical | behavioral-environmental", "code"),
+      prop("class", "Terminology class name", "string"),
+      prop("specify-required", "The term is marked (specify) in the terminology", "boolean"),
+      prop("use-with-caution", "The term is marked (use with caution) in the terminology", "boolean"),
+    ],
+    concept: rows.map((r) => ({
+      code: r.code,
+      display: r.term,
+      property: [
+        { code: "domain", valueCode: r.domain },
+        { code: "class", valueString: r.class_name },
+        { code: "specify-required", valueBoolean: !!r.specify_required },
+        { code: "use-with-caution", valueBoolean: !!r.use_with_caution },
+      ],
+    })),
+  };
 }
 
 // ─── $intervene — NutritionOrder + ServiceRequests + Goals + CarePlan ──────

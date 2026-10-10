@@ -555,7 +555,7 @@ import {
   toKg,
   toCm,
 } from "./fhir.js";
-import { ncpOperationFor } from "./fhirNcp.js";
+import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./fhirNcp.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
   OAUTH_TOKEN_TTL_SECONDS,
@@ -887,6 +887,7 @@ function routePolicy(resource, method, param, action) {
   const isFhirMetadata = resource === "fhir" && param === "metadata" && method === "GET";
   const isFhirEvaluateGrowth = resource === "fhir" && param === "Observation" && action === "$evaluate-growth" && method === "POST";
   const isFhirNcpOperation = resource === "fhir" && method === "POST" && ncpOperationFor(param, action) !== null;
+  const isFhirNcpCodeSystem = resource === "fhir" && param === "CodeSystem" && action === "ncp-diagnosis" && method === "GET";
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
@@ -1018,7 +1019,7 @@ function routePolicy(resource, method, param, action) {
   if (isFhirMetadata) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
-  if (isFhirEvaluateGrowth || isFhirNcpOperation) {
+  if (isFhirEvaluateGrowth || isFhirNcpOperation || isFhirNcpCodeSystem) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -2647,15 +2648,40 @@ async function handleFhirEvaluateGrowth(request, db, url) {
 
 // NCP operations (src/fhirNcp.js) — pure functions, no DB. Stateless: the
 // request body is never stored or logged by this handler.
-async function handleFhirNcpOperation(request, url, operation) {
+async function handleFhirNcpOperation(request, url, db, param, operation) {
   let body;
   try {
     body = await request.json();
   } catch {
     return json(operationOutcome("error", "Invalid JSON body."), 400);
   }
-  const result = operation(body, { base: url.origin, now: new Date().toISOString() });
+  const ctx = { base: url.origin, now: new Date().toISOString() };
+
+  // $diagnose resolves NI-/NC-/NB- codes against the Supabase terminology
+  // table; fetch just the codes this request names (pure op stays DB-free).
+  if (param === "Condition") {
+    const codes = diagnosisCodesRequested(body);
+    if (codes.length) {
+      const { ok, body: rows } = await db.select("ncp_diagnosis_terms", {
+        filters: { code: `in.(${codes.join(",")})` },
+        limit: 100,
+      });
+      if (ok && Array.isArray(rows)) ctx.terms = Object.fromEntries(rows.map((r) => [r.code, r]));
+      else ctx.termsError = rows?.message || "query failed";
+    }
+  }
+
+  const result = operation(body, ctx);
   return result.ok ? json(result.body) : json(result.outcome, result.status);
+}
+
+// GET /fhir/CodeSystem/ncp-diagnosis — the terminology as a FHIR CodeSystem.
+async function handleFhirNcpCodeSystem(url, db) {
+  const { ok, status, body: rows } = await db.select("ncp_diagnosis_terms", { limit: 200, order: "code.asc" });
+  if (!ok || !Array.isArray(rows)) {
+    return json(operationOutcome("error", rows?.message || "Terminology query failed (has sql/017 been run?)"), status || 500);
+  }
+  return json(buildNcpCodeSystem(url.origin, rows));
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -6575,6 +6601,7 @@ function handleRoot(env) {
         "POST /fhir/CarePlan/$intervene → NCP intervention: goals, NutritionOrder, education/counseling/coordination → CarePlan Bundle",
         "POST /fhir/Goal/$evaluate → NCP monitoring & evaluation: goal achievementStatus vs baseline/target",
         "POST /fhir/Bundle/$ncp-document → ADIME Composition document Bundle from the above",
+        "GET  /fhir/CodeSystem/ncp-diagnosis → NCP nutrition diagnostic terminology (2006 ed., NI/NC/NB; stored in Supabase table ncp_diagnosis_terms)",
         "Stateless facade, no storage. $evaluate-growth wraps bmi-for-age + fenton-preterm only (WHO 0-59-month returns OperationOutcome). Not yet registered with any OpenHIM/HIE instance. See src/fhir.js and src/fhirNcp.js.",
       ],
       exchange_lists: [
@@ -7802,13 +7829,18 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       }
       {
         const ncpOp = request.method === "POST" ? ncpOperationFor(param, action) : null;
-        if (ncpOp) return await handleFhirNcpOperation(request, url, ncpOp);
-        if (!ncpOp && ncpOperationFor(param, action)) return err("Method not allowed", 405);
+        if (ncpOp) return await handleFhirNcpOperation(request, url, db, param, ncpOp);
+        if (ncpOperationFor(param, action)) return err("Method not allowed", 405);
+        if (param === "CodeSystem" && action === "ncp-diagnosis") {
+          if (request.method !== "GET") return err("Method not allowed", 405);
+          return await handleFhirNcpCodeSystem(url, db);
+        }
       }
       return notFound(
         "FHIR route. Available: GET /fhir/metadata, POST /fhir/Observation/$evaluate-growth, " +
           "POST /fhir/Observation/$screen, POST /fhir/Observation/$assess-nutrition, POST /fhir/Condition/$diagnose, " +
-          "POST /fhir/CarePlan/$intervene, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document."
+          "POST /fhir/CarePlan/$intervene, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document, " +
+          "GET /fhir/CodeSystem/ncp-diagnosis."
       );
     }
 
