@@ -2559,13 +2559,17 @@ async function handleMuacFixed(request, url, param) {
   if (param !== "classify") return notFound("MUAC route (use /muac/classify)");
   const parsed = parseMuacFixedQuery(url.searchParams);
   if (parsed.error) return err(parsed.error);
-  const result = classifyMuacFixed(parsed.ageMonths, parsed.muacCm);
+  const result = classifyMuacFixed(parsed.ageMonths, parsed.muacCm, parsed.scheme);
   return success(
     {
       age_months: parsed.ageMonths,
       ...result,
-      source: "WHO, Guideline for Integrated Approach to the National Care of HIV Infected Children (6 months - 14 years), 2008, as reproduced in the FANTA Ethiopia MUAC classification chart",
-      note: "Screening aid only, not a diagnosis. Fixed MUAC cut-offs by age group: severe below the first value, moderate from there up to and including the second, normal above it. Adults means 15 years and over (both sexes; pregnancy is not distinguished). For 6-59 months these cut-offs differ from the WHO/UNICEF community screening cut-offs (115 mm severe, 125 mm moderate) that most CMAM programmes use: check which one your programme follows. For MUAC as a WHO z-score for age (3-60 months) use /muac-for-age/classify.",
+      source: parsed.scheme === "cmam"
+        ? "WHO/UNICEF community screening MUAC cut-offs for 6-59 months (115 mm / 125 mm), as used by CMAM programmes"
+        : "WHO, Guideline for Integrated Approach to the National Care of HIV Infected Children (6 months - 14 years), 2008, as reproduced in the FANTA Ethiopia MUAC classification chart",
+      note: parsed.scheme === "cmam"
+        ? "Screening aid only, not a diagnosis. scheme=cmam: severe below 11.5 cm, moderate 11.5 to below 12.5 cm, normal 12.5 cm and above (6-59 months). Confirm with your national CMAM guideline and clinical assessment (oedema, weight-for-height/length)."
+        : "Screening aid only, not a diagnosis. Fixed MUAC cut-offs by age group: severe below the first value, moderate from there up to and including the second, normal above it. Adults means 15 years and over (both sexes; pregnancy is not distinguished). For 6-59 months these cut-offs differ from the WHO/UNICEF community screening cut-offs (115 mm severe, 125 mm moderate) that most CMAM programmes use: check which one your programme follows (add &scheme=cmam for the 115/125 mm cut-offs). For MUAC as a WHO z-score for age (3-60 months) use /muac-for-age/classify.",
     },
     { message: "MUAC classification" }
   );
@@ -6852,7 +6856,7 @@ function handleRoot(env) {
         "POST /muac-for-age/bulk    (admin) → body {items:[...]}; seed file: scripts/muac_for_age_seed.json",
       ],
       muac: [
-        "GET  /muac/classify?age_months=18&muac_cm=11.8  → fixed-cut-off MUAC class (severe / moderate / normal), 6 months to adult; or pass &muac_mm=. Calculation only, no table. Screening aid",
+        "GET  /muac/classify?age_months=18&muac_cm=11.8  → fixed-cut-off MUAC class (severe / moderate / normal), 6 months to adult; or pass &muac_mm=; add &scheme=cmam for the 115/125 mm community cut-offs (6-59 months). Calculation only, no table. Screening aid",
       ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",

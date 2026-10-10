@@ -899,9 +899,9 @@ Severe / moderate / normal classification of mid-upper arm circumference by age 
 | 10-14 years | < 16 cm | 16-18 cm | > 18 cm |
 | Adults (15 y+) | < 18 cm | 18-21 cm | > 21 cm |
 
-- `GET /muac/classify` *(public, rate-limited, cached 1h)* — `age_months` (6 or more, whole months) and `muac_cm` or `muac_mm`. Returns `age_group`, `status`, `muac_cm` and the `cutoffs_cm` used. Moderate includes both end values.
+- `GET /muac/classify` *(public, rate-limited, cached 1h)* — `age_months` (6 or more, whole months), `muac_cm` or `muac_mm`, optional `scheme` (`who_hiv_2008` default, or `cmam`). Returns `age_group`, `status`, `muac_cm` and the `cutoffs_cm` used. Moderate includes both end values.
 
-**Check your programme's cut-offs:** for 6-59 months the WHO/UNICEF community screening cut-offs most CMAM programmes use are 115 mm (severe) and 125 mm (moderate), which differ from this chart. For MUAC as a z-score for age see [`/muac-for-age`](#muac-for-age-muac-for-age).
+**`scheme=cmam` (6-59 months only):** add `&scheme=cmam` for the WHO/UNICEF community screening cut-offs used by CMAM programmes: below 11.5 cm severe, 11.5 to below 12.5 cm moderate, 12.5 cm and above normal (note 12.5 itself is normal here, unlike the chart above where the upper end value is moderate). The default is `scheme=who_hiv_2008`, the chart above. The two differ for 6-59 months, so check which one your programme follows. For MUAC as a z-score for age see [`/muac-for-age`](#muac-for-age-muac-for-age).
 
 ```
 GET /muac/classify?age_months=18&muac_cm=11.8

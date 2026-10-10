@@ -16,6 +16,12 @@
 // programmes. Screening aid only, not a diagnosis. Not the z-score table
 // (see muacForAge.js).
 
+// Optional ?scheme=cmam (6-59 months only): the WHO/UNICEF community screening
+// cut-offs used by CMAM programmes: <11.5 cm severe (SAM), 11.5 to <12.5 cm
+// moderate (MAM), >=12.5 cm normal. Note the boundary: 12.5 is normal here.
+export const MUAC_SCHEMES = ["who_hiv_2008", "cmam"];
+export const CMAM_MAX_MONTHS = 59;
+
 export const MUAC_FIXED_MIN_MONTHS = 6;
 export const MUAC_FIXED_MAX_MONTHS = 1200; // 100 years, sanity bound
 
@@ -27,7 +33,7 @@ const GROUPS = [
   { key: "adults",       from: 180, to: Infinity, severe: 18, moderate_max: 21 },
 ];
 
-/** Parse ?age_months=&(muac_cm | muac_mm). Returns { ageMonths, muacCm } or { error }. */
+/** Parse ?age_months=&(muac_cm | muac_mm)&scheme=. Returns { ageMonths, muacCm, scheme } or { error }. */
 export function parseMuacFixedQuery(searchParams) {
   const ageRaw = searchParams.get("age_months");
   const ageMonths = Number(ageRaw);
@@ -46,17 +52,38 @@ export function parseMuacFixedQuery(searchParams) {
   if (!Number.isFinite(muacCm) || muacCm < 5 || muacCm > 60) {
     return { error: "MUAC is not plausible (check you did not pass millimetres as muac_cm)" };
   }
-  return { ageMonths, muacCm: Math.round(muacCm * 1000) / 1000 };
+  const schemeRaw = (searchParams.get("scheme") || "who_hiv_2008").trim().toLowerCase();
+  if (!MUAC_SCHEMES.includes(schemeRaw)) {
+    return { error: `'scheme' must be one of: ${MUAC_SCHEMES.join(", ")}` };
+  }
+  if (schemeRaw === "cmam" && ageMonths > CMAM_MAX_MONTHS) {
+    return { error: `scheme=cmam only covers ${MUAC_FIXED_MIN_MONTHS} to ${CMAM_MAX_MONTHS} months; use the default scheme for older ages` };
+  }
+  return { ageMonths, muacCm: Math.round(muacCm * 1000) / 1000, scheme: schemeRaw };
 }
 
 /** Returns { age_group, status, muac_cm, cutoffs_cm: { severe_below, normal_above } }. */
-export function classifyMuacFixed(ageMonths, muacCm) {
+export function classifyMuacFixed(ageMonths, muacCm, scheme = "who_hiv_2008") {
+  if (scheme === "cmam") {
+    let status;
+    if (muacCm < 11.5) status = "severe";
+    else if (muacCm < 12.5) status = "moderate";
+    else status = "normal";
+    return {
+      scheme,
+      age_group: "6-59 months",
+      status,
+      muac_cm: muacCm,
+      cutoffs_cm: { severe_below: 11.5, normal_at_or_above: 12.5 },
+    };
+  }
   const g = GROUPS.find((x) => ageMonths >= x.from && ageMonths <= x.to);
   let status;
   if (muacCm < g.severe) status = "severe";
   else if (muacCm <= g.moderate_max) status = "moderate";
   else status = "normal";
   return {
+    scheme,
     age_group: g.key,
     status,
     muac_cm: muacCm,

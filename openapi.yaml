@@ -1511,6 +1511,13 @@ paths:
           in: query
           description: MUAC in MILLIMETRES (used if muac_cm is absent)
           schema: { type: number }
+        - name: scheme
+          in: query
+          description: >
+            who_hiv_2008 (default; chart by age group, 6 months to adult) or
+            cmam (WHO/UNICEF 115 / 125 mm community cut-offs, 6-59 months only;
+            12.5 cm itself is normal)
+          schema: { type: string, enum: [who_hiv_2008, cmam], default: who_hiv_2008 }
       responses:
         "200":
           description: Classification
@@ -1525,6 +1532,7 @@ paths:
                         type: object
                         properties:
                           age_months: { type: integer }
+                          scheme: { type: string, enum: [who_hiv_2008, cmam] }
                           age_group: { type: string, enum: [6-11 months, 12-59 months, 5-9 years, 10-14 years, adults] }
                           status: { type: string, enum: [severe, moderate, normal] }
                           muac_cm: { type: number }
