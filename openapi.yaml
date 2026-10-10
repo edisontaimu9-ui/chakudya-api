@@ -38,6 +38,7 @@ tags:
   - name: HC velocity
   - name: Length velocity
   - name: Weight velocity
+  - name: MUAC for age
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -1378,6 +1379,102 @@ paths:
       tags: [Weight velocity]
       summary: Bulk-create weight velocity rows (admin)
       description: Seed file scripts/who_weight_velocity_seed.json (38 rows). A unique (sex, interval_start_months) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /muac-for-age/classify:
+    get:
+      tags: [MUAC for age]
+      summary: Classify arm circumference (MUAC) for age, 3 to 60 months
+      description: >
+        WHO Child Growth Standards arm circumference-for-age (cm) as a z-score
+        for age. Not the fixed-cut-off MUAC tape (115 / 125 mm). Pass sex,
+        age_months and either muac_cm or muac_mm. Strict cut-offs: very low
+        below -3SD, low below -2SD, within expected range from -2SD to +2SD,
+        high above +2SD, very high above +3SD. z_score and percentile are exact,
+        computed from the WHO L, M and S values (linear extension beyond +/-3SD,
+        as in the WHO tables). Screening aid only, not a diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: age_months
+          in: query
+          required: true
+          description: Whole completed months
+          schema: { type: integer, minimum: 3, maximum: 60 }
+        - name: muac_cm
+          in: query
+          description: Mid-upper arm circumference in CENTIMETRES
+          schema: { type: number }
+        - name: muac_mm
+          in: query
+          description: Mid-upper arm circumference in MILLIMETRES (used if muac_cm is absent)
+          schema: { type: number }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          age_months: { type: integer }
+                          status:
+                            type: string
+                            enum: [very low, low, within expected range, high, very high]
+                          muac_cm: { type: number }
+                          z_score: { type: number, nullable: true }
+                          percentile: { type: number, nullable: true }
+                          cutoffs:
+                            type: object
+                            additionalProperties: { type: number }
+                            description: Keys -3SD, -2SD, -1SD, median, +1SD, +2SD, +3SD (cm)
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /muac-for-age:
+    get:
+      tags: [MUAC for age]
+      summary: List WHO arm circumference-for-age rows (cm, with L/M/S)
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          schema: { type: string }
+        - name: age_months
+          in: query
+          schema: { type: integer }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /muac-for-age/bulk:
+    post:
+      tags: [MUAC for age]
+      summary: Bulk-create MUAC-for-age rows (admin)
+      description: Seed file scripts/muac_for_age_seed.json. A unique (sex, age_months) constraint rejects re-seeding of months already present.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true

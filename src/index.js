@@ -530,6 +530,7 @@ import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
 import { parseHcVelocityQuery, classifyHcVelocity, normalizeSex as normalizeHcSex } from "./hcVelocity.js";
 import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVelocity.js";
 import { parseWeightVelocityQuery, classifyWeightVelocity } from "./weightVelocity.js";
+import { parseMuacForAgeQuery, classifyMuacForAge } from "./muacForAge.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -762,7 +763,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -899,7 +900,7 @@ function routePolicy(resource, method, param, action) {
   const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
   const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "fenton-preterm"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2491,6 +2492,60 @@ async function handleWeightVelocity(request, url, db, param) {
     filters.interval_start_months = `eq.${Number(start)}`;
   }
   return await paginatedList(db, "who_weight_velocity", url, { filters, order: "interval_start_months.asc" });
+}
+
+// ─── MUAC-FOR-AGE (/muac-for-age) ─────────────────────────────────────────
+//
+// WHO arm circumference-for-age standards (cm), 3 to 60 months (see
+// sql/021_add_who_muac_for_age.sql and src/muacForAge.js). Public reads; the
+// table is filled via POST /muac-for-age/bulk (admin). Returns the band plus an
+// exact LMS z-score and percentile. Screening aid, not a diagnosis. This is
+// MUAC for age, not the fixed-cut-off MUAC tape (115 / 125 mm).
+async function handleMuacForAge(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /muac-for-age/bulk (admin).", 405);
+  }
+
+  if (param === "classify") {
+    const parsed = parseMuacForAgeQuery(url.searchParams);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.select("who_muac_for_age", {
+      filters: { sex: `eq.${parsed.sex}`, age_months: `eq.${parsed.ageMonths}` },
+      limit: 1,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const row = Array.isArray(body) ? body[0] : null;
+    if (!row) return notFound("MUAC-for-age reference row (has sql/021 been run and the table seeded for this age?)");
+
+    const result = classifyMuacForAge(row, parsed.muacCm);
+    return success(
+      {
+        sex: parsed.sex,
+        age_months: row.age_months,
+        ...result,
+        source: row.source,
+        note: "Screening aid only, not a diagnosis. This is arm circumference (MUAC) for AGE as a WHO z-score, not the fixed-cut-off MUAC tape used in community screening (115 mm / 125 mm for 6-59 months). Bands: very low < -3SD, low < -2SD, within expected range -2SD to +2SD, high > +2SD, very high > +3SD. z_score and percentile come from the WHO L, M and S values (beyond +/-3SD the z-score is extended linearly, as in the WHO tables). Interpret with weight-for-height/length, clinical signs and repeat measurement.",
+      },
+      { message: "MUAC-for-age classification" }
+    );
+  }
+
+  if (param) return notFound("MUAC-for-age route");
+
+  const filters = {};
+  const sex = url.searchParams.get("sex");
+  if (sex) {
+    const n = normalizeHcSex(sex);
+    if (!n) return err("'sex' must be girls or boys");
+    filters.sex = `eq.${n}`;
+  }
+  const age = url.searchParams.get("age_months");
+  if (age) {
+    if (!Number.isInteger(Number(age))) return err("'age_months' must be a whole number");
+    filters.age_months = `eq.${Number(age)}`;
+  }
+  return await paginatedList(db, "who_muac_for_age", url, { filters, order: "age_months.asc" });
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -6768,6 +6823,11 @@ function handleRoot(env) {
         "GET  /weight-velocity?sex=&start_age_months=   → raw reference rows (-3SD to +3SD increments, grams, plus L/M/S/Delta)",
         "POST /weight-velocity/bulk    (admin) → body {items:[...]}, 38 rows; seed file: scripts/who_weight_velocity_seed.json",
       ],
+      muac_for_age: [
+        "GET  /muac-for-age/classify?sex=girls&age_months=12&muac_cm=13.5  → WHO arm circumference-for-age band + exact z-score and percentile (3-60 months; or pass &muac_mm= instead); screening aid, see sql/021_add_who_muac_for_age.sql",
+        "GET  /muac-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, cm, plus L/M/S)",
+        "POST /muac-for-age/bulk    (admin) → body {items:[...]}; seed file: scripts/muac_for_age_seed.json",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -8155,6 +8215,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleWeightVelocity(request, url, db, param || null);
+    }
+
+    case "muac-for-age": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "who_muac_for_age", {
+          requiredField: "sex",
+          label: "MUAC-for-age rows",
+        });
+      }
+      return await handleMuacForAge(request, url, db, param || null);
     }
 
     case "fenton-preterm": {
