@@ -877,7 +877,7 @@ WHO Child Growth Standards **arm circumference-for-age** (cm), 3 to 60 months, g
 
 - `GET /muac-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (3-60, whole months), and `muac_cm` or `muac_mm`. Returns `status`, `muac_cm`, `z_score`, `percentile` and the `cutoffs` (cm) used.
 - `GET /muac-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
-- `POST /muac-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/muac_for_age_seed.json`](scripts/muac_for_age_seed.json). A unique `(sex, age_months)` constraint rejects re-seeding of months already present, so the table can be loaded in more than one file. Regenerate or extend the seed with `node scripts/build_muac_seed.mjs <girls.txt> <boys.txt>` (months missing from the input are skipped and listed).
+- `POST /muac-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed files: [`scripts/muac_for_age_seed.json`](scripts/muac_for_age_seed.json) (months 3-35) and [`scripts/muac_for_age_seed_36_60.json`](scripts/muac_for_age_seed_36_60.json) (months 36-60, from WHO's monthly 3-5 year tables, cut-offs recomputed from the printed L, M, S); post each once. A unique `(sex, age_months)` constraint rejects re-seeding of months already present, so the table can be loaded in more than one file. Regenerate or extend the seed with `node scripts/build_muac_seed.mjs <girls.txt> <boys.txt>` (months missing from the input are skipped and listed).
 
 Bands (strict): very low < -3SD, low < -2SD, within expected range -2SD to +2SD, high > +2SD, very high > +3SD. Screening aid only, not a diagnosis.
 
@@ -885,7 +885,7 @@ Bands (strict): very low < -3SD, low < -2SD, within expected range -2SD to +2SD,
 GET /muac-for-age/classify?sex=girls&age_months=12&muac_cm=13.5
 ```
 
-Setup: run `sql/021_add_who_muac_for_age.sql` in the Supabase SQL editor, then `POST /muac-for-age/bulk` with the seed file.
+Setup: run `sql/021_add_who_muac_for_age.sql` in the Supabase SQL editor, then `POST /muac-for-age/bulk` once with each seed file (116 rows in total).
 
 ### MUAC fixed cut-offs (`/muac`)
 

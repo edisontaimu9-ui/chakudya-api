@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseMuacForAgeQuery, classifyMuacForAge, muacZ } from "../src/muacForAge.js";
 
-const { items } = JSON.parse(readFileSync(new URL("../scripts/muac_for_age_seed.json", import.meta.url)));
+const load = (f) => JSON.parse(readFileSync(new URL(`../scripts/${f}`, import.meta.url))).items;
+const seed1 = load("muac_for_age_seed.json");        // months 3-35 (daily WHO table)
+const seed2 = load("muac_for_age_seed_36_60.json");  // months 36-60 (monthly WHO table)
+const items = [...seed1, ...seed2];
 const get = (sex, m) => items.find((r) => r.sex === sex && r.age_months === m);
 const q = (s) => parseMuacForAgeQuery(new URLSearchParams(s));
 
@@ -13,7 +16,13 @@ describe("seed file", () => {
     assert.equal(new Set(keys).size, keys.length);
     assert.ok(items.every((r) => r.age_months >= 3 && r.age_months <= 60));
     assert.ok(items.some((r) => r.sex === "girls") && items.some((r) => r.sex === "boys"));
-    assert.ok(items.length <= 500);
+    assert.ok(seed1.length <= 500 && seed2.length <= 500);
+  });
+  test("the two seed files together cover every month 3-60 for both sexes", () => {
+    for (const sex of ["girls", "boys"]) {
+      for (let m = 3; m <= 60; m++) assert.ok(get(sex, m), `missing ${sex} ${m}`);
+    }
+    assert.equal(items.length, 116);
   });
   test("every stored cut-off matches its own L, M, S within 0.001 cm", () => {
     const zs = { sd_neg3: -3, sd_neg2: -2, sd_neg1: -1, median: 0, sd_pos1: 1, sd_pos2: 2, sd_pos3: 3 };
