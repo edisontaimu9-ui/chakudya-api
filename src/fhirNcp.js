@@ -205,6 +205,125 @@ function weightLossSignificance(lossPct, periodDays) {
   return { interval: iv.label, level: "not-significant" };
 }
 
+// ─── $screen — NRS-2002 (Nutritional Risk Screening, hospital adults) ──────
+//
+// Two-stage tool, implemented as printed in the supplied appendix:
+//   Initial screening: 4 yes/no questions. All NO -> no final score, re-screen
+//     weekly. Any YES -> final screening.
+//   Final screening: nutritional-status score (0-3) + disease-severity score
+//     (0-3) + 1 if age >= 70. Total >= 3 = nutritionally at risk.
+// Disease severity and "impaired general condition" are clinical judgements,
+// so they are inputs here, never guesses. The appendix's intake bands overlap
+// (50-75 / 20-60 / 0-25 % of requirement): the highest applicable score is
+// used and the overlap is stated in the note.
+
+function nrsWeightLossScore(pct, months) {
+  if (!(pct > 5) || !(months <= 3)) return 0;
+  if (months <= 1 || pct > 15) return 3;
+  if (months <= 2) return 2;
+  return 1;
+}
+
+function nrsIntakeScore(pct) {
+  const hits = [];
+  if (pct >= 0 && pct <= 25) hits.push(3);
+  if (pct >= 20 && pct <= 60) hits.push(2);
+  if (pct >= 50 && pct <= 75) hits.push(1);
+  return { score: hits.length ? Math.max(...hits) : 0, overlap: new Set(hits).size > 1 };
+}
+
+function evaluateNrs(p, ctx) {
+  const base = ctx.base;
+  const age = ageYearsFrom(p, ctx.now);
+  if (!isNum(age)) return bad("NRS-2002 needs 'ageYears' or 'birthDate' (age 70 or over adds 1 point).");
+  if (age < 18) return unprocessable("NRS-2002 here is for adults (18+).");
+
+  let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
+  if (bmi === null) {
+    const kg = p.get("weight") ? toKg(p.get("weight")) : null;
+    const cm = p.get("height") ? toCm(p.get("height")) : null;
+    if (kg === null || cm === null) return bad("Provide 'bmi' (decimal), or both 'weight' (kg/g) and 'height' (cm/m) Quantities.");
+    bmi = kg / (cm / 100) ** 2;
+  }
+  if (!Number.isFinite(bmi) || bmi <= 0 || bmi > 100) return bad("Computed/provided BMI is not plausible.");
+
+  const lossPct = p.get("weightLossPercent");
+  if (!isNum(lossPct) || lossPct < 0 || lossPct > 100) return bad("'weightLossPercent' (decimal 0-100, 0 if none) is required.");
+  const lossMonths = p.get("weightLossPeriodMonths");
+  if (lossPct > 0 && !(isNum(lossMonths) && lossMonths > 0)) return bad("'weightLossPeriodMonths' (decimal > 0) is required when weightLossPercent > 0.");
+  const intake = p.get("intakePercentOfRequirement");
+  if (!isNum(intake) || intake < 0 || intake > 150) return bad("'intakePercentOfRequirement' (0-150, intake over the preceding week as % of normal requirement) is required.");
+
+  const impaired = p.get("impairedGeneralCondition");
+  if (bmi <= 20.5 && typeof impaired !== "boolean") {
+    return bad("'impairedGeneralCondition' (boolean) is required when BMI is 20.5 or below: the BMI criteria only count together with an impaired general condition.");
+  }
+  const sevScore = p.get("diseaseSeverityScore");
+  if (sevScore !== undefined && !(Number.isInteger(sevScore) && sevScore >= 0 && sevScore <= 3)) {
+    return bad("'diseaseSeverityScore' must be an integer 0-3 (0 absent, 1 mild, 2 moderate, 3 severe).");
+  }
+
+  // Initial screening
+  const q = {
+    "BMI < 20.5": bmi < 20.5,
+    "weight loss within the last 3 months": lossPct > 0 && lossMonths <= 3,
+    "reduced dietary intake in the last week": typeof p.get("reducedIntakeLastWeek") === "boolean" ? p.get("reducedIntakeLastWeek") : intake < 100,
+    "severely ill (e.g. intensive therapy)": typeof p.get("severelyIll") === "boolean" ? p.get("severelyIll") : sevScore === 3,
+  };
+  const yes = Object.entries(q).filter(([, v]) => v).map(([k]) => k);
+  const initialPositive = yes.length > 0;
+
+  const obs = {
+    resourceType: "Observation",
+    status: "final",
+    category: [...stepCategory(base, "screening"), { coding: [{ system: OBS_CATEGORY, code: "survey" }] }],
+    code: { coding: [{ system: cs(base, "screening-tool"), code: "nrs-2002", display: "NRS-2002 (adult)" }], text: "NRS-2002 nutritional risk screening" },
+    effectiveDateTime: str(p.get("effectiveDateTime")) ?? ctx.now,
+  };
+  const subj = p.get("subject") ? subjectRef(p.get("subject")) : null;
+  if (subj) obs.subject = subj;
+  const ind = (code, v) => ({ code: { coding: [{ system: cs(base, "ncp-indicator"), code }] }, ...v });
+  const risk = (code) => ind("nrs-risk-category", { valueCodeableConcept: { coding: [{ system: cs(base, "nrs-risk"), code }] } });
+
+  if (!initialPositive) {
+    obs.component = [ind("nrs-initial-screening-positive", { valueBoolean: false }), risk("final-screening-not-required")];
+    obs.interpretation = [{ coding: [{ system: V3_INTERPRETATION, code: "N" }] }];
+    obs.note = [{ text: "Initial screening negative on all four questions: final screening is not performed. Re-screen at weekly intervals; consider a preventative nutritional care plan if a major operation is planned. " + SCREENING_NOTE }];
+    return okRes(collection([entryOf(ctx, obs)]));
+  }
+
+  if (sevScore === undefined) {
+    return bad(`Initial screening is positive (${yes.join("; ")}), so final screening is needed: 'diseaseSeverityScore' (integer 0-3) is required.`);
+  }
+
+  const wl = nrsWeightLossScore(lossPct, lossMonths);
+  const bmiScore = bmi <= 20.5 && impaired ? (bmi < 18.5 ? 3 : 2) : 0;
+  const intakeRes = nrsIntakeScore(intake);
+  const status = Math.max(wl, bmiScore, intakeRes.score);
+  const ageAdd = age >= 70 ? 1 : 0;
+  const total = status + sevScore + ageAdd;
+  const atRisk = total >= 3;
+
+  obs.valueInteger = total;
+  obs.interpretation = [{ coding: [{ system: V3_INTERPRETATION, code: atRisk ? "A" : "N" }] }];
+  obs.component = [
+    ind("nrs-initial-screening-positive", { valueBoolean: true }),
+    ind("nrs-nutritional-status-score", { valueInteger: status }),
+    ind("nrs-disease-severity-score", { valueInteger: sevScore }),
+    ind("nrs-age-adjustment", { valueInteger: ageAdd }),
+    risk(atRisk ? "at-risk" : "not-at-risk"),
+    { code: { coding: [{ system: LOINC, code: "39156-5", display: "Body mass index (BMI)" }] }, valueQuantity: { value: round(bmi, 1), unit: "kg/m2", system: UCUM, code: "kg/m2" } },
+  ];
+  const drivers = [
+    wl > 0 && `weight loss ${lossPct}% in ${lossMonths} month(s) = ${wl}`,
+    bmiScore > 0 && `BMI ${round(bmi, 1)} with impaired general condition = ${bmiScore}`,
+    intakeRes.score > 0 && `intake ${intake}% of requirement = ${intakeRes.score}${intakeRes.overlap ? " (the appendix's intake bands overlap here; the highest applicable score is used)" : ""}`,
+  ].filter(Boolean);
+  const mgmt = atRisk ? "Score 3 or more: nutritionally at risk — initiate a nutritional care plan." : "Score below 3: re-screen weekly; consider a preventative nutritional care plan if a major operation is planned.";
+  obs.note = [{ text: `Initial screening YES: ${yes.join("; ")}. Nutritional status score ${status}${drivers.length ? " (" + drivers.join("; ") + ")" : ""}. ${mgmt} ${SCREENING_NOTE}` }];
+  return okRes(collection([entryOf(ctx, obs)]));
+}
+
 // ─── $screen — MUST (Malnutrition Universal Screening Tool, adults) ────────
 
 export function evaluateScreen(body, ctx) {
@@ -212,6 +331,10 @@ export function evaluateScreen(body, ctx) {
   if (e) return e;
   const p = readParams(body);
   const base = ctx.base;
+
+  const tool = str(p.get("tool")) ?? "must";
+  if (tool === "nrs-2002") return evaluateNrs(p, ctx);
+  if (tool !== "must") return bad("'tool' must be must (default) or nrs-2002.");
 
   let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
   const kg = p.get("weight") ? toKg(p.get("weight")) : null;

@@ -63,6 +63,109 @@ test("MUST: errors are OperationOutcomes", () => {
   assert.equal(evaluateScreen({ resourceType: "Bundle" }, ctx).ok, false);
 });
 
+// ─── $screen — NRS-2002 ───────────────────────────────────────────────────
+function nrs({ bmi = 24, loss = 0, months, intake = 100, impaired, sev, age = 50, extra = [] }) {
+  return P([
+    { name: "tool", valueCode: "nrs-2002" },
+    { name: "bmi", valueDecimal: bmi },
+    { name: "weightLossPercent", valueDecimal: loss },
+    ...(months !== undefined ? [{ name: "weightLossPeriodMonths", valueDecimal: months }] : []),
+    { name: "intakePercentOfRequirement", valueDecimal: intake },
+    ...(impaired !== undefined ? [{ name: "impairedGeneralCondition", valueBoolean: impaired }] : []),
+    ...(sev !== undefined ? [{ name: "diseaseSeverityScore", valueInteger: sev }] : []),
+    { name: "ageYears", valueInteger: age },
+    ...extra,
+  ]);
+}
+const nrsObs = (b) => evaluateScreen(b, ctx).body.entry[0].resource;
+const nrsComp = (o, code) => o.component.find((c) => c.code.coding[0].code === code);
+const nrsRisk = (o) => nrsComp(o, "nrs-risk-category").valueCodeableConcept.coding[0].code;
+const nrsStatus = (o) => nrsComp(o, "nrs-nutritional-status-score").valueInteger;
+
+test("NRS-2002: all four initial questions negative skips final screening", () => {
+  const o = nrsObs(nrs({ sev: 2, age: 80 })); // BMI 24, no loss, intake 100, not severely ill
+  assert.equal(o.valueInteger, undefined);
+  assert.equal(nrsRisk(o), "final-screening-not-required");
+  assert.equal(nrsComp(o, "nrs-initial-screening-positive").valueBoolean, false);
+  assert.match(o.note[0].text, /weekly/);
+});
+
+test("NRS-2002: severe undernutrition (BMI < 18.5 + impaired condition) is score 3 and at risk", () => {
+  const o = nrsObs(nrs({ bmi: 17.9, impaired: true, sev: 0 }));
+  assert.equal(nrsStatus(o), 3);
+  assert.equal(o.valueInteger, 3);
+  assert.equal(nrsRisk(o), "at-risk");
+});
+
+test("NRS-2002: BMI 18.5-20.5 counts as 2 only with impaired general condition", () => {
+  assert.equal(nrsStatus(nrsObs(nrs({ bmi: 19, impaired: true, sev: 0 }))), 2);
+  assert.equal(nrsStatus(nrsObs(nrs({ bmi: 19, impaired: false, intake: 80, sev: 0 }))), 0);
+  // BMI exactly 20.5 is not "< 20.5": it only scores (band 18.5-20.5) once another initial question is YES
+  assert.equal(nrsRisk(nrsObs(nrs({ bmi: 20.5, impaired: true, sev: 0 }))), "final-screening-not-required");
+  assert.equal(nrsStatus(nrsObs(nrs({ bmi: 20.5, impaired: true, intake: 90, sev: 0 }))), 2);
+  assert.equal(evaluateScreen(nrs({ bmi: 19, sev: 0 }), ctx).ok, false); // impaired condition must be stated
+});
+
+test("NRS-2002: weight-loss bands (>5% in 3 mo = 1, >5% in 2 mo = 2, >5% in 1 mo or >15% in 3 mo = 3)", () => {
+  const st = (loss, months) => nrsStatus(nrsObs(nrs({ loss, months, sev: 0 })));
+  assert.equal(st(5, 3), 0); // must be MORE than 5%
+  assert.equal(st(6, 3), 1);
+  assert.equal(st(6, 2), 2);
+  assert.equal(st(6, 1), 3);
+  assert.equal(st(16, 3), 3);
+  assert.equal(st(15, 3), 1);
+  // a loss over 4 months is outside the "last 3 months" window: it neither triggers screening nor scores
+  assert.equal(nrsRisk(nrsObs(nrs({ loss: 20, months: 4, sev: 0 }))), "final-screening-not-required");
+  assert.equal(nrsStatus(nrsObs(nrs({ loss: 20, months: 4, intake: 90, sev: 0 }))), 0);
+});
+
+test("NRS-2002: intake bands, including the appendix's overlapping ranges (highest score wins, overlap disclosed)", () => {
+  const st = (intake) => nrsStatus(nrsObs(nrs({ intake, sev: 0 })));
+  assert.equal(st(76), 0);
+  assert.equal(st(75), 1);
+  assert.equal(st(61), 1);
+  assert.equal(st(26), 2);
+  assert.equal(st(25), 3);
+  assert.equal(st(0), 3);
+  const overlap = nrsObs(nrs({ intake: 55, sev: 0 })); // in both 50-75 (1) and 20-60 (2)
+  assert.equal(nrsStatus(overlap), 2);
+  assert.match(overlap.note[0].text, /overlap/);
+  assert.doesNotMatch(nrsObs(nrs({ intake: 70, sev: 0 })).note[0].text, /overlap/);
+});
+
+test("NRS-2002: total = status + disease severity + 1 at age 70+; threshold is 3", () => {
+  assert.equal(nrsObs(nrs({ intake: 70, sev: 1, age: 50 })).valueInteger, 2);
+  assert.equal(nrsRisk(nrsObs(nrs({ intake: 70, sev: 1, age: 50 }))), "not-at-risk");
+  const older = nrsObs(nrs({ intake: 70, sev: 1, age: 70 })); // 1 + 1 + 1
+  assert.equal(older.valueInteger, 3);
+  assert.equal(nrsComp(older, "nrs-age-adjustment").valueInteger, 1);
+  assert.equal(nrsRisk(older), "at-risk");
+  assert.equal(nrsComp(nrsObs(nrs({ intake: 70, sev: 1, age: 69 })), "nrs-age-adjustment").valueInteger, 0);
+  // severe disease alone (ICU) is a positive initial screen and scores 3
+  const icu = nrsObs(nrs({ sev: 3 }));
+  assert.equal(icu.valueInteger, 3);
+  assert.equal(nrsRisk(icu), "at-risk");
+});
+
+test("NRS-2002: severity score is required once initial screening is positive; inputs validated", () => {
+  const needSev = evaluateScreen(nrs({ intake: 50 }), ctx);
+  assert.equal(needSev.ok, false);
+  assert.match(needSev.outcome.issue[0].diagnostics, /diseaseSeverityScore/);
+  assert.equal(evaluateScreen(nrs({ intake: 50, sev: 4 }), ctx).ok, false);
+  assert.equal(evaluateScreen(nrs({ loss: 7, sev: 1 }), ctx).ok, false); // months required with a loss
+  assert.equal(evaluateScreen(P([{ name: "tool", valueCode: "nrs-2002" }, { name: "bmi", valueDecimal: 22 }]), ctx).ok, false);
+  assert.equal(evaluateScreen(nrs({ age: 12, sev: 1, intake: 50 }), ctx).status, 422);
+  assert.equal(evaluateScreen(P([{ name: "tool", valueCode: "mna" }]), ctx).ok, false);
+});
+
+test("NRS-2002: explicit initial-question overrides are honoured; default tool stays MUST", () => {
+  // normal numbers but the clinician says intake was reduced -> initial screening positive
+  const o = nrsObs(nrs({ intake: 100, sev: 0, extra: [{ name: "reducedIntakeLastWeek", valueBoolean: true }] }));
+  assert.equal(nrsComp(o, "nrs-initial-screening-positive").valueBoolean, true);
+  const must = evaluateScreen(P([{ name: "bmi", valueDecimal: 22 }, { name: "weightLossPercent3to6Months", valueDecimal: 0 }, { name: "acuteDiseaseNoIntake", valueBoolean: false }]), ctx);
+  assert.equal(must.body.entry[0].resource.code.coding[0].code, "must");
+});
+
 // ─── $assess-nutrition ────────────────────────────────────────────────────
 const adult = [
   { name: "sex", valueCode: "male" },
@@ -468,6 +571,10 @@ function emittedSamples() {
   for (const [bmi, loss, acute] of [[25, 0, false], [19, 0, false], [17, 12, true]]) {
     keep(evaluateScreen(P([sub, { name: "bmi", valueDecimal: bmi }, { name: "weightLossPercent3to6Months", valueDecimal: loss }, { name: "acuteDiseaseNoIntake", valueBoolean: acute }]), ctx));
   }
+  // NRS-2002: final screening (at risk / not at risk) and initial-screening-negative
+  keep(evaluateScreen(nrs({ bmi: 17.5, impaired: true, loss: 0, intake: 40, sev: 2, age: 75 }), ctx));
+  keep(evaluateScreen(nrs({ bmi: 19, impaired: false, loss: 0, intake: 90, sev: 0, age: 50 }), ctx));
+  keep(evaluateScreen(nrs({ bmi: 24, loss: 0, intake: 100, sev: 1, age: 50 }), ctx));
   // Assessment: everything on, then intake-only (no factor), then several loss intervals and BMI classes
   keep(evaluateAssessNutrition(P([
     ...adult, sub,
@@ -554,7 +661,10 @@ test("CapabilityStatement operation links and OperationDefinitions match one to 
 
 test("OperationDefinitions describe the parameters each operation reads", () => {
   const names = (id) => operationDefinitionResource(BASE, id).parameter.filter((p) => p.use === "in").map((p) => p.name);
-  assert.deepEqual(names("Observation-screen").sort(), ["acuteDiseaseNoIntake", "bmi", "effectiveDateTime", "height", "subject", "usualWeight", "weight", "weightLossPercent3to6Months"]);
+  for (const n of ["tool", "acuteDiseaseNoIntake", "bmi", "effectiveDateTime", "height", "subject", "usualWeight", "weight", "weightLossPercent3to6Months",
+    "ageYears", "birthDate", "weightLossPercent", "weightLossPeriodMonths", "intakePercentOfRequirement", "impairedGeneralCondition", "diseaseSeverityScore", "severelyIll", "reducedIntakeLastWeek"]) {
+    assert.ok(names("Observation-screen").includes(n), `Observation-screen is missing parameter ${n}`);
+  }
   for (const n of ["subject", "diagnosis"]) assert.ok(names("Condition-diagnose").includes(n));
   for (const n of ["subject", "author", "resource"]) assert.ok(names("Bundle-ncp-document").includes(n));
   const diag = operationDefinitionResource(BASE, "Condition-diagnose").parameter.find((p) => p.name === "diagnosis");
