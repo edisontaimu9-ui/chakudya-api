@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -616,7 +616,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, and
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, and
 `/fenton-preterm/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
@@ -818,6 +818,22 @@ GET /bmi-for-age/classify?sex=girls&age_months=95&weight_kg=26&height_cm=121.1
 ```
 
 Cut-offs (strict inequalities, compared against the **unrounded** BMI, so a displayed BMI of 17.7 can still be above a 17.7 cut-off): severe thinness < -3SD, thinness < -2SD, normal from -2SD to +1SD, overweight > +1SD, obesity > +2SD. The printed guide lists severe thinness as "< -1 SD", which looks like a typo, so the WHO -3SD cut-off is used. Ages outside 61 to 228 months return a 400: under-5s need the WHO child growth standards and adults use adult BMI cut-offs. This is a screening aid, not a diagnosis.
+
+### Head Circumference Velocity (`/hc-velocity`)
+
+WHO Child Growth Standards 6-month head circumference **increments** (simplified field tables), birth to 24 months, -3 SD to +3 SD, for girls and boys. Table: [`sql/018_add_who_hc_velocity.sql`](sql/018_add_who_hc_velocity.sql), 38 rows (19 girls + 19 boys), one per sex per 6-month window (0-6, 1-7, ... 18-24 months). Values are transcribed from the printed tables, not estimated. Logic: [`src/hcVelocity.js`](src/hcVelocity.js). This is how fast the head grew over a window, **not** head circumference for age.
+
+- `GET /hc-velocity/classify` *(public, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first measurement; 3 means the 3-9 month window), and either `increment_cm` or both `hc_start_cm` and `hc_end_cm`. Optional `end_age_months` must equal start + 6. Returns `status`, `increment_cm`, `z_approx` (interpolated between the printed SDs, null beyond -3 or +3) and the `cutoffs` used.
+- `GET /hc-velocity` — the raw reference rows; optional `sex` and `start_age_months` filters, standard pagination.
+- `POST /hc-velocity/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/who_hc_velocity_seed.json`](scripts/who_hc_velocity_seed.json). A unique `(sex, interval_start_months)` constraint rejects a second seeding attempt.
+
+Bands (strict): very low < -3SD, low < -2SD, within expected range -2SD to +2SD, high > +2SD, very high > +3SD. Screening aid only, not a diagnosis; interpret with head circumference for age and clinical context.
+
+```
+GET /hc-velocity/classify?sex=girls&start_age_months=3&hc_start_cm=40.2&hc_end_cm=43.9
+```
+
+Setup: run `sql/018_add_who_hc_velocity.sql` in the Supabase SQL editor, then `POST /hc-velocity/bulk` once with the seed file.
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 

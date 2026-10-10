@@ -35,6 +35,7 @@ tags:
   - name: Renal
   - name: Formulas
   - name: BMI for age
+  - name: HC velocity
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -1064,6 +1065,109 @@ paths:
       tags: [BMI for age]
       summary: Bulk-create BMI-for-age rows (admin)
       description: Seed file scripts/bmi_for_age_seed.json (336 rows). A unique (sex, age_months) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /hc-velocity/classify:
+    get:
+      tags: [HC velocity]
+      summary: Classify a 6-month head circumference increment (birth to 24 months)
+      description: >
+        WHO Child Growth Standards 6-month head circumference increment
+        (simplified field tables, -3 SD to +3 SD). This is head growth VELOCITY,
+        not head circumference for age. Pass the start age of the 6-month
+        window, plus either increment_cm or both hc_start_cm and hc_end_cm.
+        Strict cut-offs: very low below -3SD, low below -2SD, within expected
+        range from -2SD to +2SD, high above +2SD, very high above +3SD.
+        z_approx is interpolated between the printed SD points (null beyond
+        -3 or +3). Screening aid only, not a diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: start_age_months
+          in: query
+          required: true
+          description: Whole months at the first measurement; window is start to start+6 (3 means the 3-9 month window)
+          schema: { type: integer, minimum: 0, maximum: 18 }
+        - name: end_age_months
+          in: query
+          description: Optional; must equal start_age_months + 6
+          schema: { type: integer }
+        - name: increment_cm
+          in: query
+          schema: { type: number }
+        - name: hc_start_cm
+          in: query
+          schema: { type: number }
+        - name: hc_end_cm
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          interval: { type: string, example: 3-9 months }
+                          interval_start_months: { type: integer }
+                          interval_end_months: { type: integer }
+                          status:
+                            type: string
+                            enum: [very low increment, low increment, within expected range, high increment, very high increment]
+                          increment_cm: { type: number }
+                          z_approx: { type: number, nullable: true }
+                          cutoffs:
+                            type: object
+                            additionalProperties: { type: number }
+                            description: Keys -3SD, -2SD, -1SD, median, +1SD, +2SD, +3SD
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /hc-velocity:
+    get:
+      tags: [HC velocity]
+      summary: List WHO 6-month head circumference increment rows (-3SD to +3SD, cm)
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          schema: { type: string }
+        - name: start_age_months
+          in: query
+          schema: { type: integer }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /hc-velocity/bulk:
+    post:
+      tags: [HC velocity]
+      summary: Bulk-create HC velocity rows (admin)
+      description: Seed file scripts/who_hc_velocity_seed.json (38 rows). A unique (sex, interval_start_months) constraint rejects re-seeding.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true

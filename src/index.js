@@ -527,6 +527,7 @@ import {
 } from "./dri_data.js";
 import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
+import { parseHcVelocityQuery, classifyHcVelocity, normalizeSex as normalizeHcSex } from "./hcVelocity.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -759,7 +760,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -896,7 +897,7 @@ function routePolicy(resource, method, param, action) {
   const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
   const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "fenton-preterm"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2321,6 +2322,61 @@ async function handleBmiForAge(request, url, db, param) {
     filters.age_months = `eq.${Number(age)}`;
   }
   return await paginatedList(db, "bmi_for_age", url, { filters, order: "age_months.asc" });
+}
+
+// ─── HEAD CIRCUMFERENCE VELOCITY (/hc-velocity) ───────────────────────────
+//
+// WHO 6-month head circumference increment standards, birth to 24 months (see
+// sql/018_add_who_hc_velocity.sql and src/hcVelocity.js). Public reads; the
+// table is filled once via POST /hc-velocity/bulk (admin). Screening aid, not
+// a diagnosis. This is velocity (how fast the head grew), not HC-for-age.
+async function handleHcVelocity(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /hc-velocity/bulk (admin).", 405);
+  }
+
+  if (param === "classify") {
+    const parsed = parseHcVelocityQuery(url.searchParams);
+    if (parsed.error) return err(parsed.error);
+
+    const { ok, status, body } = await db.select("who_hc_velocity", {
+      filters: { sex: `eq.${parsed.sex}`, interval_start_months: `eq.${parsed.startMonths}` },
+      limit: 1,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const row = Array.isArray(body) ? body[0] : null;
+    if (!row) return notFound("HC velocity reference row (has sql/018 been run and the table seeded?)");
+
+    const result = classifyHcVelocity(row, parsed.increment);
+    return success(
+      {
+        sex: parsed.sex,
+        interval: `${row.interval_start_months}-${row.interval_end_months} months`,
+        interval_start_months: row.interval_start_months,
+        interval_end_months: row.interval_end_months,
+        ...result,
+        source: row.source,
+        note: "Screening aid only, not a diagnosis. This is the 6-month head circumference INCREMENT, not head circumference for age. Bands: very low < -3SD, low < -2SD, within expected range -2SD to +2SD, high > +2SD, very high > +3SD. z_approx is linearly interpolated between the printed SD cut-offs (null beyond -3 or +3). Interpret with head circumference for age, clinical context and repeat measurement.",
+      },
+      { message: "Head circumference velocity classification" }
+    );
+  }
+
+  if (param) return notFound("HC velocity route");
+
+  const filters = {};
+  const sex = url.searchParams.get("sex");
+  if (sex) {
+    const n = normalizeHcSex(sex);
+    if (!n) return err("'sex' must be girls or boys");
+    filters.sex = `eq.${n}`;
+  }
+  const start = url.searchParams.get("start_age_months");
+  if (start) {
+    if (!Number.isInteger(Number(start))) return err("'start_age_months' must be a whole number");
+    filters.interval_start_months = `eq.${Number(start)}`;
+  }
+  return await paginatedList(db, "who_hc_velocity", url, { filters, order: "interval_start_months.asc" });
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -6583,6 +6639,11 @@ function handleRoot(env) {
         "GET  /bmi-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD cut-offs)",
         "POST /bmi-for-age/bulk        (admin) → body {items:[...]}, 336 rows; seed file: scripts/bmi_for_age_seed.json",
       ],
+      hc_velocity: [
+        "GET  /hc-velocity/classify?sex=girls&start_age_months=3&hc_start_cm=40.2&hc_end_cm=44.0  → WHO 6-month head circumference increment band (0-24 months; or pass &increment_cm= instead); screening aid, see sql/018_add_who_hc_velocity.sql",
+        "GET  /hc-velocity?sex=&start_age_months=   → raw reference rows (-3SD to +3SD increments, cm)",
+        "POST /hc-velocity/bulk        (admin) → body {items:[...]}, 38 rows; seed file: scripts/who_hc_velocity_seed.json",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -7937,6 +7998,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleBmiForAge(request, url, db, param || null);
+    }
+
+    case "hc-velocity": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "who_hc_velocity", {
+          requiredField: "sex",
+          label: "HC velocity rows",
+        });
+      }
+      return await handleHcVelocity(request, url, db, param || null);
     }
 
     case "fenton-preterm": {
