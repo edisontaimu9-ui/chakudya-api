@@ -11,3 +11,6 @@ data-sources/**/*.xlsx
 data-sources/**/*.xls
 
 node_modules/
+*.zip
+ingest-preview.json
+ingest-progress-*.json
