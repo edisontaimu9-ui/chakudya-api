@@ -2578,7 +2578,7 @@ async function handleMuacFixed(request, url, param) {
 
 // ─── LENGTH/HEIGHT-FOR-AGE (/length-height-for-age) ───────────────────────
 //
-// WHO length/height-for-age standards (cm), birth to 60 months (see
+// WHO length/height-for-age (cm), birth to 19 years: 2006 standards to 60 months, 2007 reference 61-228 months (see
 // sql/022_add_who_length_height_for_age.sql and src/lengthHeightForAge.js).
 // Public reads; the table is filled once via POST /length-height-for-age/bulk
 // (admin). Returns the stunting band plus an exact z-score and percentile.
@@ -6918,9 +6918,9 @@ function handleRoot(env) {
         "GET  /muac/classify?age_months=18&muac_cm=11.8  → fixed-cut-off MUAC class (severe / moderate / normal), 6 months to adult; or pass &muac_mm=; add &scheme=cmam for the 115/125 mm community cut-offs (6-59 months). Calculation only, no table. Screening aid",
       ],
       length_height_for_age: [
-        "GET  /length-height-for-age/classify?sex=girls&age_months=18&length_cm=78  → WHO length/height-for-age stunting band + exact z-score and percentile (0-60 months; length = lying under 24 months, height = standing from 24; optional &measured=lying|standing converts by 0.7 cm if needed); screening aid, see sql/022_add_who_length_height_for_age.sql",
+        "GET  /length-height-for-age/classify?sex=girls&age_months=18&length_cm=78  → WHO length/height-for-age stunting band + exact z-score and percentile (0-228 months = birth to 19 years; length = lying under 24 months, height = standing from 24; optional &measured=lying|standing converts by 0.7 cm if needed); screening aid, see sql/022_add_who_length_height_for_age.sql",
         "GET  /length-height-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, cm, plus L/M/S)",
-        "POST /length-height-for-age/bulk    (admin) → body {items:[...]}, 124 rows; seed file: scripts/length_height_for_age_seed.json",
+        "POST /length-height-for-age/bulk    (admin) → body {items:[...]}; seed files: scripts/length_height_for_age_seed.json (124 rows, 0-60 months) and scripts/height_for_age_5_19_seed.json (336 rows, 61-228 months; run sql/023 first)",
       ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",

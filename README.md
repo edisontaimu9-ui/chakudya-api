@@ -909,21 +909,21 @@ GET /muac/classify?age_months=18&muac_cm=11.8
 
 ### Length/height-for-age (`/length-height-for-age`)
 
-WHO Child Growth Standards **length/height-for-age** (cm), birth to 60 months, girls and boys (the stunting indicator). Table: [`sql/022_add_who_length_height_for_age.sql`](sql/022_add_who_length_height_for_age.sql), 124 rows. Logic: [`src/lengthHeightForAge.js`](src/lengthHeightForAge.js). Source: WHO monthly z-score tables, length-for-age (birth to 2 years, lying down) and height-for-age (2 to 5 years, standing). Month 24 is in both tables, so it has a lying row and a standing row (they differ by about 0.7 cm).
+WHO **length/height-for-age** (cm), birth to 19 years, girls and boys (the stunting indicator): the 2006 Child Growth Standards for 0-60 months and the 2007 growth reference for 61-228 months (5y 1m to 19y 0m). Table: [`sql/022_add_who_length_height_for_age.sql`](sql/022_add_who_length_height_for_age.sql), widened to 19 years by [`sql/023_extend_length_height_for_age_to_19y.sql`](sql/023_extend_length_height_for_age_to_19y.sql); 460 rows in total (124 + 336). Logic: [`src/lengthHeightForAge.js`](src/lengthHeightForAge.js). Source: WHO monthly z-score tables, length-for-age (birth to 2 years, lying down) and height-for-age (2 to 5 years, standing). Month 24 is in both tables, so it has a lying row and a standing row (they differ by about 0.7 cm).
 
-**Where the numbers come from:** each row stores the table's L, M, S, and the -3 SD to +3 SD cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal). A unit test re-checks every row. L is 1 in these tables, so `z = (x - M) / (M*S)`. Rebuild the seed with `python3 scripts/build_lhfa_seed.py <girls_0_2.xlsx> <girls_2_5.xlsx> <boys_0_2.xlsx> <boys_2_5.xlsx>`.
+**Where the numbers come from:** each row stores the table's L, M, S, and the -3 SD to +3 SD cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal). A unit test re-checks every row. L is 1 in these tables, so `z = (x - M) / (M*S)`. Rebuild the 0-5 year seed with `python3 scripts/build_lhfa_seed.py <girls_0_2.xlsx> <girls_2_5.xlsx> <boys_0_2.xlsx> <boys_2_5.xlsx>` and the 5-19 year seed with `python3 scripts/build_hfa_5_19_seed.py <girls.xlsx> <boys.xlsx>`. The 5-19 year cut-offs are the printed WHO 3-decimal values.
 
-- `GET /length-height-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), and `length_cm` or `height_cm` (or the `_mm` versions). Optional `measured=lying|standing`; the default is lying under 24 months and standing from 24. If the child was measured the other way, 0.7 cm is subtracted (lying value on a child 24 months or older) or added (standing value on a child under 24 months), and `position_adjustment` says so. Returns `status`, `reference`, `value_cm`, `z_score`, `percentile`, `implausible` and the `cutoffs` (cm).
+- `GET /length-height-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-228), and `length_cm` or `height_cm` (or the `_mm` versions). Optional `measured=lying|standing`; the default is lying under 24 months and standing from 24. If the child was measured the other way, 0.7 cm is subtracted (lying value on a child 24 months or older) or added (standing value on a child under 24 months), and `position_adjustment` says so. Returns `status`, `reference`, `value_cm`, `z_score`, `percentile`, `implausible` and the `cutoffs` (cm).
 - `GET /length-height-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
-- `POST /length-height-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/length_height_for_age_seed.json`](scripts/length_height_for_age_seed.json). A unique `(sex, age_months, measured)` constraint rejects re-seeding.
+- `POST /length-height-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed files: [`scripts/length_height_for_age_seed.json`](scripts/length_height_for_age_seed.json) (0-60 months) and [`scripts/height_for_age_5_19_seed.json`](scripts/height_for_age_5_19_seed.json) (61-228 months; run `sql/023` first). A unique `(sex, age_months, measured)` constraint rejects re-seeding.
 
-Bands (strict): severely stunted < -3SD, stunted < -2SD, normal -2SD to +2SD, tall > +2SD, very tall > +3SD. `implausible` is true when |z| > 6 (usually a measuring or recording error). Screening aid only, not a diagnosis. Children over 5 years need the WHO 2007 reference (not in this API yet).
+Bands (strict): severely stunted < -3SD, stunted < -2SD, normal -2SD to +2SD, tall > +2SD, very tall > +3SD. `implausible` is true when |z| > 6 (usually a measuring or recording error). Screening aid only, not a diagnosis.  Note the small step at 60/61 months where WHO switches from the 2006 standards to the 2007 reference.
 
 ```
 GET /length-height-for-age/classify?sex=girls&age_months=18&length_cm=78
 ```
 
-Setup: run `sql/022_add_who_length_height_for_age.sql` in the Supabase SQL editor, then `POST /length-height-for-age/bulk` once with the seed file.
+Setup: run `sql/022_add_who_length_height_for_age.sql` then `sql/023_extend_length_height_for_age_to_19y.sql` in the Supabase SQL editor, then `POST /length-height-for-age/bulk` once with each seed file.
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 

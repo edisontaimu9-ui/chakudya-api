@@ -1,7 +1,8 @@
-// Length/height-for-age classification (stunting), birth to 60 months.
-// Reference: WHO Child Growth Standards, length/height-for-age (cm), monthly
-// z-score tables. Data lives in the `who_length_height_for_age` table
-// (sql/022_add_who_length_height_for_age.sql, seed: scripts/length_height_for_age_seed.json).
+// Length/height-for-age classification (stunting), birth to 19 years (0-228 months).
+// Reference: WHO Child Growth Standards 2006, length/height-for-age (cm), monthly
+// z-score tables (0-60 months), and the WHO 2007 growth reference, height-for-age
+// 5-19 years (61-228 months, standing). Data lives in the `who_length_height_for_age` table
+// (sql/022_add_who_length_height_for_age.sql + sql/023 to widen to 19 years; seeds: scripts/length_height_for_age_seed.json and scripts/height_for_age_5_19_seed.json).
 //
 // Length (lying down) is used under 24 months, height (standing) from 24 months.
 // Month 24 exists in both tables. A lying measurement is about 0.7 cm longer than
@@ -21,7 +22,7 @@ import { normalizeSex, classifyHcVelocity } from "./hcVelocity.js";
 import { normalCdf } from "./weightVelocity.js";
 
 export const LHFA_MIN_MONTHS = 0;
-export const LHFA_MAX_MONTHS = 60;
+export const LHFA_MAX_MONTHS = 228;
 export const LYING_STANDING_DIFF_CM = 0.7;
 
 export { normalizeSex };
@@ -45,7 +46,7 @@ export function parseLhfaQuery(searchParams) {
     return { error: "'age_months' is required (whole completed months, e.g. 1 year 6 months = 18)" };
   }
   if (ageMonths < LHFA_MIN_MONTHS || ageMonths > LHFA_MAX_MONTHS) {
-    return { error: `'age_months' must be ${LHFA_MIN_MONTHS} to ${LHFA_MAX_MONTHS} (the WHO standards cover birth to 5 years; older children need the WHO 2007 reference)` };
+    return { error: `'age_months' must be ${LHFA_MIN_MONTHS} to ${LHFA_MAX_MONTHS} (birth to 19 years: WHO standards to 60 months, WHO 2007 reference from 61 to 228)` };
   }
 
   let valueCm = null;
@@ -54,8 +55,8 @@ export function parseLhfaQuery(searchParams) {
     if (raw !== null && raw !== "") { valueCm = Number(raw) / div; break; }
   }
   if (valueCm === null) return { error: "Provide 'length_cm' or 'height_cm' (centimetres; or the _mm versions)" };
-  if (!Number.isFinite(valueCm) || valueCm < 20 || valueCm > 160) {
-    return { error: "Length/height is not plausible (expected roughly 40 to 125 cm; check you did not pass millimetres as cm)" };
+  if (!Number.isFinite(valueCm) || valueCm < 20 || valueCm > 230) {
+    return { error: "Length/height is not plausible (expected roughly 40 to 200 cm; check you did not pass millimetres as cm)" };
   }
 
   const measuredRaw = (searchParams.get("measured") || "").trim().toLowerCase();

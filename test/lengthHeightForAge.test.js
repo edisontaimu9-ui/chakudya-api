@@ -3,22 +3,27 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseLhfaQuery, pickRowAndValue, classifyLhfa, defaultMeasured } from "../src/lengthHeightForAge.js";
 
-const items = JSON.parse(readFileSync(new URL("../scripts/length_height_for_age_seed.json", import.meta.url))).items;
+const load = (f) => JSON.parse(readFileSync(new URL(`../scripts/${f}`, import.meta.url))).items;
+const items0to5 = load("length_height_for_age_seed.json");
+const items5to19 = load("height_for_age_5_19_seed.json");
+const items = [...items0to5, ...items5to19];
 const rowsFor = (sex, m) => items.filter((r) => r.sex === sex && r.age_months === m);
 const q = (s) => parseLhfaQuery(new URLSearchParams(s));
 
 describe("seed file", () => {
   test("covers months 0-60 both sexes; month 24 has lying and standing rows", () => {
     for (const sex of ["girls", "boys"]) {
-      for (let m = 0; m <= 60; m++) {
+      for (let m = 0; m <= 228; m++) {
         const r = rowsFor(sex, m);
         assert.ok(r.length >= 1, `missing ${sex} ${m}`);
         assert.equal(r.length, m === 24 ? 2 : 1);
         assert.equal(r[0].measured, m < 24 ? "lying" : m > 24 ? "standing" : r[0].measured);
       }
     }
-    assert.equal(items.length, 124);
-    assert.equal(new Set(items.map((r) => `${r.sex}:${r.age_months}:${r.measured}`)).size, 124);
+    assert.equal(items0to5.length, 124);
+    assert.equal(items5to19.length, 336);
+    assert.ok(items5to19.every((r) => r.age_months >= 61 && r.age_months <= 228 && r.measured === "standing"));
+    assert.equal(new Set(items.map((r) => `${r.sex}:${r.age_months}:${r.measured}`)).size, 460);
   });
   test("cut-offs match their own L, M, S within 0.001 cm and increase", () => {
     const zs = { sd_neg3: -3, sd_neg2: -2, sd_neg1: -1, median: 0, sd_pos1: 1, sd_pos2: 2, sd_pos3: 3 };
@@ -43,7 +48,9 @@ describe("parseLhfaQuery", () => {
   test("rejects bad input", () => {
     assert.ok(q("age_months=12&length_cm=74").error);
     assert.ok(q("sex=girls&length_cm=74").error);
-    assert.ok(q("sex=girls&age_months=61&length_cm=74").error);
+    assert.ok(q("sex=girls&age_months=229&length_cm=74").error);
+    assert.ok(!q("sex=girls&age_months=120&height_cm=135").error);
+    assert.equal(q("sex=girls&age_months=120&height_cm=135").measured, "standing");
     assert.ok(q("sex=girls&age_months=-1&length_cm=74").error);
     assert.ok(q("sex=girls&age_months=12").error);
     assert.ok(q("sex=girls&age_months=12&length_cm=740").error);
@@ -97,6 +104,13 @@ describe("classification", () => {
     assert.equal(p.row.measured, "lying");
     assert.equal(p.valueCm, 73.7);
     assert.equal(p.adjustment.adjustment_cm, 0.7);
+  });
+  test("WHO 2007 rows: girls 19y median is ~163.15 cm; a 10-year-old boy at 120 cm is stunted", () => {
+    assert.ok(Math.abs(rowsFor("girls", 228)[0].median - 163.155) < 0.001);
+    const b = rowsFor("boys", 120)[0];
+    assert.ok(Math.abs(b.median - b.lms_m) < 0.001);
+    const r = classifyLhfa(b, 120);
+    assert.ok(r.status === "stunted" || r.status === "severely stunted");
   });
   test("known WHO value: boys birth median is 49.9 cm, -2SD 46.1, -3SD 44.2 (printed)", () => {
     const r = rowsFor("boys", 0)[0];

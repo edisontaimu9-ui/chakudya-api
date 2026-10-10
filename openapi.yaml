@@ -1550,7 +1550,7 @@ paths:
   /length-height-for-age/classify:
     get:
       tags: [Length height for age]
-      summary: Classify length/height-for-age (stunting), birth to 60 months
+      summary: Classify length/height-for-age (stunting), birth to 19 years
       description: >
         WHO Child Growth Standards length/height-for-age as a z-score. Length
         (lying) is used under 24 months, height (standing) from 24 months; if
@@ -1570,7 +1570,7 @@ paths:
           in: query
           required: true
           description: Whole completed months
-          schema: { type: integer, minimum: 0, maximum: 60 }
+          schema: { type: integer, minimum: 0, maximum: 228 }
         - name: length_cm
           in: query
           description: Length or height in CENTIMETRES (height_cm is an alias)
@@ -1646,7 +1646,7 @@ paths:
     post:
       tags: [Length height for age]
       summary: Bulk-create length/height-for-age rows (admin)
-      description: Seed file scripts/length_height_for_age_seed.json (124 rows). A unique (sex, age_months, measured) constraint rejects re-seeding.
+      description: Seed files scripts/length_height_for_age_seed.json (124 rows, 0-60 months) and scripts/height_for_age_5_19_seed.json (336 rows, 61-228 months; run sql/023 first). A unique (sex, age_months, measured) constraint rejects re-seeding.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
