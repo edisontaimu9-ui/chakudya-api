@@ -905,9 +905,9 @@ Length and head-circumference reference data start partway through the 22-50 wee
 
 (An earlier version of this endpoint used a single hardcoded guess — `length` rejected anything before 30.6 weeks — which wrongly rejected valid length queries between 23.5 and 30.6 weeks. Fixed by keying the floor on the actual seeded data per `(reference_year, metric)` instead of approximating.)
 
-### FHIR facade (`/fhir`) — Phase 1 growth/anthropometry
+### FHIR facade (`/fhir`) — growth + full Nutrition Care Process
 
-A stateless FHIR R4 translation layer over the classify endpoints above — groundwork for future EHR/HIE integration. **Not a FHIR server with storage** (Chakudya has never persisted patient records, and this doesn't change that — a real EHR is expected to store the returned `Observation` itself), and **not yet registered with any OpenHIM/HIE instance** — that's a separate, later step once there's a real instance to register with. See [`src/fhir.js`](src/fhir.js) for the full scope note.
+Phase 1 (below) is a stateless FHIR R4 translation layer over the classify endpoints above. **Phase 2 adds the whole Nutrition Care Process** — see [NCP operations](#ncp-operations-fhir-phase-2). Groundwork for future EHR/HIE integration. **Not a FHIR server with storage** (Chakudya has never persisted patient records, and this doesn't change that — a real EHR is expected to store the returned `Observation` itself), and **not yet registered with any OpenHIM/HIE instance** — that's a separate, later step once there's a real instance to register with. See [`src/fhir.js`](src/fhir.js) for the full scope note.
 
 - `GET /fhir/metadata` *(public, rate-limited)* — FHIR `CapabilityStatement`.
 - `POST /fhir/Observation/$evaluate-growth` *(public, rate-limited)* — body is a FHIR `Parameters` resource:
@@ -930,6 +930,61 @@ A stateless FHIR R4 translation layer over the classify endpoints above — grou
   Units: weight accepts `g` or `kg`; length/hc accept `cm` or `m`; anything else is a 400, not a guess.
 
   Each `Observation` carries `z-score`/`percentile`/`status` as `component`s (Chakudya-specific codes — there's no LOINC fit for "Fenton status: appropriate"), a best-effort standard `interpretation` (v3-ObservationInterpretation N/L/H/LL/HH) for FHIR clients that only read that field, the same screening-aid `note` text as the native endpoints, and an `extension` recording which reference was used. Weight/length/HC use LOINC 29463-7/8302-2/9843-4; BMI uses 39156-5.
+
+#### NCP operations (FHIR Phase 2)
+
+The Academy of Nutrition and Dietetics Nutrition Care Process, end to end, as stateless FHIR R4 operations. Same contract as Phase 1: **nothing is stored or logged beyond method/path/status** — the caller's EHR persists what comes back. All are `POST`, public, rate-limited (100/min/IP), body is a FHIR `Parameters` resource, success is a `Bundle`, failure is an `OperationOutcome` (400 malformed, 422 valid-but-unsupported). Source: [`src/fhirNcp.js`](src/fhirNcp.js) (pure functions, tests in `test/fhirNcp.test.js`).
+
+| NCP step | Operation | FHIR output |
+|---|---|---|
+| Screening | `POST /fhir/Observation/$screen` | MUST (adults) → `Observation` (score, sub-scores, risk category, management note) |
+| 1. Assessment | `POST /fhir/Observation/$assess-nutrition` | `Observation`s: weight/height/BMI (+WHO adult class), % weight change (+ standard-interval significance), Mifflin-St Jeor BEE → energy requirement, protein requirement, intake adequacy, GLIM criteria, and any FH/AD/BD/PD/CH `indicator` you pass |
+| 2. Diagnosis | `POST /fhir/Condition/$diagnose` | PES statement → `Condition` (problem, etiology, signs/symptoms, severity, evidence refs) |
+| 3. Intervention | `POST /fhir/CarePlan/$intervene` | `CarePlan` + `Goal`s + `NutritionOrder`s (oral diet / supplement / enteral formula) + `ServiceRequest`s (education / counseling / coordination of care) |
+| 4. Monitoring & evaluation | `POST /fhir/Goal/$evaluate` | `Goal` with `achievementStatus` (achieved / improving / no-change / worsening / sustaining / not-achieved / in-progress) + outcome `Observation` |
+| Documentation | `POST /fhir/Bundle/$ncp-document` | ADIME `Composition` **document Bundle** assembled from the Bundles above |
+
+**What Chakudya computes vs. what the clinician supplies.** Chakudya computes the deterministic parts (BMI, % weight change, MUST score, Mifflin-St Jeor BEE, GLIM criteria logic, goal progress). It does **not** choose the nutrition diagnosis, goals or orders — the PES statement, targets, diet prescription etc. are inputs it validates and shapes into FHIR. Energy/protein requirements are only produced when you pass `energyFactor` / `proteinGPerKg`; the factor is your clinical call, not a default. Everything carries the screening-aid disclaimer.
+
+**Conventions**
+- Every operation that FHIR requires a patient for (`$diagnose`, `$intervene`, `$evaluate`, `$ncp-document`) needs `subject` (`valueString: "Patient/123"`). It is optional for `$screen` / `$assess-nutrition`.
+- Units are never guessed: weight `kg|g`, height `cm|m`; goal quantities must share one unit (mismatch → 400, no silent conversion).
+- Intervention defaults are conservative: `status: draft`, `intent: proposal` (Goals → `proposed`). Pass `status` (`draft|active`) and `intent` (`proposal|plan|order`) to change.
+- Resources inside a returned Bundle cross-reference each other by `urn:uuid` `fullUrl`. Pass whole Bundles into `$ncp-document` (as `resource` parameters) to keep those links valid.
+- Each Observation is tagged with an NCP step (`category` → `…/CodeSystem/ncp-step`). In `$ncp-document`, untagged Observations are filed under Assessment; a `Goal` with an `achievementStatus` goes under Monitoring & evaluation, otherwise under Intervention. Empty ADIME sections get `emptyReason: notstarted`; Screening is only included if present.
+- Diagnosis terminology: the eNCPT term set is proprietary and is **not** bundled. Pass your own coding (`problemSystem` + `problemCode`), a public shortcut (`problemCode`: `malnutrition`, `malnutrition-moderate`, `malnutrition-severe`, `underweight`, `overweight`, `obesity`), or just text. A PES statement needs problem + ≥1 etiology + ≥1 signs/symptoms.
+
+**Parameters by operation** (`valueX` types as in FHIR; `part` = nested parts)
+
+- `$screen`: `bmi` *or* `weight`+`height`; `weightLossPercent3to6Months` *or* `usualWeight`+`weight`; `acuteDiseaseNoIntake` (boolean, required); optional `subject`, `effectiveDateTime`.
+- `$assess-nutrition` (adults 18+; children → `$evaluate-growth`): `sex`, `ageYears` *or* `birthDate`, `weight`, `height`, `usualWeight` + `usualWeightPeriodDays`, `requirementWeight`, `energyFactor`, `proteinGPerKg`, `energyIntakeKcalPerDay`, `proteinIntakeGPerDay`; GLIM: `screeningPositive`, `muscleMass` (`none|mild-moderate|severe`), `inflammation` (`none|acute-disease-or-injury|chronic-disease`), `intakePercentOfRequirement`, `intakeReductionDays`, `malabsorption`, `glimBmiCutoffSet` (`default|asian`); repeatable `indicator` part: `domain` (`FH|AD|BD|PD|CH`), `display`, `code`, `system`, `value`.
+  - Weight-change significance uses the standard Blackburn intervals (1 wk, 1 mo, 3 mo, 6 mo) and is only graded when `usualWeightPeriodDays` matches one; otherwise it reports `no-standard-threshold` rather than extrapolating.
+  - GLIM follows Cederholm 2019 (≥1 phenotypic + ≥1 etiologic criterion after a positive screen; severity from the worst phenotypic criterion). Missing inputs are listed as "not assessed" rather than assumed. Weight loss uses strict `>5%` (≤6 mo) / `>10%` (>6 mo).
+- `$diagnose`: `subject`; repeatable `diagnosis` part: `domain` (`intake|clinical|behavioral-environmental`), `problem`, repeatable `etiology`, repeatable `signsSymptoms`, optional `problemSystem`/`problemCode`/`problemDisplay`, `severity` (`mild|moderate|severe`), `verificationStatus` (`provisional` default | `confirmed`), `evidence` (repeatable reference string, e.g. an Observation `urn:uuid`), `recordedDate`.
+- `$intervene`: `subject`, `addresses` (Condition refs), `title`, `status`, `intent`; repeatable parts `goal` (`description`, `measure`, `measureCode`, `direction`, `baseline`, `target`, `dueDate`, `priority`), `nutritionOrder` (`kind` = `oral-diet` → `type`, repeatable `nutrient` part {`name`,`amount`}, `texture`, `fluidConsistency`, `instruction`; `supplement` → `type`, `productName`, `quantity`, `instruction`; `enteral-formula` → `baseFormulaType`, `productName`, `route`, `rate`, `maxVolume`, `instruction`), `education` (`topic`, `audience`, `method`), `counseling` (`topic`, `approach`), `coordination` (`reason`, `with`).
+- `$evaluate`: `subject`, repeatable `goal` part: `description`, `direction` (`increase|decrease|maintain`), `current` (Quantity, required), `target`, `baseline`, `lowerBound`/`upperBound` (for `maintain`), `measure`, `measureCode`, `noChangeTolerance` (default `0.02` = ±2% of the baseline→target gap counts as no change). Without a `baseline` the direction of change is **not guessed** (`in-progress`).
+- `$ncp-document`: `subject`, `author` (`Practitioner/…` reference or a name), repeatable `resource` (single resources or whole Bundles from the operations above), optional `title`, `date`, `encounter`.
+
+**Worked example** — a minimal ADIME loop:
+```bash
+# 1. Assess
+curl -s -X POST "$BASE/fhir/Observation/\$assess-nutrition" -H 'content-type: application/json' -d '{
+  "resourceType":"Parameters","parameter":[
+    {"name":"subject","valueString":"Patient/42"},
+    {"name":"sex","valueCode":"male"},{"name":"ageYears","valueInteger":40},
+    {"name":"weight","valueQuantity":{"value":60,"unit":"kg"}},
+    {"name":"height","valueQuantity":{"value":175,"unit":"cm"}},
+    {"name":"usualWeight","valueQuantity":{"value":70,"unit":"kg"}},
+    {"name":"usualWeightPeriodDays","valueInteger":91},
+    {"name":"screeningPositive","valueBoolean":true},
+    {"name":"inflammation","valueCode":"chronic-disease"}]}'
+# 2. Diagnose  → POST /fhir/Condition/$diagnose   (PES parts)
+# 3. Intervene → POST /fhir/CarePlan/$intervene   (goals + orders)
+# 4. Monitor   → POST /fhir/Goal/$evaluate        (current vs baseline/target)
+# 5. Document  → POST /fhir/Bundle/$ncp-document  (each Bundle above as a "resource" parameter)
+```
+
+**Honest limits.** Screening covers MUST only (no NRS-2002/MNA/paediatric tools yet — the MCP server has more). `$assess-nutrition` is adult-only; WHO 0–59-month growth is still unsupported (as in Phase 1). No `Patient`/`Encounter` resources are created — you pass references. The `CapabilityStatement` links `OperationDefinition`s and custom `CodeSystem`s (`…/fhir/CodeSystem/ncp-step`, etc.) that are **not yet served** by this API; they're stable identifiers for now. Not registered with any OpenHIM/HIE instance.
 
 ### Recipes
 

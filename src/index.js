@@ -3,7 +3,15 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.30.0
+ * Version: 1.31.0
+ *
+ * v1.31.0 changes:
+ *  - FHIR facade now covers the whole Nutrition Care Process (new
+ *    src/fhirNcp.js): POST /fhir/Observation/$screen (MUST),
+ *    /Observation/$assess-nutrition, /Condition/$diagnose (PES),
+ *    /CarePlan/$intervene, /Goal/$evaluate (monitoring & evaluation) and
+ *    /Bundle/$ncp-document (ADIME Composition). Stateless, no DB, no new
+ *    secrets or SQL. CapabilityStatement updated.
  *
  * v1.30.0 changes:
  *  - Added OAuth 2.0 client_credentials (RFC 6749 §4.4) for machine-to-machine
@@ -547,6 +555,7 @@ import {
   toKg,
   toCm,
 } from "./fhir.js";
+import { ncpOperationFor } from "./fhirNcp.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
   OAUTH_TOKEN_TTL_SECONDS,
@@ -564,7 +573,7 @@ import {
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.30.0";
+const CNR_VERSION = "1.31.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -877,6 +886,7 @@ function routePolicy(resource, method, param, action) {
   const isFentonReferences = resource === "fenton-preterm" && param === "references" && method === "GET";
   const isFhirMetadata = resource === "fhir" && param === "metadata" && method === "GET";
   const isFhirEvaluateGrowth = resource === "fhir" && param === "Observation" && action === "$evaluate-growth" && method === "POST";
+  const isFhirNcpOperation = resource === "fhir" && method === "POST" && ncpOperationFor(param, action) !== null;
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
@@ -1008,7 +1018,7 @@ function routePolicy(resource, method, param, action) {
   if (isFhirMetadata) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
-  if (isFhirEvaluateGrowth) {
+  if (isFhirEvaluateGrowth || isFhirNcpOperation) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -2633,6 +2643,19 @@ async function handleFhirEvaluateGrowth(request, db, url) {
   obs.effectiveDateTime = parsed.effectiveDateTime;
 
   return json(obs);
+}
+
+// NCP operations (src/fhirNcp.js) — pure functions, no DB. Stateless: the
+// request body is never stored or logged by this handler.
+async function handleFhirNcpOperation(request, url, operation) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json(operationOutcome("error", "Invalid JSON body."), 400);
+  }
+  const result = operation(body, { base: url.origin, now: new Date().toISOString() });
+  return result.ok ? json(result.body) : json(result.outcome, result.status);
 }
 
 // ─── SERVING-SIZE INTELLIGENCE ─────────────────────────────────────────────
@@ -6546,7 +6569,13 @@ function handleRoot(env) {
       fhir: [
         "GET  /fhir/metadata → FHIR R4 CapabilityStatement",
         "POST /fhir/Observation/$evaluate-growth → body: FHIR Parameters {sex, gestationalAgeWeeks+day OR birthDate, measurement:[{type,value}, ...], reference_year?, effectiveDateTime?} → Observation or Bundle of Observations",
-        "Phase 1 groundwork: wraps bmi-for-age + fenton-preterm classify only (WHO 0-59-month not covered — returns OperationOutcome). Stateless facade, no storage. Not yet registered with any OpenHIM/HIE instance. See src/fhir.js.",
+        "POST /fhir/Observation/$screen → NCP screening (MUST, adults)",
+        "POST /fhir/Observation/$assess-nutrition → NCP assessment: BMI, % weight change, energy/protein needs + intake, GLIM, FH/AD/BD/PD/CH indicators",
+        "POST /fhir/Condition/$diagnose → NCP diagnosis: PES statements → Condition",
+        "POST /fhir/CarePlan/$intervene → NCP intervention: goals, NutritionOrder, education/counseling/coordination → CarePlan Bundle",
+        "POST /fhir/Goal/$evaluate → NCP monitoring & evaluation: goal achievementStatus vs baseline/target",
+        "POST /fhir/Bundle/$ncp-document → ADIME Composition document Bundle from the above",
+        "Stateless facade, no storage. $evaluate-growth wraps bmi-for-age + fenton-preterm only (WHO 0-59-month returns OperationOutcome). Not yet registered with any OpenHIM/HIE instance. See src/fhir.js and src/fhirNcp.js.",
       ],
       exchange_lists: [
         "GET  /exchange",
@@ -7771,7 +7800,16 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         if (request.method !== "POST") return err("Method not allowed", 405);
         return await handleFhirEvaluateGrowth(request, db, url);
       }
-      return notFound("FHIR route. Available: GET /fhir/metadata, POST /fhir/Observation/$evaluate-growth.");
+      {
+        const ncpOp = request.method === "POST" ? ncpOperationFor(param, action) : null;
+        if (ncpOp) return await handleFhirNcpOperation(request, url, ncpOp);
+        if (!ncpOp && ncpOperationFor(param, action)) return err("Method not allowed", 405);
+      }
+      return notFound(
+        "FHIR route. Available: GET /fhir/metadata, POST /fhir/Observation/$evaluate-growth, " +
+          "POST /fhir/Observation/$screen, POST /fhir/Observation/$assess-nutrition, POST /fhir/Condition/$diagnose, " +
+          "POST /fhir/CarePlan/$intervene, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document."
+      );
     }
 
     case "health": {

@@ -1365,6 +1365,228 @@ paths:
               schema: { type: object }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /fhir/Observation/$screen:
+    post:
+      tags: [FHIR]
+      summary: NCP screening (MUST, adults)
+      description: >
+        Computes the Malnutrition Universal Screening Tool score and risk category. Returns a Bundle with one screening Observation.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — malformed or incomplete input
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Observation/$assess-nutrition:
+    post:
+      tags: [FHIR]
+      summary: NCP Step 1 — nutrition assessment (adults)
+      description: >
+        BMI and WHO class, % weight change with standard-interval significance, Mifflin-St Jeor BEE and clinician-factored energy/protein requirements, intake adequacy, GLIM criteria, and generic FH/AD/BD/PD/CH indicators, as Observations. Children are redirected (422) to $evaluate-growth.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — malformed or incomplete input
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Condition/$diagnose:
+    post:
+      tags: [FHIR]
+      summary: NCP Step 2 — nutrition diagnosis (PES statement)
+      description: >
+        Validates and shapes clinician-supplied PES statements (problem, etiology, signs/symptoms) into Condition resources. Does not choose the diagnosis; eNCPT terminology is not bundled.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — malformed or incomplete input
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/CarePlan/$intervene:
+    post:
+      tags: [FHIR]
+      summary: NCP Step 3 — nutrition intervention
+      description: >
+        Shapes clinician-supplied goals, NutritionOrders (oral diet, supplement, enteral formula), education, counseling and care coordination into a CarePlan Bundle (CarePlan, Goal, NutritionOrder, ServiceRequest). Defaults to status draft / intent proposal.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — malformed or incomplete input
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Goal/$evaluate:
+    post:
+      tags: [FHIR]
+      summary: NCP Step 4 — monitoring and evaluation
+      description: >
+        Compares current values to baseline/target and returns Goals with achievementStatus plus outcome Observations. Direction of change is not guessed without a baseline; units must match.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — malformed or incomplete input
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Bundle/$ncp-document:
+    post:
+      tags: [FHIR]
+      summary: ADIME document Bundle
+      description: >
+        Assembles resources/Bundles returned by the other NCP operations into a Composition document Bundle (screening, assessment, diagnosis, intervention, monitoring and evaluation sections).
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — malformed or incomplete input
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /packaged:
     get:
       tags: [Packaged]

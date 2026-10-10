@@ -1,4 +1,5 @@
 // FHIR R4 façade for growth/anthropometry — Phase 1 groundwork for future
+// (Phase 2, the rest of the Nutrition Care Process, lives in src/fhirNcp.js.)
 // EHR/HIE integration (OpenHIM registration comes later; nothing here talks
 // to OpenHIM or any external HIE yet). This is a stateless TRANSLATION
 // LAYER, not a FHIR server with storage: every /fhir/* route reshapes a
@@ -275,13 +276,24 @@ export function bundleObservations(observations) {
 // ─── CapabilityStatement (GET /fhir/metadata) ──────────────────────────────
 
 export function buildCapabilityStatement(base) {
+  const op = (name, resource, documentation) => ({
+    name,
+    definition: `${base}/fhir/OperationDefinition/${resource}-${name}`,
+    documentation,
+  });
   return {
     resourceType: "CapabilityStatement",
     status: "draft",
-    date: "2026-09-25",
+    date: "2026-10-10",
     kind: "instance",
-    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-1" },
-    implementation: { description: "Growth/anthropometry FHIR facade over chakudya-api's classify endpoints. Groundwork only — not yet registered with any OpenHIM/HIE instance.", url: `${base}/fhir` },
+    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-2-ncp" },
+    implementation: {
+      description:
+        "Stateless FHIR facade covering the Nutrition Care Process (screening, assessment, diagnosis, " +
+        "intervention, monitoring & evaluation) plus paediatric growth classification. No storage: the caller's " +
+        "EHR persists returned resources. Not yet registered with any OpenHIM/HIE instance.",
+      url: `${base}/fhir`,
+    },
     fhirVersion: "4.0.1",
     format: ["json"],
     rest: [
@@ -292,15 +304,69 @@ export function buildCapabilityStatement(base) {
             type: "Observation",
             interaction: [],
             operation: [
-              {
-                name: "evaluate-growth",
-                definition: `${base}/fhir/OperationDefinition/Observation-evaluate-growth`,
-                documentation:
-                  "POST a FHIR Parameters resource (sex + gestationalAgeWeeks|birthDate + one or more " +
+              op(
+                "evaluate-growth",
+                "Observation",
+                "POST a FHIR Parameters resource (sex + gestationalAgeWeeks|birthDate + one or more " +
                   "measurement parts) and get back a growth-classification Observation (or a Bundle of " +
                   "them). Covers Fenton preterm (22-50 weeks gestation) and WHO 2007 BMI-for-age " +
-                  "(5y1m-19y0m) only — see chakudya-api README, Fenton Preterm / BMI-for-Age sections.",
-              },
+                  "(5y1m-19y0m) only — see chakudya-api README, Fenton Preterm / BMI-for-Age sections."
+              ),
+              op("screen", "Observation", "NCP screening: MUST (adults). Returns a Bundle containing one screening Observation."),
+              op(
+                "assess-nutrition",
+                "Observation",
+                "NCP Step 1 (adults): BMI, % weight change, Mifflin-St Jeor energy needs, protein needs, " +
+                  "intake adequacy, GLIM criteria, and generic FH/AD/BD/PD/CH indicators. Returns a Bundle of Observations."
+              ),
+            ],
+          },
+          {
+            type: "Condition",
+            interaction: [],
+            operation: [
+              op(
+                "diagnose",
+                "Condition",
+                "NCP Step 2: shapes clinician-supplied PES statements (problem, etiology, signs/symptoms) " +
+                  "into Condition resources. Does not choose the diagnosis."
+              ),
+            ],
+          },
+          {
+            type: "CarePlan",
+            interaction: [],
+            operation: [
+              op(
+                "intervene",
+                "CarePlan",
+                "NCP Step 3: shapes clinician-supplied goals, nutrition orders (oral diet, supplement, " +
+                  "enteral formula), education, counseling and coordination into a CarePlan Bundle " +
+                  "(CarePlan, Goal, NutritionOrder, ServiceRequest)."
+              ),
+            ],
+          },
+          {
+            type: "Goal",
+            interaction: [],
+            operation: [
+              op(
+                "evaluate",
+                "Goal",
+                "NCP Step 4 (monitoring & evaluation): compares current values against baseline/target " +
+                  "and returns Goals with achievementStatus plus the outcome Observations."
+              ),
+            ],
+          },
+          {
+            type: "Bundle",
+            interaction: [],
+            operation: [
+              op(
+                "ncp-document",
+                "Bundle",
+                "Assembles resources returned by the operations above into an ADIME Composition document Bundle."
+              ),
             ],
           },
         ],
