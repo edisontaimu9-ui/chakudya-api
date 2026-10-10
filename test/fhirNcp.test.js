@@ -295,7 +295,7 @@ test("MNA: malformed inputs are 400 OperationOutcomes; missing screening items a
   assert.equal(none.ok, false);
   const text = JSON.stringify(none.outcome);
   for (const n of ["foodIntakeDeclineScore", "mobilityScore", "psychologicalStressOrAcuteDisease", "neuropsychologicalScore", "weightLossKg3Months", "bmi"]) assert.match(text, new RegExp(n));
-  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /mna or sga/);
+  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /pg-sga/);
 });
 
 // ─── $screen — SGA ────────────────────────────────────────────────────────
@@ -396,7 +396,7 @@ test("SGA: adults only; no hidden age rule", () => {
   assert.equal(evaluateScreen(sga({ ageYears: 12 }), ctx).status, 422);
   assert.equal(sgaObs(sga({ ageYears: 40 })).valueCodeableConcept.coding[0].code, "A");
   assert.match(sgaFail(P([{ name: "tool", valueCode: "sga" }])), /weightChange2Weeks/);
-  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /mna or sga/);
+  assert.match(JSON.stringify(evaluateScreen(P([{ name: "tool", valueCode: "nope" }]), ctx).outcome), /pg-sga/);
 });
 
 // ─── $assess-nutrition ────────────────────────────────────────────────────
@@ -817,6 +817,10 @@ function emittedSamples() {
   for (const rating of ["A", "B", "C"]) keep(evaluateScreen(sga({ overallRating: rating, subject: "Patient/42", tricepsFat: "C", temple: "B", oedema: "A" }), ctx));
   keep(evaluateScreen(sga({ weightChange2Weeks: "increase-1-level-above", weightChange2WeeksGrade: "B", dietaryIntake: "poor-no-change", dietaryIntakeGrade: "C", functionalCapacity: "bed-chair-ridden", functionalChange2Weeks: "regressed", nauseaDailyOver2Weeks: true, vomitingDailyOver2Weeks: true, diarrhoeaDailyOver2Weeks: true, anorexiaDailyOver2Weeks: true, weightLossPercent6Months: 12, underEyesFat: "C", bicepsFat: "A", clavicle: "C", shoulder: "B", scapulaRibs: "A", quadriceps: "C", calf: "C", knee: "A", interosseousMuscle: "C", ascites: "B", overallRating: "C" }), ctx));
   // Assessment: everything on, then intake-only (no factor), then several loss intervals and BMI classes
+  // PG-SGA: every triage band, the optional global category, ratings and symptoms
+  for (const deficit of ["none", "mild", "moderate", "severe"]) keep(evaluateScreen(pg({ physicalExamDeficit: deficit, subject: "Patient/42" }), ctx));
+  keep(evaluateScreen(pg({ physicalExamDeficit: "severe", pgsgaSymptom: ["no-appetite", "mouth-sores", "constipation"], pgsgaGlobalCategory: "C", muscleStatusRating: 3, fatStoresRating: 2, fluidStatusRating: 0, weightLossPercent1Month: undefined, weightLossPercent6Months: 12, cancer: true, feverTemperatureC: 39, feverDurationHours: 80, corticosteroidPrednisoneEquivalentMgPerDay: 40 }), ctx));
+  for (const g of ["A", "B", "C"]) keep(evaluateScreen(pg({ pgsgaGlobalCategory: g }), ctx));
   keep(evaluateAssessNutrition(P([
     ...adult, sub,
     { name: "usualWeight", valueQuantity: q(70, "kg") }, { name: "usualWeightPeriodDays", valueInteger: 91 },
@@ -904,7 +908,7 @@ test("OperationDefinitions describe the parameters each operation reads", () => 
   const names = (id) => operationDefinitionResource(BASE, id).parameter.filter((p) => p.use === "in").map((p) => p.name);
   for (const n of ["tool", "acuteDiseaseNoIntake", "bmi", "effectiveDateTime", "height", "subject", "usualWeight", "weight", "weightLossPercent3to6Months",
     "ageYears", "birthDate", "weightLossPercent", "weightLossPeriodMonths", "intakePercentOfRequirement", "impairedGeneralCondition", "diseaseSeverityScore", "severelyIll", "reducedIntakeLastWeek",
-    ...[...MNA_SCREEN_ITEM_NAMES, ...MNA_ASSESS_ITEM_NAMES], ...SGA_PARAM_NAMES]) {
+    ...[...MNA_SCREEN_ITEM_NAMES, ...MNA_ASSESS_ITEM_NAMES], ...SGA_PARAM_NAMES, ...PGSGA_PARAM_NAMES]) {
     assert.ok(names("Observation-screen").includes(n), `Observation-screen is missing parameter ${n}`);
   }
   for (const n of ["subject", "diagnosis"]) assert.ok(names("Condition-diagnose").includes(n));
@@ -932,4 +936,145 @@ test("static conformance resources are well formed", () => {
   }
   assert.equal(staticConformanceResource("CodeSystem", "nope", BASE), null);
   assert.equal(staticConformanceResource("Patient", "x", BASE), null);
+});
+
+// ─── $screen — PG-SGA ─────────────────────────────────────────────────────
+const PGSGA_PARAM_NAMES = ["weightOneMonthAgo", "weightSixMonthsAgo", "weightLossPercent1Month", "pgsgaWeightChange2Weeks", "pgsgaIntakeVsUsual", "pgsgaCurrentIntake", "pgsgaSymptom", "pgsgaActivity", "cancer", "feverTemperatureC", "feverDurationHours", "corticosteroidPrednisoneEquivalentMgPerDay", "physicalExamDeficit", "muscleStatusRating", "pgsgaGlobalCategory"];
+const PG_BASE = {
+  ageYears: 50, weightLossPercent1Month: 0, pgsgaWeightChange2Weeks: "not-changed", pgsgaIntakeVsUsual: "unchanged",
+  pgsgaSymptom: ["no-problems-eating"], pgsgaActivity: "normal", physicalExamDeficit: "none",
+};
+const pgParam = ([name, v]) =>
+  Array.isArray(v) ? v.map((x) => ({ name, valueCode: x }))
+    : v && typeof v === "object" ? [{ name, valueQuantity: v }]
+      : typeof v === "boolean" ? [{ name, valueBoolean: v }]
+        : typeof v === "number" ? [{ name, [Number.isInteger(v) && /Rating$|^ageYears$/.test(name) ? "valueInteger" : "valueDecimal"]: v }]
+          : [{ name, valueCode: v }];
+const pg = (over = {}) =>
+  P([{ name: "tool", valueCode: "pg-sga" }, ...Object.entries({ ...PG_BASE, ...over }).filter(([, v]) => v !== undefined).flatMap(pgParam)]);
+const pgObs = (over) => { const r = evaluateScreen(pg(over), ctx); assert.equal(r.ok, true, JSON.stringify(r.outcome)); return r.body.entry[0].resource; };
+const pgInt = (o, code, text) => o.component.find((c) => c.code.coding[0].code === code && (text === undefined || c.code.text === text)).valueInteger;
+const pgFail = (over, status = 400) => { const r = evaluateScreen(pg(over), ctx); assert.equal(r.ok, false); assert.equal(r.status, status); return JSON.stringify(r.outcome); };
+
+test("PG-SGA: worked example adds A + B + C + D and triages", () => {
+  const o = pgObs({
+    ageYears: 70, weight: { value: 60, unit: "kg" }, weightOneMonthAgo: { value: 65, unit: "kg" }, weightLossPercent1Month: undefined,
+    pgsgaWeightChange2Weeks: "decreased", pgsgaIntakeVsUsual: "less-than-usual", pgsgaCurrentIntake: "little-solid-food",
+    pgsgaSymptom: ["nausea", "vomiting", "fatigue"], pgsgaActivity: "in-bed-or-chair-less-than-half-day",
+    cancer: true, feverTemperatureC: 38.5, feverDurationHours: 80, corticosteroidPrednisoneEquivalentMgPerDay: 15, physicalExamDeficit: "moderate",
+  });
+  assert.equal(o.code.coding[0].code, "pg-sga");
+  assert.equal(pgInt(o, "pgsga-box1-weight-score"), 4); // 7.7% in 1 month = 3, +1 for loss in 2 weeks
+  assert.equal(pgInt(o, "pgsga-box2-food-intake-score"), 2);
+  assert.equal(pgInt(o, "pgsga-box3-symptoms-score"), 5);
+  assert.equal(pgInt(o, "pgsga-box4-activity-score"), 2);
+  assert.equal(pgInt(o, "pgsga-short-form-score"), 13);
+  assert.equal(pgInt(o, "pgsga-disease-score"), 2); // cancer + age over 65
+  assert.equal(pgInt(o, "pgsga-metabolic-score"), 5); // fever 3 (duration) + steroids 2
+  assert.equal(pgInt(o, "pgsga-physical-exam-score"), 2);
+  assert.equal(o.valueInteger, 22);
+  assert.equal(o.interpretation[0].coding[0].code, "AA");
+  assert.equal(nrsComp(o, "pgsga-triage-category").valueCodeableConcept.coding[0].code, "critical-need");
+  assert.equal(nrsComp(o, "pgsga-weight-loss-percent").valueQuantity.value, 7.7);
+  assert.match(o.note[0].text, /conditions not sent are taken as absent|cancer, age greater than 65/);
+});
+
+test("PG-SGA: Worksheet 1 bands for 1 month and 6 months", () => {
+  const one = (pct) => pgInt(pgObs({ weightLossPercent1Month: pct }), "pgsga-box1-weight-score");
+  for (const [pct, pts] of [[-3, 0], [0, 0], [1.9, 0], [2, 1], [2.9, 1], [3, 2], [4.9, 2], [5, 3], [9.9, 3], [10, 4], [30, 4]]) assert.equal(one(pct), pts, `1 month ${pct}%`);
+  const six = (pct) => pgInt(pgObs({ weightLossPercent1Month: undefined, weightLossPercent6Months: pct }), "pgsga-box1-weight-score");
+  for (const [pct, pts] of [[0, 0], [1.9, 0], [2, 1], [5.9, 1], [6, 2], [9.9, 2], [10, 3], [19.9, 3], [20, 4]]) assert.equal(six(pct), pts, `6 months ${pct}%`);
+  // 1-month data win when both are sent
+  const both = pgObs({ weightLossPercent1Month: 0, weightLossPercent6Months: 25 });
+  assert.equal(pgInt(both, "pgsga-box1-weight-score"), 0);
+  assert.match(both.note[0].text, /6-month was not scored/);
+  assert.match(pgObs({ weightLossPercent1Month: undefined, weightLossPercent6Months: 12 }).note[0].text, /6-month table was used/);
+  assert.match(pgFail({ weightLossPercent1Month: undefined }), /weightLossPercent1Month/);
+  assert.match(pgFail({ weightLossPercent1Month: undefined, weightOneMonthAgo: { value: 60, unit: "kg" } }), /current 'weight'/);
+  assert.match(pgFail({ weightLossPercent1Month: undefined, weight: { value: 60, unit: "lb" }, weightOneMonthAgo: { value: 60, unit: "kg" } }), /weight/);
+});
+
+test("PG-SGA: past-2-weeks loss adds a point; Box 2 takes the higher answer; Box 3 adds", () => {
+  assert.equal(pgInt(pgObs({ pgsgaWeightChange2Weeks: "decreased" }), "pgsga-box1-weight-score"), 1);
+  assert.equal(pgInt(pgObs({ pgsgaWeightChange2Weeks: "increased" }), "pgsga-box1-weight-score"), 0);
+  const b2 = (a, b) => pgInt(pgObs({ pgsgaIntakeVsUsual: a, pgsgaCurrentIntake: b }), "pgsga-box2-food-intake-score");
+  assert.equal(b2("unchanged", undefined), 0);
+  assert.equal(b2("less-than-usual", undefined), 1);
+  assert.equal(b2("less-than-usual", "very-little-of-anything"), 4);
+  assert.equal(b2("less-than-usual", "only-tube-feeding-or-parenteral"), 1);
+  assert.equal(b2("unchanged", "only-liquids"), 3);
+  const sym = (s) => pgInt(pgObs({ pgsgaSymptom: s }), "pgsga-box3-symptoms-score");
+  assert.equal(sym(["no-problems-eating"]), 0);
+  assert.equal(sym(["no-appetite", "mouth-sores", "problems-swallowing", "pain", "other"]), 3 + 2 + 2 + 3 + 1);
+  assert.equal(sym(["nausea", "nausea"]), 1); // repeated symptom counted once
+  const o = pgObs({ pgsgaSymptom: ["nausea", "pain"] });
+  assert.equal(o.component.filter((c) => c.code.coding[0].code === "pgsga-nutrition-impact-symptom").length, 2);
+  assert.match(pgFail({ pgsgaSymptom: ["no-problems-eating", "nausea"] }), /cannot be combined/);
+  assert.match(pgFail({ pgsgaSymptom: ["nope"] }), /pgsgaSymptom/);
+  assert.match(pgFail({ pgsgaSymptom: undefined }), /pgsgaSymptom/);
+});
+
+test("PG-SGA: Box 4 option scores", () => {
+  for (const [v, pts] of [["normal", 0], ["fairly-normal-activities", 1], ["in-bed-or-chair-less-than-half-day", 2], ["little-activity-most-of-day-in-bed-or-chair", 3], ["bed-ridden", 3]]) {
+    assert.equal(pgInt(pgObs({ pgsgaActivity: v }), "pgsga-box4-activity-score"), pts, v);
+  }
+  assert.match(pgFail({ pgsgaActivity: "sleeping" }), /pgsgaActivity/);
+});
+
+test("PG-SGA: Worksheet 2 (age over 65 is strictly greater than 65) and Worksheet 3 bands", () => {
+  const dis = (over) => pgInt(pgObs(over), "pgsga-disease-score");
+  assert.equal(dis({ ageYears: 65 }), 0);
+  assert.equal(dis({ ageYears: 66 }), 1);
+  assert.equal(dis({ cancer: true, aids: true, pulmonaryOrCardiacCachexia: true, chronicRenalInsufficiency: true, decubitusOpenWoundOrFistula: true, trauma: true, ageYears: 80 }), 7);
+  assert.equal(dis({ cancer: false, trauma: true }), 1);
+  assert.match(pgFail({ cancer: "yes" }), /boolean/);
+  const met = (over) => pgInt(pgObs(over), "pgsga-metabolic-score");
+  assert.equal(met({}), 0);
+  assert.equal(met({ feverTemperatureC: 37.2 }), 0); // not above 37.2: no fever, no duration needed
+  assert.equal(met({ feverTemperatureC: 37.3, feverDurationHours: 10 }), 1);
+  assert.equal(met({ feverTemperatureC: 38.3, feverDurationHours: 10 }), 2);
+  assert.equal(met({ feverTemperatureC: 38.8, feverDurationHours: 10 }), 3);
+  assert.equal(met({ feverTemperatureC: 37.5, feverDurationHours: 72 }), 2);
+  assert.equal(met({ feverTemperatureC: 37.5, feverDurationHours: 73 }), 3);
+  for (const [mg, pts] of [[0, 0], [9.9, 1], [10, 2], [29.9, 2], [30, 3]]) assert.equal(met({ corticosteroidPrednisoneEquivalentMgPerDay: mg }), pts, `${mg} mg`);
+  assert.equal(met({ feverTemperatureC: 38.8, feverDurationHours: 10, corticosteroidPrednisoneEquivalentMgPerDay: 10 }), 5); // the form's own worked example
+  assert.match(pgFail({ feverTemperatureC: 38 }), /feverDurationHours/);
+  assert.match(pgFail({ feverDurationHours: 10 }), /feverTemperatureC/);
+});
+
+test("PG-SGA: physical exam score is the clinician's rating and ratings are recorded only", () => {
+  for (const [v, pts] of [["none", 0], ["mild", 1], ["moderate", 2], ["severe", 3]]) assert.equal(pgInt(pgObs({ physicalExamDeficit: v }), "pgsga-physical-exam-score"), pts);
+  assert.match(pgFail({ physicalExamDeficit: undefined }), /physicalExamDeficit/);
+  assert.match(pgFail({ physicalExamDeficit: "profound" }), /physicalExamDeficit/);
+  const o = pgObs({ muscleStatusRating: 3, fatStoresRating: 1, physicalExamDeficit: "mild" });
+  assert.equal(pgInt(o, "pgsga-body-composition-rating", "Global muscle status rating"), 3);
+  assert.equal(o.valueInteger, 1); // ratings do not change the score
+  assert.match(pgFail({ muscleStatusRating: 4 }), /0-3/);
+});
+
+test("PG-SGA: triage bands follow the total score", () => {
+  const t = (over) => { const o = pgObs(over); return [o.valueInteger, nrsComp(o, "pgsga-triage-category").valueCodeableConcept.coding[0].code, o.interpretation[0].coding[0].code]; };
+  assert.deepEqual(t({}), [0, "no-intervention", "N"]);
+  assert.deepEqual(t({ physicalExamDeficit: "mild" }), [1, "no-intervention", "N"]);
+  assert.deepEqual(t({ physicalExamDeficit: "moderate" }), [2, "education-and-symptom-management", "A"]);
+  assert.deepEqual(t({ physicalExamDeficit: "severe" }), [3, "education-and-symptom-management", "A"]);
+  assert.deepEqual(t({ physicalExamDeficit: "severe", pgsgaSymptom: ["constipation"] }), [4, "dietitian-intervention", "A"]);
+  assert.deepEqual(t({ physicalExamDeficit: "severe", pgsgaSymptom: ["no-appetite", "mouth-sores"] }), [8, "dietitian-intervention", "A"]);
+  assert.deepEqual(t({ physicalExamDeficit: "severe", pgsgaSymptom: ["no-appetite", "mouth-sores", "constipation"] }), [9, "critical-need", "AA"]);
+});
+
+test("PG-SGA: global category is optional, carried as entered and never computed", () => {
+  assert.equal(pgObs({}).component.some((c) => c.code.coding[0].code === "pgsga-global-category"), false);
+  const o = pgObs({ pgsgaGlobalCategory: "b" });
+  assert.equal(nrsComp(o, "pgsga-global-category").valueCodeableConcept.coding[0].code, "B");
+  assert.match(o.note[0].text, /Stage B/);
+  assert.match(pgFail({ pgsgaGlobalCategory: "D" }), /A, B or C/);
+});
+
+test("PG-SGA: adults only, age is required", () => {
+  assert.match(pgFail({ ageYears: 12 }, 422), /adults/);
+  assert.match(pgFail({ ageYears: undefined }), /ageYears or birthDate/);
+  const o = pgObs({ ageYears: undefined, birthDate: "1950-01-01", effectiveDateTime: "2026-06-01" });
+  assert.equal(pgInt(o, "pgsga-disease-score"), 1);
+  assert.match(o.note[0].text, /Screening\/assessment aid only/);
 });

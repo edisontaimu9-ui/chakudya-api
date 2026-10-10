@@ -97,6 +97,19 @@ const CODE_SYSTEMS = {
       c("sga-functional-capacity-grade", "SGA functional capacity (A/B/C)"),
       c("sga-functional-change-2-weeks-grade", "SGA functional capacity change over 2 weeks (A/B/C)"),
       c("sga-physical-exam-finding", "SGA physical examination finding", "One component per graded site; the site is in code.text."),
+      c("pgsga-weight-loss-percent", "PG-SGA weight loss (%)", "Over 1 month when 1-month data exist, else over 6 months (the period is in code.text). Positive = loss."),
+      c("pgsga-box1-weight-score", "PG-SGA Box 1 weight score", "Worksheet 1 points, plus 1 if weight decreased in the past 2 weeks."),
+      c("pgsga-box2-food-intake-score", "PG-SGA Box 2 food intake score", "Higher of the two Box 2 answers."),
+      c("pgsga-box3-symptoms-score", "PG-SGA Box 3 symptoms score", "Sum of the symptoms checked."),
+      c("pgsga-box4-activity-score", "PG-SGA Box 4 activities and function score"),
+      c("pgsga-short-form-score", "PG-SGA short form score (A)", "Additive score of Boxes 1-4."),
+      c("pgsga-disease-score", "PG-SGA disease score (B)", "Worksheet 2: 1 point per condition, including age over 65."),
+      c("pgsga-metabolic-score", "PG-SGA metabolic demand score (C)", "Worksheet 3: fever (intensity or duration, whichever is greater) plus corticosteroids."),
+      c("pgsga-physical-exam-score", "PG-SGA physical exam score (D)", "Worksheet 4: the clinician's overall rating of total body deficit, 0-3."),
+      c("pgsga-triage-category", "PG-SGA triage category", "From the total score A+B+C+D."),
+      c("pgsga-global-category", "PG-SGA global category (Stage A/B/C)", "Entered by the assessor; never computed."),
+      c("pgsga-nutrition-impact-symptom", "PG-SGA nutrition impact symptom", "One component per symptom checked in Box 3; the symptom is in code.text and the points are the value."),
+      c("pgsga-body-composition-rating", "PG-SGA global body composition rating (0-3)", "Muscle, fat or fluid rating from Worksheet 4, recorded only; the rating is in code.text."),
     ],
   },
   "screening-tool": {
@@ -107,6 +120,7 @@ const CODE_SYSTEMS = {
       c("nrs-2002", "NRS-2002 (adult)", "Nutritional Risk Screening 2002: initial screening, then nutritional-status + disease-severity score, +1 if age 70 or over."),
       c("mna", "MNA (older adults)", "Mini Nutritional Assessment: screening items A-F (max 14), then assessment items G-R (max 16) when the screening score is 11 or less; total max 30."),
       c("sga", "SGA (adult)", "Subjective Global Assessment: history and physical-examination descriptors under columns A, B, C, then an overall rating A, B or C entered by the assessor."),
+      c("pg-sga", "PG-SGA (adult)", "Scored Patient-Generated Subjective Global Assessment: boxes 1-4 (A) + disease (B) + metabolic demand (C) + physical exam (D), triaged 0-1, 2-3, 4-8, 9 or more."),
     ],
   },
   "must-risk": {
@@ -145,6 +159,21 @@ const CODE_SYSTEMS = {
       c("B", "B: moderately malnourished or suspected malnutrition"),
       c("C", "C: severely malnourished"),
     ],
+  },
+  "pgsga-triage": {
+    title: "PG-SGA triage category",
+    description: "Nutritional triage by PG-SGA total score as printed on the form: 0-1, 2-3, 4-8, 9 or more.",
+    concepts: [
+      c("no-intervention", "No intervention required", "Total 0-1: re-assess routinely during treatment."),
+      c("education-and-symptom-management", "Education and symptom management", "Total 2-3: patient and family education, with pharmacologic intervention as indicated by the symptom survey and lab values."),
+      c("dietitian-intervention", "Requires dietitian intervention", "Total 4-8: dietitian, in conjunction with nurse or physician as indicated by symptoms."),
+      c("critical-need", "Critical need", "Total 9 or more: critical need for improved symptom management and/or nutrient intervention options."),
+    ],
+  },
+  "pgsga-category": {
+    title: "PG-SGA global category",
+    description: "Global PG-SGA category rating entered by the assessor (Worksheet 5). The form lists descriptors per stage but no rule to compute it.",
+    concepts: [c("A", "Stage A", "Well-nourished."), c("B", "Stage B", "Moderate or suspected malnutrition."), c("C", "Stage C", "Severely malnourished.")],
   },
   "who-adult-bmi-class": {
     title: "WHO adult BMI class",
@@ -257,14 +286,15 @@ const OPERATIONS = {
     ],
   },
   "Observation-screen": {
-    resource: "Observation", code: "screen", title: "Nutrition screening (MUST, NRS-2002, MNA or SGA)",
+    resource: "Observation", code: "screen", title: "Nutrition screening (MUST, NRS-2002, MNA, SGA or PG-SGA)",
     description:
       "tool=must (default): Malnutrition Universal Screening Tool score and risk category; provide bmi, or weight + height; and weightLossPercent3to6Months, or usualWeight + weight. " +
       "tool=nrs-2002: two-stage NRS-2002 as printed in the source appendix (initial screening, then nutritional status + disease severity + age 70+); disease severity and impaired general condition are clinician inputs. " +
       "tool=mna: Mini Nutritional Assessment as printed on the Nestle form; screening items A-F always, assessment items G-R only when the screening score is 11 or less (12-14 stops at normal). Measured items are scored from raw values, judgement items are sent as the printed option score. " +
-      "tool=sga: Subjective Global Assessment as printed on the NEMO form; history descriptors are mapped to their printed columns, % weight loss is derived, physical-examination grades are checked against the columns the form has, and the overall A/B/C rating is the assessor's own input (the form gives no rule to compute it)." + QUANTITY_NOTE,
+      "tool=sga: Subjective Global Assessment as printed on the NEMO form; history descriptors are mapped to their printed columns, % weight loss is derived, physical-examination grades are checked against the columns the form has, and the overall A/B/C rating is the assessor's own input (the form gives no rule to compute it). " +
+      "tool=pg-sga: scored PG-SGA as printed on the form (v3.22.15): total = boxes 1-4 + disease + metabolic demand + physical exam, triaged 0-1, 2-3, 4-8, 9 or more; the physical-exam score is the clinician's overall deficit rating and the Stage A/B/C category is an optional assessor input." + QUANTITY_NOTE,
     parameters: [
-      P("tool", "code", 0, "1", "must (default) | nrs-2002 | mna | sga"),
+      P("tool", "code", 0, "1", "must (default) | nrs-2002 | mna | sga | pg-sga"),
       P("bmi", "decimal", 0, "1", "BMI in kg/m2. Alternative to weight + height."),
       P("weight", "Quantity", 0, "1", "Current weight."),
       P("height", "Quantity", 0, "1", "Height."),
@@ -314,6 +344,21 @@ const OPERATIONS = {
       P("overallRating", "code", 0, "1", "SGA (required): the assessor's overall rating, A, B or C. Never computed."),
       P("underEyesFat", "code", 0, "1", "SGA exam grade A or C (the form has no B for this site). Same for tricepsFat, bicepsFat, calf, knee, interosseousMuscle."),
       P("temple", "code", 0, "1", "SGA exam grade A, B or C. Same for clavicle, shoulder, scapulaRibs, quadriceps, oedema, ascites. All exam sites are optional."),
+      P("weightOneMonthAgo", "Quantity", 0, "1", "PG-SGA: weight one month ago; with weight it derives the 1-month loss. 1-month data take priority over 6-month."),
+      P("weightSixMonthsAgo", "Quantity", 0, "1", "PG-SGA: weight six months ago; used only when there is no 1-month data."),
+      P("weightLossPercent1Month", "decimal", 0, "1", "PG-SGA: weight loss over 1 month in percent (negative = gain). Alternative to weightOneMonthAgo + weight. One of the 1-month or 6-month inputs is required."),
+      P("pgsgaWeightChange2Weeks", "code", 0, "1", "PG-SGA Box 1 (required): decreased (1 point) | not-changed | increased."),
+      P("pgsgaIntakeVsUsual", "code", 0, "1", "PG-SGA Box 2 (required): unchanged | more-than-usual | less-than-usual (1 point)."),
+      P("pgsgaCurrentIntake", "code", 0, "1", "PG-SGA Box 2: normal-food-less-than-normal-amount (1) | little-solid-food (2) | only-liquids (3) | only-nutritional-supplements (3) | very-little-of-anything (4) | only-tube-feeding-or-parenteral (0). Box 2 takes the higher of the two answers."),
+      P("pgsgaSymptom", "code", 0, "*", "PG-SGA Box 3 (at least one required, repeatable): no-problems-eating (0, cannot be combined) | no-appetite (3) | nausea (1) | vomiting (3) | constipation (1) | diarrhoea (3) | dry-mouth (1) | mouth-sores (2) | smells-bother-me (1) | taste-changes (1) | feel-full-quickly (1) | problems-swallowing (2) | fatigue (1) | pain (3) | other (1). Points are added."),
+      P("pgsgaActivity", "code", 0, "1", "PG-SGA Box 4 (required): normal (0) | fairly-normal-activities (1) | in-bed-or-chair-less-than-half-day (2) | little-activity-most-of-day-in-bed-or-chair (3) | bed-ridden (3)."),
+      P("cancer", "boolean", 0, "1", "PG-SGA Worksheet 2: 1 point each for cancer, aids, pulmonaryOrCardiacCachexia, chronicRenalInsufficiency, decubitusOpenWoundOrFistula, trauma (all booleans; not sent = absent). Age over 65 adds 1 from ageYears or birthDate (required for PG-SGA)."),
+      P("feverTemperatureC", "decimal", 0, "1", "PG-SGA Worksheet 3: highest temperature in degrees Celsius. Above 37.2 scores 1, 38.3 or more 2, 38.8 or more 3. Not sent = no fever."),
+      P("feverDurationHours", "decimal", 0, "1", "PG-SGA Worksheet 3: required when feverTemperatureC is above 37.2. Under 72 hours scores 1, 72 hours 2, over 72 hours 3. The greater of intensity and duration is scored."),
+      P("corticosteroidPrednisoneEquivalentMgPerDay", "decimal", 0, "1", "PG-SGA Worksheet 3: under 10 mg scores 1, 10 to under 30 mg 2, 30 mg or more 3. Not sent or 0 = none."),
+      P("physicalExamDeficit", "code", 0, "1", "PG-SGA Worksheet 4 (required): the clinician's overall rating of total body deficit: none (0) | mild (1) | moderate (2) | severe (3). Muscle deficit takes precedence over fat or fluid on the form. Never computed."),
+      P("muscleStatusRating", "integer", 0, "1", "PG-SGA Worksheet 4, optional, recorded only: global muscle rating 0-3. Same for fatStoresRating and fluidStatusRating."),
+      P("pgsgaGlobalCategory", "code", 0, "1", "PG-SGA Worksheet 5, optional: the assessor's Stage A, B or C. Never computed."),
       SUBJECT_OPT, EFFECTIVE,
     ],
   },

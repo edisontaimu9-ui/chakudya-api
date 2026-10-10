@@ -4,7 +4,7 @@
 // growth classification). This module covers the whole process as the
 // Academy of Nutrition and Dietetics defines it:
 //
-//   Screening  -> POST /fhir/Observation/$screen            (MUST, NRS-2002, MNA, SGA)
+//   Screening  -> POST /fhir/Observation/$screen            (MUST, NRS-2002, MNA, SGA, PG-SGA)
 //   Assess     -> POST /fhir/Observation/$assess-nutrition  (A: BMI, weight
 //                 change, energy/protein needs + intake, GLIM, and generic
 //                 FH/AD/BD/PD/CH indicators)
@@ -631,6 +631,230 @@ function evaluateSga(p, ctx) {
   return okRes(collection([entryOf(ctx, obs)]));
 }
 
+// ─── $screen — PG-SGA (Scored Patient-Generated Subjective Global Assessment) ──
+//
+// As printed on the supplied PG-SGA form (FD Ottery, v3.22.15, metric). Unlike
+// the plain SGA this one is a scored tool: total = A (boxes 1-4) + B (disease,
+// worksheet 2) + C (metabolic demand, worksheet 3) + D (physical exam,
+// worksheet 4), then triaged 0-1 / 2-3 / 4-8 / 9 or more.
+// What the form prints is implemented as printed: weight-loss points (1-month
+// data, 6-month only when there is none, +1 for loss in the past 2 weeks),
+// every item weight, fever intensity vs duration "whichever is greater", the
+// steroid bands and the triage bands.
+// What the supplied pages do NOT print, and what is assumed here (stated in the
+// Observation note): how the two Box 2 answers combine (the higher is used),
+// that Box 3 symptoms add (they are "check all that apply") and that the
+// "other relevant diagnoses" line scores nothing (it has no tick box).
+// Never computed: the physical-exam score D (the clinician's overall rating of
+// total body deficit) and the Stage A/B/C global category (optional input).
+
+const PGSGA_WEIGHT_2W = { decreased: 1, "not-changed": 0, increased: 0 };
+const PGSGA_INTAKE_VS_USUAL = { unchanged: 0, "more-than-usual": 0, "less-than-usual": 1 };
+const PGSGA_CURRENT_INTAKE = {
+  "normal-food-less-than-normal-amount": 1, "little-solid-food": 2, "only-liquids": 3,
+  "only-nutritional-supplements": 3, "very-little-of-anything": 4, "only-tube-feeding-or-parenteral": 0,
+};
+const PGSGA_SYMPTOMS = {
+  "no-problems-eating": [0, "no problems eating"], "no-appetite": [3, "no appetite, just did not feel like eating"],
+  nausea: [1, "nausea"], vomiting: [3, "vomiting"], constipation: [1, "constipation"], diarrhoea: [3, "diarrhoea"],
+  "dry-mouth": [1, "dry mouth"], "mouth-sores": [2, "mouth sores"], "smells-bother-me": [1, "smells bother me"],
+  "taste-changes": [1, "things taste funny or have no taste"], "feel-full-quickly": [1, "feel full quickly"],
+  "problems-swallowing": [2, "problems swallowing"], fatigue: [1, "fatigue"], pain: [3, "pain"], other: [1, "other (for example depression, money or dental problems)"],
+};
+const PGSGA_ACTIVITY = {
+  normal: 0, "fairly-normal-activities": 1, "in-bed-or-chair-less-than-half-day": 2,
+  "little-activity-most-of-day-in-bed-or-chair": 3, "bed-ridden": 3,
+};
+const PGSGA_DISEASE = [
+  ["cancer", "cancer"], ["aids", "AIDS"], ["pulmonaryOrCardiacCachexia", "pulmonary or cardiac cachexia"],
+  ["chronicRenalInsufficiency", "chronic renal insufficiency"], ["decubitusOpenWoundOrFistula", "presence of decubitus, open wound or fistula"],
+  ["trauma", "presence of trauma"],
+];
+const PGSGA_DEFICIT = { none: 0, mild: 1, moderate: 2, severe: 3 };
+const PGSGA_RATINGS = [["muscleStatusRating", "Global muscle status rating"], ["fatStoresRating", "Global fat deficit rating"], ["fluidStatusRating", "Global fluid status rating"]];
+
+/** Worksheet 1 points. months is 1 or 6; pct is positive for loss. */
+function pgsgaWeightLossPoints(pct, months) {
+  const bands = months === 1 ? [[10, 4], [5, 3], [3, 2], [2, 1]] : [[20, 4], [10, 3], [6, 2], [2, 1]];
+  for (const [min, pts] of bands) if (pct >= min) return pts;
+  return 0;
+}
+
+/** One period's % loss from a stated percent, else from an earlier weight + current weight. */
+function pgsgaLoss(p, pctName, thenName, nowKg) {
+  const direct = p.get(pctName);
+  if (direct !== undefined) {
+    if (!isNum(direct) || direct < -100 || direct > 100) return { err: bad(`'${pctName}' must be a percent between -100 and 100 (negative = weight gain).`) };
+    return { pct: direct };
+  }
+  const q = p.get(thenName);
+  if (q === undefined) return null;
+  const then = toKg(q);
+  if (then === null) return { err: bad(`'${thenName}' needs a recognised unit (kg or g).`) };
+  if (!(then > 0)) return { err: bad(`'${thenName}' must be positive.`) };
+  if (nowKg === null) return { err: bad(`'${thenName}' needs a current 'weight' in kg or g.`) };
+  return { pct: ((then - nowKg) / then) * 100 };
+}
+
+function pgsgaTable(p, name, table, what) {
+  const v = str(p.get(name));
+  if (v === undefined) return { missing: name };
+  if (!(v in table)) return { err: bad(`'${name}' (${what}) must be one of: ${Object.keys(table).join(", ")}.`) };
+  return { code: v, points: table[v] };
+}
+
+function evaluatePgSga(p, ctx) {
+  const base = ctx.base;
+  const missing = [];
+  const age = ageYearsFrom(p, ctx.now);
+  if (!isNum(age)) missing.push("ageYears or birthDate");
+  else if (age < 18) return unprocessable("PG-SGA here is for adults (18+).");
+
+  // Box 1: weight (worksheet 1)
+  let nowKg = null;
+  if (p.get("weight") !== undefined) {
+    nowKg = toKg(p.get("weight"));
+    if (nowKg === null || !(nowKg > 0)) return bad("'weight' must be a positive Quantity in kg or g.");
+  }
+  const m1 = pgsgaLoss(p, "weightLossPercent1Month", "weightOneMonthAgo", nowKg);
+  if (m1?.err) return m1.err;
+  const m6 = pgsgaLoss(p, "weightLossPercent6Months", "weightSixMonthsAgo", nowKg);
+  if (m6?.err) return m6.err;
+  const period = m1 ? 1 : m6 ? 6 : null;
+  const lossPct = m1 ? m1.pct : m6 ? m6.pct : null;
+  if (period === null) missing.push("weightLossPercent1Month (or weightOneMonthAgo + weight), or the 6-month equivalent");
+  const w2 = pgsgaTable(p, "pgsgaWeightChange2Weeks", PGSGA_WEIGHT_2W, "weight change over the past two weeks");
+  if (w2.err) return w2.err;
+  if (w2.missing) missing.push(w2.missing);
+
+  // Box 2: food intake
+  const vsUsual = pgsgaTable(p, "pgsgaIntakeVsUsual", PGSGA_INTAKE_VS_USUAL, "food intake over the past month compared with normal");
+  if (vsUsual.err) return vsUsual.err;
+  if (vsUsual.missing) missing.push(vsUsual.missing);
+  let current = null;
+  if (p.get("pgsgaCurrentIntake") !== undefined) {
+    current = pgsgaTable(p, "pgsgaCurrentIntake", PGSGA_CURRENT_INTAKE, "what the patient is now taking");
+    if (current.err) return current.err;
+  }
+
+  // Box 3: symptoms (repeatable, check all that apply)
+  const picked = [...new Set(p.all("pgsgaSymptom").map(str).filter(Boolean))];
+  for (const s of picked) if (!(s in PGSGA_SYMPTOMS)) return bad(`'pgsgaSymptom' must be one of: ${Object.keys(PGSGA_SYMPTOMS).join(", ")}.`);
+  if (picked.length === 0) missing.push("pgsgaSymptom (repeatable; send no-problems-eating if none)");
+  else if (picked.includes("no-problems-eating") && picked.length > 1) return bad("'pgsgaSymptom' no-problems-eating cannot be combined with other symptoms.");
+
+  // Box 4: activities and function
+  const act = pgsgaTable(p, "pgsgaActivity", PGSGA_ACTIVITY, "activity over the past month");
+  if (act.err) return act.err;
+  if (act.missing) missing.push(act.missing);
+
+  // Worksheet 2: disease (age over 65 is derived)
+  const disease = [];
+  for (const [name, label] of PGSGA_DISEASE) {
+    const v = p.get(name);
+    if (v === undefined) continue;
+    if (typeof v !== "boolean") return bad(`'${name}' must be a boolean (${label}).`);
+    if (v) disease.push(label);
+  }
+  if (isNum(age) && age > 65) disease.push("age greater than 65");
+
+  // Worksheet 3: metabolic demand (absent = none)
+  const temp = p.get("feverTemperatureC");
+  const hours = p.get("feverDurationHours");
+  const dose = p.get("corticosteroidPrednisoneEquivalentMgPerDay");
+  if (temp !== undefined && !(isNum(temp) && temp >= 30 && temp <= 45)) return bad("'feverTemperatureC' must be the highest temperature in degrees Celsius (30 to 45).");
+  if (hours !== undefined && !(isNum(hours) && hours >= 0 && hours <= 1000)) return bad("'feverDurationHours' must be a number of hours (0 to 1000).");
+  if (dose !== undefined && !(isNum(dose) && dose >= 0 && dose <= 1000)) return bad("'corticosteroidPrednisoneEquivalentMgPerDay' must be mg of prednisone equivalents per day (0 if none).");
+  const feverOn = isNum(temp) && temp > 37.2;
+  if (hours !== undefined && temp === undefined) return bad("'feverDurationHours' needs 'feverTemperatureC'.");
+  if (feverOn && hours === undefined) return bad("'feverDurationHours' is required when 'feverTemperatureC' is above 37.2 (the form scores intensity or duration, whichever is greater).");
+  const feverIntensity = !feverOn ? 0 : temp >= 38.8 ? 3 : temp >= 38.3 ? 2 : 1;
+  const feverDuration = !feverOn ? 0 : hours > 72 ? 3 : hours === 72 ? 2 : 1;
+  const feverScore = Math.max(feverIntensity, feverDuration);
+  const steroidScore = !isNum(dose) || dose <= 0 ? 0 : dose >= 30 ? 3 : dose >= 10 ? 2 : 1;
+
+  // Worksheet 4: physical exam overall deficit (the clinician's rating)
+  const deficit = pgsgaTable(p, "physicalExamDeficit", PGSGA_DEFICIT, "overall rating of total body deficit");
+  if (deficit.err) return deficit.err;
+  if (deficit.missing) missing.push("physicalExamDeficit (none, mild, moderate or severe: the clinician's overall rating)");
+  const ratings = [];
+  for (const [name, label] of PGSGA_RATINGS) {
+    const v = p.get(name);
+    if (v === undefined) continue;
+    if (!(Number.isInteger(v) && v >= 0 && v <= 3)) return bad(`'${name}' must be an integer 0-3 (0 no abnormality, 1 mild, 2 moderate, 3 severe).`);
+    ratings.push({ label, v });
+  }
+  let globalCat;
+  if (p.get("pgsgaGlobalCategory") !== undefined) {
+    globalCat = sgaGradeOf(p.get("pgsgaGlobalCategory"));
+    if (!SGA_GRADES.includes(globalCat)) return bad("'pgsgaGlobalCategory' must be A, B or C.");
+  }
+  if (missing.length) return bad(`PG-SGA needs: ${missing.join(", ")}.`);
+
+  const wlPct = round(lossPct, 1);
+  const wlPoints = pgsgaWeightLossPoints(wlPct, period);
+  const box1 = wlPoints + w2.points;
+  const box2 = Math.max(vsUsual.points, current ? current.points : 0);
+  const symptoms = picked.map((s) => ({ code: s, points: PGSGA_SYMPTOMS[s][0], label: PGSGA_SYMPTOMS[s][1] }));
+  const box3 = symptoms.reduce((a, s) => a + s.points, 0);
+  const box4 = act.points;
+  const A = box1 + box2 + box3 + box4;
+  const B = disease.length;
+  const C = feverScore + steroidScore;
+  const D = deficit.points;
+  const total = A + B + C + D;
+  const triage = total <= 1 ? "no-intervention" : total <= 3 ? "education-and-symptom-management" : total <= 8 ? "dietitian-intervention" : "critical-need";
+  const triageText = {
+    "no-intervention": "no intervention required at this time; re-assess routinely during treatment",
+    "education-and-symptom-management": "patient and family education by dietitian, nurse or other clinician, with pharmacologic intervention as indicated by the symptom survey (Box 3) and lab values as appropriate",
+    "dietitian-intervention": "requires intervention by a dietitian, in conjunction with nurse or physician as indicated by symptoms (Box 3)",
+    "critical-need": "indicates a critical need for improved symptom management and/or nutrient intervention options",
+  }[triage];
+
+  const obs = {
+    resourceType: "Observation",
+    status: "final",
+    category: [...stepCategory(base, "screening"), { coding: [{ system: OBS_CATEGORY, code: "survey" }] }],
+    code: { coding: [{ system: cs(base, "screening-tool"), code: "pg-sga", display: "PG-SGA (adult)" }], text: "Scored Patient-Generated Subjective Global Assessment (PG-SGA)" },
+    effectiveDateTime: str(p.get("effectiveDateTime")) ?? ctx.now,
+    valueInteger: total,
+    interpretation: [{ coding: [{ system: V3_INTERPRETATION, code: total <= 1 ? "N" : total <= 8 ? "A" : "AA" }] }],
+  };
+  const subj = p.get("subject") ? subjectRef(p.get("subject")) : null;
+  if (subj) obs.subject = subj;
+  const ind = (code, v, text) => ({ code: { coding: [{ system: cs(base, "ncp-indicator"), code }], ...(text ? { text } : {}) }, ...v });
+  const score = (code, n) => ind(code, { valueInteger: n });
+  obs.component = [
+    ind("pgsga-weight-loss-percent", { valueQuantity: { value: wlPct, unit: "%", system: UCUM, code: "%" } }, `Weight loss over ${period === 1 ? "1 month" : "6 months"} (positive = loss)`),
+    score("pgsga-box1-weight-score", box1),
+    score("pgsga-box2-food-intake-score", box2),
+    score("pgsga-box3-symptoms-score", box3),
+    score("pgsga-box4-activity-score", box4),
+    score("pgsga-short-form-score", A),
+    score("pgsga-disease-score", B),
+    score("pgsga-metabolic-score", C),
+    score("pgsga-physical-exam-score", D),
+    ind("pgsga-triage-category", { valueCodeableConcept: { coding: [{ system: cs(base, "pgsga-triage"), code: triage }] } }),
+    ...(globalCat ? [ind("pgsga-global-category", { valueCodeableConcept: { coding: [{ system: cs(base, "pgsga-category"), code: globalCat }] } })] : []),
+    ...symptoms.filter((s) => s.code !== "no-problems-eating").map((s) => ind("pgsga-nutrition-impact-symptom", { valueInteger: s.points }, s.label)),
+    ...ratings.map((r) => ind("pgsga-body-composition-rating", { valueInteger: r.v }, r.label)),
+  ];
+  const notes = [];
+  if (m1 && m6) notes.push("both 1-month and 6-month weight data were sent: the form says to use 1-month data when available, so 6-month was not scored");
+  if (period === 6) notes.push("no 1-month weight data, so the 6-month table was used");
+  if (vsUsual.points !== (current ? current.points : 0) && current) notes.push("Box 2 takes the higher of the two answers (the supplied pages do not say how they combine)");
+  notes.push("Box 3 symptoms are added (check all that apply)");
+  if (feverOn) notes.push(`fever scored by the greater of intensity (${feverIntensity}) and duration (${feverDuration})`);
+  const catText = globalCat ? ` Global PG-SGA category entered by the assessor: Stage ${globalCat} (not computed here).` : "";
+  obs.note = [{
+    text: `PG-SGA total ${total}: ${triageText}. ` +
+      `A (boxes 1-4, the short form) ${A} = weight ${box1} (loss ${wlPct}% over ${period === 1 ? "1 month" : "6 months"} scores ${wlPoints}, past 2 weeks ${w2.code} scores ${w2.points}) + food intake ${box2} + symptoms ${box3} + activity ${box4}. ` +
+      `B disease ${B} (${disease.length ? disease.join(", ") : "none flagged: conditions not sent are taken as absent"}). C metabolic demand ${C} (fever ${feverScore}, corticosteroids ${steroidScore}; not sent is taken as none). ` +
+      `D physical exam ${D}, as rated by the clinician (${deficit.code} total body deficit).${catText} Notes: ${notes.join("; ")}. ${SCREENING_NOTE}`,
+  }];
+  return okRes(collection([entryOf(ctx, obs)]));
+}
+
 // ─── $screen — MUST (Malnutrition Universal Screening Tool, adults) ────────
 
 export function evaluateScreen(body, ctx) {
@@ -643,7 +867,8 @@ export function evaluateScreen(body, ctx) {
   if (tool === "nrs-2002") return evaluateNrs(p, ctx);
   if (tool === "mna") return evaluateMna(p, ctx);
   if (tool === "sga") return evaluateSga(p, ctx);
-  if (tool !== "must") return bad("'tool' must be must (default), nrs-2002, mna or sga.");
+  if (tool === "pg-sga") return evaluatePgSga(p, ctx);
+  if (tool !== "must") return bad("'tool' must be must (default), nrs-2002, mna, sga or pg-sga.");
 
   let bmi = isNum(p.get("bmi")) ? p.get("bmi") : null;
   const kg = p.get("weight") ? toKg(p.get("weight")) : null;
