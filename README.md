@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -616,7 +616,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, and
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, and
 `/fenton-preterm/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
@@ -850,6 +850,24 @@ GET /length-velocity/classify?sex=girls&start_age_months=3&length_start_cm=61.0&
 ```
 
 Setup: run `sql/019_add_who_length_velocity.sql` in the Supabase SQL editor, then `POST /length-velocity/bulk` once with the seed file.
+
+### Weight Velocity (`/weight-velocity`)
+
+WHO Child Growth Standards 6-month weight **increments in grams** (simplified field tables), birth to 24 months, for girls and boys. Table: [`sql/020_add_who_weight_velocity.sql`](sql/020_add_who_weight_velocity.sql), 38 rows (19 girls + 19 boys), one per sex per 6-month window (0-6, 1-7, ... 18-24 months). Logic: [`src/weightVelocity.js`](src/weightVelocity.js). This is how much weight the child gained over a window, **not** weight for age.
+
+**Where the numbers come from:** the -3 SD to +3 SD cut-offs for both sexes are transcribed from the printed WHO z-score tables. Each row also stores that table's L, M, S and Delta parameters, so the API returns an exact z-score and percentile (`z = (((x + Delta) / M)^L - 1) / (L*S)`) as well as the band. A unit test re-checks all 266 stored cut-offs against their own L, M, S and Delta within 1 g.
+
+- `GET /weight-velocity/classify` *(public, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first weighing; 3 means the 3-9 month window), and either `increment_g` (grams) or both `weight_start_kg` and `weight_end_kg` (kilograms). Optional `end_age_months` must equal start + 6. Returns `status`, `increment_g`, `z_score`, `percentile` and the `cutoffs` (grams) used. `z_score` and `percentile` are `null` when the Delta-shifted increment is not positive.
+- `GET /weight-velocity` — the raw reference rows including L, M, S and Delta; optional `sex` and `start_age_months` filters, standard pagination.
+- `POST /weight-velocity/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/who_weight_velocity_seed.json`](scripts/who_weight_velocity_seed.json). A unique `(sex, interval_start_months)` constraint rejects a second seeding attempt.
+
+Bands (strict): very low < -3SD, low < -2SD, within expected range -2SD to +2SD, high > +2SD, very high > +3SD. Increments can legitimately be near zero or negative in the second year (the late-window -3 SD cut-offs are around 0 g or below). Screening aid only, not a diagnosis; weight gain varies with illness, feeding and scale error, so repeat on the same scale and interpret with weight-for-age and weight-for-length.
+
+```
+GET /weight-velocity/classify?sex=girls&start_age_months=3&weight_start_kg=5.8&weight_end_kg=8.2
+```
+
+Setup: run `sql/020_add_who_weight_velocity.sql` in the Supabase SQL editor, then `POST /weight-velocity/bulk` once with the seed file.
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 
