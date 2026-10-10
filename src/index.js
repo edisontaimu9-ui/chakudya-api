@@ -535,6 +535,7 @@ import { parseMuacFixedQuery, classifyMuacFixed } from "./muacFixed.js";
 import { parseLhfaQuery, pickRowAndValue, classifyLhfa } from "./lengthHeightForAge.js";
 import { parseWeightForAgeQuery, classifyWeightForAge } from "./weightForAge.js";
 import { parseWflhQuery, resolveLookup, classifyWflh } from "./weightForLengthHeight.js";
+import { parseBmiUnder5Query, resolveBmi, classifyBmiUnder5 } from "./bmiForAgeUnder5.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -767,7 +768,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -904,7 +905,7 @@ function routePolicy(resource, method, param, action) {
   const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
   const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "fenton-preterm"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -2766,6 +2767,72 @@ async function handleWeightForLengthHeight(request, url, db, param) {
     filters.length_height_cm = `eq.${Number(lh).toFixed(1)}`;
   }
   return await paginatedList(db, "who_weight_for_length_height", url, { filters, order: "length_height_cm.asc" });
+}
+
+// ─── BMI-FOR-AGE UNDER 5 (/bmi-for-age-under-5) ───────────────────────────
+//
+// WHO BMI-for-age (kg/m2), birth to 5 years (see
+// sql/026_add_who_bmi_for_age_under_5.sql and src/bmiForAgeUnder5.js). The
+// 5-19 year table is /bmi-for-age. Age picks the table (lying under 24 months,
+// standing from 24); weight + length/height is converted to BMI after any
+// 0.7 cm position adjustment, or a BMI can be passed directly. Public reads;
+// the table is filled once via POST /bmi-for-age-under-5/bulk (admin).
+// Screening aid only.
+async function handleBmiForAgeUnder5(request, url, db, param) {
+  if (request.method !== "GET") {
+    return err("Method not allowed. Seed rows with POST /bmi-for-age-under-5/bulk (admin).", 405);
+  }
+
+  if (param === "classify") {
+    const parsed = parseBmiUnder5Query(url.searchParams);
+    if (parsed.error) return err(parsed.error);
+
+    const resolved = resolveBmi(parsed);
+    if (!Number.isFinite(resolved.bmi) || resolved.bmi < 5 || resolved.bmi > 40) {
+      return err("Computed BMI is not plausible (check the weight and the length/height units)");
+    }
+
+    const { ok, status, body } = await db.select("who_bmi_for_age_under_5", {
+      filters: { sex: `eq.${parsed.sex}`, age_months: `eq.${parsed.ageMonths}`, measured: `eq.${resolved.table}` },
+      limit: 1,
+    });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const row = Array.isArray(body) ? body[0] : null;
+    if (!row) return notFound("BMI-for-age (under 5) reference row (has sql/026 been run and the table seeded?)");
+
+    const result = classifyBmiUnder5(row, resolved.bmi);
+    return success(
+      {
+        sex: parsed.sex,
+        age_months: parsed.ageMonths,
+        bmi_computed_from_weight_and_length_height: resolved.computed,
+        ...(resolved.computed
+          ? { weight_kg: parsed.weightKg, entered_length_height_cm: parsed.lengthHeightCm, used_length_height_cm: resolved.usedLengthHeightCm }
+          : {}),
+        ...(resolved.adjustment ? { position_adjustment: resolved.adjustment } : {}),
+        ...result,
+        source: row.source,
+        note: "Screening aid only, not a diagnosis. BMI-for-age (under 5) as a WHO z-score: severe wasting < -3SD, moderate wasting < -2SD, normal -2SD to +1SD, possible risk of overweight > +1SD, overweight > +2SD, obesity > +3SD. BMI = weight (kg) / length-or-height (m) squared; the age picks the table (lying under 24 months, standing from 24), and a child measured the other way has 0.7 cm added or subtracted before BMI is computed. A BMI passed directly is used as is. For 5 to 19 years use /bmi-for-age/classify; for acute malnutrition screening also use /weight-for-length-height, MUAC and clinical signs (bilateral pitting oedema means severe acute malnutrition whatever the z-score). Beyond +/-3SD the z-score is extended linearly as in the WHO tables; implausible = true when |z| > 5, which usually means a measuring or recording error.",
+      },
+      { message: "BMI-for-age (under 5) classification" }
+    );
+  }
+
+  if (param) return notFound("BMI-for-age (under 5) route");
+
+  const filters = {};
+  const sex = url.searchParams.get("sex");
+  if (sex) {
+    const n = normalizeHcSex(sex);
+    if (!n) return err("'sex' must be girls or boys");
+    filters.sex = `eq.${n}`;
+  }
+  const age = url.searchParams.get("age_months");
+  if (age) {
+    if (!Number.isInteger(Number(age))) return err("'age_months' must be a whole number");
+    filters.age_months = `eq.${Number(age)}`;
+  }
+  return await paginatedList(db, "who_bmi_for_age_under_5", url, { filters, order: "age_months.asc" });
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -7066,6 +7133,11 @@ function handleRoot(env) {
         "GET  /weight-for-length-height?sex=&measured=&length_height_cm=   → raw reference rows (-3SD to +3SD, kg, plus L/M/S)",
         "POST /weight-for-length-height/bulk    (admin) → body {items:[...]}, 2404 rows in five seed parts: scripts/weight_for_length_height_seed_1.json ... _5.json (max 500 per request)",
       ],
+      bmi_for_age_under_5: [
+        "GET  /bmi-for-age-under-5/classify?sex=girls&age_months=18&weight_kg=9.2&length_cm=78  → WHO BMI-for-age band (0-60 months) + exact z-score and percentile; or pass &bmi= directly; optional &measured=lying|standing converts by 0.7 cm before BMI is computed; screening aid, see sql/026_add_who_bmi_for_age_under_5.sql. 5-19 years: /bmi-for-age",
+        "GET  /bmi-for-age-under-5?sex=&age_months=   → raw reference rows (-3SD to +3SD, kg/m2, plus L/M/S)",
+        "POST /bmi-for-age-under-5/bulk    (admin) → body {items:[...]}, 124 rows; seed file: scripts/bmi_for_age_under5_seed.json",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -8501,6 +8573,17 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleWeightForLengthHeight(request, url, db, param || null);
+    }
+
+    case "bmi-for-age-under-5": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "who_bmi_for_age_under_5", {
+          requiredField: "sex",
+          label: "BMI-for-age (under 5) rows",
+        });
+      }
+      return await handleBmiForAgeUnder5(request, url, db, param || null);
     }
 
     case "fenton-preterm": {

@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height`, `/bmi-for-age-under-5` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -616,7 +616,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, `/weight-for-age/bulk`, `/weight-for-length-height/bulk`, and
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, `/weight-for-age/bulk`, `/weight-for-length-height/bulk`, `/bmi-for-age-under-5/bulk`, and
 `/fenton-preterm/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
@@ -960,6 +960,24 @@ GET /weight-for-length-height/classify?sex=girls&age_months=18&weight_kg=9.2&len
 ```
 
 Setup: run `sql/025_add_who_weight_for_length_height.sql` in the Supabase SQL editor, then `POST /weight-for-length-height/bulk` once for each of the five seed files.
+
+### BMI-for-age under 5 (`/bmi-for-age-under-5`)
+
+WHO Child Growth Standards **BMI-for-age** (kg/m2), birth to 5 years, girls and boys. The 5-19 year table is [`/bmi-for-age`](#bmi-for-age-bmi-for-age) (Malawi MoH guide), which is unchanged. Table: [`sql/026_add_who_bmi_for_age_under_5.sql`](sql/026_add_who_bmi_for_age_under_5.sql), 124 rows (birth to 2 years, lying length; 2 to 5 years, standing height; month 24 has both). Logic: [`src/bmiForAgeUnder5.js`](src/bmiForAgeUnder5.js).
+
+**How it works:** the child's **age** picks the table (lying under 24 months, standing from 24). Pass `weight_kg` (or `weight_g`) with `length_cm` or `height_cm` and the API computes BMI, or pass `bmi` directly. If the child was measured the other way for their age, 0.7 cm is subtracted (lying value, 24 months or older) or added (standing value, under 24 months) **before** BMI is computed, and `position_adjustment` says so (as in WHO Anthro; a BMI passed directly cannot be adjusted). Each row stores the table's L, M, S; the cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal) and a unit test re-checks every row. Rebuild the seed with `python3 scripts/build_bmi_under5_seed.py <girls_0_2.xlsx> <girls_2_5.xlsx> <boys_0_2.xlsx> <boys_2_5.xlsx>`.
+
+- `GET /bmi-for-age-under-5/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), and either `bmi`, or `weight_kg`/`weight_g` with `length_cm`/`height_cm` (or `_mm`); optional `measured=lying|standing`. Returns `status`, `reference`, `bmi`, `z_score`, `percentile`, `implausible` and the `cutoffs` (kg/m2).
+- `GET /bmi-for-age-under-5` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
+- `POST /bmi-for-age-under-5/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/bmi_for_age_under5_seed.json`](scripts/bmi_for_age_under5_seed.json). A unique `(sex, age_months, measured)` constraint rejects re-seeding.
+
+Bands (strict), same wording as weight-for-length/height: severe wasting < -3SD, moderate wasting < -2SD, normal -2SD to +1SD, possible risk of overweight > +1SD, overweight > +2SD, obesity > +3SD. `implausible` is true when |z| > 5. For acute malnutrition screening use it together with `/weight-for-length-height`, MUAC (`/muac/classify`) and clinical signs. Screening aid only, not a diagnosis.
+
+```
+GET /bmi-for-age-under-5/classify?sex=girls&age_months=18&weight_kg=9.2&length_cm=78
+```
+
+Setup: run `sql/026_add_who_bmi_for_age_under_5.sql` in the Supabase SQL editor, then `POST /bmi-for-age-under-5/bulk` once with the seed file.
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 
