@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -616,7 +616,7 @@ curl ".../foods?category=fruit&cursor=187"            # next page (from next_cur
 ## Bulk insert
 
 `POST /foods/bulk`, `/exchange/bulk`, `/renal/bulk`, `/formulas/bulk`,
-`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, `/weight-for-age/bulk`, and
+`/drug-interactions/bulk`, `/glycaemic-index/bulk`, `/bmi-for-age/bulk`, `/hc-velocity/bulk`, `/length-velocity/bulk`, `/weight-velocity/bulk`, `/muac-for-age/bulk`, `/length-height-for-age/bulk`, `/weight-for-age/bulk`, `/weight-for-length-height/bulk`, and
 `/fenton-preterm/bulk` *(all admin)* accept a batch
 of rows in one request instead of one `POST` per row — useful for loading
 data from a spreadsheet or migration script.
@@ -942,6 +942,24 @@ GET /weight-for-age/classify?sex=girls&age_months=12&weight_kg=8.5
 ```
 
 Setup: run `sql/024_add_who_weight_for_age.sql` in the Supabase SQL editor, then `POST /weight-for-age/bulk` once with the seed file.
+
+### Weight-for-length/height (`/weight-for-length-height`)
+
+WHO Child Growth Standards **weight-for-length** (birth to 2 years, lying down, 45.0-110.0 cm) and **weight-for-height** (2 to 5 years, standing, 65.0-120.0 cm), girls and boys (the wasting indicator, central to acute malnutrition screening). Table: [`sql/025_add_who_weight_for_length_height.sql`](sql/025_add_who_weight_for_length_height.sql), 2404 rows in 0.1 cm steps. Logic: [`src/weightForLengthHeight.js`](src/weightForLengthHeight.js).
+
+**How it works:** the child's **age** picks the table (lying under 24 months, standing from 24), and the length/height, rounded to the nearest 0.1 cm, picks the row. If the child was measured the other way for their age, 0.7 cm is subtracted (lying value on a child 24 months or older) or added (standing value on a child under 24 months), and `position_adjustment` says so (same convention as `/length-height-for-age`). Each row stores the table's L, M, S and WHO's printed 3-decimal -3 SD to +3 SD cut-offs; a unit test re-checks all 2404 rows. `z = ((x/M)^L - 1) / (L*S)`, with WHO's linear extension beyond +/-3 SD. Rebuild the seed with `python3 scripts/build_wflh_seed.py <wfl_girls.xlsx> <wfh_girls.xlsx> <wfl_boys.xlsx> <wfh_boys.xlsx>`.
+
+- `GET /weight-for-length-height/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), `weight_kg` or `weight_g`, and `length_cm` or `height_cm` (or the `_mm` versions); optional `measured=lying|standing`. Returns `status`, `reference`, `weight_kg`, `z_score`, `percentile`, `implausible`, the `cutoffs` (kg) and the length/height actually used. A length/height outside the table (under 45 or over 110 cm lying; under 65 or over 120 cm standing) returns 422.
+- `GET /weight-for-length-height` — raw reference rows; optional `sex`, `measured` and `length_height_cm` filters, standard pagination.
+- `POST /weight-for-length-height/bulk` *(admin)* — see [Bulk insert](#bulk-insert); five seed parts of at most 500 rows: `scripts/weight_for_length_height_seed_1.json` to `_5.json`. A unique `(sex, measured, length_height_cm)` constraint rejects re-seeding.
+
+Bands (strict): severe wasting < -3SD, moderate wasting < -2SD, normal -2SD to +1SD, possible risk of overweight > +1SD, overweight > +2SD, obesity > +3SD. `implausible` is true when |z| > 5. Bilateral pitting oedema means severe acute malnutrition whatever the z-score, and MUAC and clinical signs decide in practice (see `/muac/classify`). Screening aid only, not a diagnosis.
+
+```
+GET /weight-for-length-height/classify?sex=girls&age_months=18&weight_kg=9.2&length_cm=78
+```
+
+Setup: run `sql/025_add_who_weight_for_length_height.sql` in the Supabase SQL editor, then `POST /weight-for-length-height/bulk` once for each of the five seed files.
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 

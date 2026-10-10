@@ -42,6 +42,7 @@ tags:
   - name: MUAC fixed cut-offs
   - name: Length height for age
   - name: Weight for age
+  - name: Weight for length height
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -1744,6 +1745,132 @@ paths:
       tags: [Weight for age]
       summary: Bulk-create weight-for-age rows (admin)
       description: Seed file scripts/weight_for_age_seed.json (242 rows). A unique (sex, age_months) constraint rejects re-seeding.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/BulkSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /weight-for-length-height/classify:
+    get:
+      tags: [Weight for length height]
+      summary: Classify weight-for-length/height (wasting), birth to 5 years
+      description: >
+        WHO weight-for-length (under 24 months, lying, 45-110 cm) or
+        weight-for-height (24-60 months, standing, 65-120 cm) as a z-score,
+        looked up by length/height to 0.1 cm. If measured the other way for the
+        age, 0.7 cm is added or subtracted and reported in position_adjustment.
+        Strict cut-offs: severe wasting below -3SD, moderate wasting below
+        -2SD, normal -2SD to +1SD, possible risk of overweight above +1SD,
+        overweight above +2SD, obesity above +3SD. implausible is true when
+        |z| > 5. Bilateral pitting oedema means severe acute malnutrition
+        regardless of z-score. Screening aid only, not a diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: age_months
+          in: query
+          required: true
+          description: Whole completed months
+          schema: { type: integer, minimum: 0, maximum: 60 }
+        - name: weight_kg
+          in: query
+          description: Weight in KILOGRAMS
+          schema: { type: number }
+        - name: weight_g
+          in: query
+          description: Weight in GRAMS (used if weight_kg is absent)
+          schema: { type: number }
+        - name: length_cm
+          in: query
+          description: Length or height in CENTIMETRES (height_cm is an alias)
+          schema: { type: number }
+        - name: height_cm
+          in: query
+          schema: { type: number }
+        - name: length_mm
+          in: query
+          description: Millimetres (height_mm is an alias); used if no cm value is given
+          schema: { type: number }
+        - name: measured
+          in: query
+          description: How the child was measured; default lying under 24 months, standing from 24
+          schema: { type: string, enum: [lying, standing] }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          age_months: { type: integer }
+                          measured: { type: string, enum: [lying, standing] }
+                          entered_length_height_cm: { type: number }
+                          lookup_length_height_cm: { type: number }
+                          position_adjustment:
+                            type: object
+                            description: Present only when 0.7 cm was added or subtracted
+                          status:
+                            type: string
+                            enum: [severe wasting, moderate wasting, normal, possible risk of overweight, overweight, obesity]
+                          reference: { type: string, example: weight-for-length (lying down) }
+                          weight_kg: { type: number }
+                          z_score: { type: number, nullable: true }
+                          percentile: { type: number, nullable: true }
+                          implausible: { type: boolean, nullable: true }
+                          cutoffs:
+                            type: object
+                            additionalProperties: { type: number }
+                            description: Keys -3SD, -2SD, -1SD, median, +1SD, +2SD, +3SD (kg)
+                          source: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: Length/height is outside the WHO table for this age
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /weight-for-length-height:
+    get:
+      tags: [Weight for length height]
+      summary: List WHO weight-for-length/height rows (kg, with L/M/S)
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          schema: { type: string }
+        - name: measured
+          in: query
+          schema: { type: string, enum: [lying, standing] }
+        - name: length_height_cm
+          in: query
+          schema: { type: number }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { $ref: "#/components/responses/ListOrCursor" }
+
+  /weight-for-length-height/bulk:
+    post:
+      tags: [Weight for length height]
+      summary: Bulk-create weight-for-length/height rows (admin)
+      description: Seed parts scripts/weight_for_length_height_seed_1.json to _5.json (2404 rows in total, at most 500 per request). A unique (sex, measured, length_height_cm) constraint rejects re-seeding.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
