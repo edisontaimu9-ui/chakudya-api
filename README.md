@@ -943,6 +943,7 @@ The Academy of Nutrition and Dietetics Nutrition Care Process, end to end, as st
 | 3. Intervention | `POST /fhir/CarePlan/$intervene` | `CarePlan` + `Goal`s + `NutritionOrder`s (oral diet / supplement / enteral formula) + `ServiceRequest`s (education / counseling / coordination of care) |
 | 4. Monitoring & evaluation | `POST /fhir/Goal/$evaluate` | `Goal` with `achievementStatus` (achieved / improving / no-change / worsening / sustaining / not-achieved / in-progress) + outcome `Observation` |
 | Terminology | `GET /fhir/CodeSystem/ncp-diagnosis` | the NI/NC/NB diagnostic terms as a FHIR `CodeSystem` (public, from Supabase) |
+| Conformance | `GET /fhir/CodeSystem/{name}`, `/fhir/OperationDefinition/{id}`, `/fhir/StructureDefinition/{name}` | static definitions behind every URL the facade emits |
 | Documentation | `POST /fhir/Bundle/$ncp-document` | ADIME `Composition` **document Bundle** assembled from the Bundles above |
 
 **What Chakudya computes vs. what the clinician supplies.** Chakudya computes the deterministic parts (BMI, % weight change, MUST score, Mifflin-St Jeor BEE, GLIM criteria logic, goal progress). It does **not** choose the nutrition diagnosis, goals or orders — the PES statement, targets, diet prescription etc. are inputs it validates and shapes into FHIR. Energy/protein requirements are only produced when you pass `energyFactor` / `proteinGPerKg`; the factor is your clinical call, not a default. Everything carries the screening-aid disclaimer.
@@ -985,7 +986,7 @@ curl -s -X POST "$BASE/fhir/Observation/\$assess-nutrition" -H 'content-type: ap
 # 5. Document  → POST /fhir/Bundle/$ncp-document  (each Bundle above as a "resource" parameter)
 ```
 
-**Honest limits.** Screening covers MUST only (no NRS-2002/MNA/paediatric tools yet — the MCP server has more). `$assess-nutrition` is adult-only; WHO 0–59-month growth is still unsupported (as in Phase 1). No `Patient`/`Encounter` resources are created — you pass references. The `CapabilityStatement` links `OperationDefinition`s and the other custom `CodeSystem`s (`…/fhir/CodeSystem/ncp-step`, etc.) that are **not yet served** — only `ncp-diagnosis` is; the rest are stable identifiers for now. Not registered with any OpenHIM/HIE instance.
+**Honest limits.** Screening covers MUST only (no NRS-2002/MNA/paediatric tools yet — the MCP server has more). `$assess-nutrition` is adult-only; WHO 0–59-month growth is still unsupported (as in Phase 1). No `Patient`/`Encounter` resources are created — you pass references. Every canonical URL the facade emits now resolves: `GET /fhir/CodeSystem/{name}` (the code lists — `ncp-step`, `ncp-assessment-domain`, `glim`, `growth-status`, … — plus `ncp-diagnosis` from Supabase), `GET /fhir/OperationDefinition/{id}` (one per operation in `/fhir/metadata`, id = `<Resource>-<operation>`, e.g. `Observation-screen`) and `GET /fhir/StructureDefinition/{name}` (the Extensions, e.g. `pes-specify`). They are static definitions in [`src/fhirTerminology.js`](src/fhirTerminology.js); a test walks real operation output and fails if any emitted code system, code, extension or operation link lacks a definition, so add the definition when you add a field. These are conformance descriptions, not validated profiles. Not registered with any OpenHIM/HIE instance.
 
 ### Recipes
 

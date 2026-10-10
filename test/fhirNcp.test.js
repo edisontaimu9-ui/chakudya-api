@@ -11,7 +11,11 @@ import {
   diagnosisCodesRequested,
   buildNcpCodeSystem,
 } from "../src/fhirNcp.js";
-import { buildCapabilityStatement } from "../src/fhir.js";
+import { buildCapabilityStatement, buildFentonObservation, buildBmiForAgeObservation } from "../src/fhir.js";
+import {
+  codeSystemResource, operationDefinitionResource, structureDefinitionResource, staticConformanceResource,
+  STATIC_CODE_SYSTEM_NAMES, OPERATION_DEFINITION_IDS, STRUCTURE_DEFINITION_NAMES,
+} from "../src/fhirTerminology.js";
 
 let n = 0;
 const ctx = { base: "https://x.test", now: "2026-10-10T08:00:00.000Z", uuid: () => `id-${++n}` };
@@ -450,4 +454,130 @@ test("CodeSystem: concepts, count and properties built from rows", () => {
   assert.equal(cs.count, 4);
   const c = cs.concept.find((x) => x.code === "NB-1.2");
   assert.equal(c.property.find((p) => p.code === "use-with-caution").valueBoolean, true);
+});
+
+// ─── Every canonical URL the facade emits must resolve ────────────────────
+const BASE = ctx.base;
+
+function emittedSamples() {
+  const out = [];
+  const keep = (r) => { assert.equal(r.ok, true, JSON.stringify(r.outcome)); out.push(r.body); return r.body; };
+  const sub = { name: "subject", valueString: "Patient/42" };
+
+  // Screening at low / medium / high risk
+  for (const [bmi, loss, acute] of [[25, 0, false], [19, 0, false], [17, 12, true]]) {
+    keep(evaluateScreen(P([sub, { name: "bmi", valueDecimal: bmi }, { name: "weightLossPercent3to6Months", valueDecimal: loss }, { name: "acuteDiseaseNoIntake", valueBoolean: acute }]), ctx));
+  }
+  // Assessment: everything on, then intake-only (no factor), then several loss intervals and BMI classes
+  keep(evaluateAssessNutrition(P([
+    ...adult, sub,
+    { name: "usualWeight", valueQuantity: q(70, "kg") }, { name: "usualWeightPeriodDays", valueInteger: 91 },
+    { name: "energyFactor", valueDecimal: 1.3 }, { name: "proteinGPerKg", valueDecimal: 1.2 },
+    { name: "energyIntakeKcalPerDay", valueDecimal: 975 }, { name: "proteinIntakeGPerDay", valueDecimal: 36 },
+    { name: "screeningPositive", valueBoolean: true }, { name: "inflammation", valueCode: "chronic-disease" },
+    part("indicator", [{ name: "domain", valueCode: "FH" }, { name: "display", valueString: "Meals per day" }, { name: "value", valueString: "1" }]),
+  ]), ctx));
+  keep(evaluateAssessNutrition(P([...adult, { name: "energyIntakeKcalPerDay", valueDecimal: 900 }, { name: "proteinIntakeGPerDay", valueDecimal: 30 }]), ctx));
+  for (const days of [7, 30, 91, 182, 45]) {
+    for (const usual of [60.5, 63, 70]) {
+      keep(evaluateAssessNutrition(P([...adult, { name: "usualWeight", valueQuantity: q(usual, "kg") }, { name: "usualWeightPeriodDays", valueInteger: days }]), ctx));
+    }
+  }
+  for (const [kg, cm] of [[40, 175], [45, 175], [50, 175], [70, 175], [85, 175], [100, 175], [115, 175], [140, 175]]) {
+    keep(evaluateAssessNutrition(P([{ name: "sex", valueCode: "male" }, { name: "ageYears", valueInteger: 40 }, { name: "weight", valueQuantity: q(kg, "kg") }, { name: "height", valueQuantity: q(cm, "cm") }]), ctx));
+  }
+  keep(evaluateAssessNutrition(P([...adult, { name: "screeningPositive", valueBoolean: true }, { name: "muscleMass", valueCode: "severe" }, { name: "inflammation", valueCode: "acute-disease-or-injury" }]), ctx));
+  keep(evaluateAssessNutrition(P([...adult, { name: "screeningPositive", valueBoolean: true }, { name: "muscleMass", valueCode: "mild-moderate" }, { name: "inflammation", valueCode: "chronic-disease" }]), ctx));
+
+  // Diagnose (resolved term, with specify + caution), intervene, evaluate, document
+  keep(evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NI-55.1" }, { name: "problemSpecify", valueString: "Iron" }, { name: "severity", valueCode: "severe" }]), tctx));
+  keep(evaluateDiagnose(dxBody([{ name: "problemCode", valueString: "NB-1.2" }]), tctx));
+  keep(evaluateDiagnose(dxBody([{ name: "domain", valueCode: "clinical" }, { name: "problem", valueString: "Underweight" }, { name: "problemCode", valueString: "underweight" }]), tctx));
+  const iv = keep(evaluateIntervene(plan(), ctx));
+  const me = keep(evaluateGoals(goalP("increase", { baseline: 60, target: 65, current: 62 }), ctx));
+  keep(evaluateNcpDocument(P([{ name: "subject", valueString: "Patient/42" }, { name: "author", valueString: "X" }, { name: "resource", resource: iv }, { name: "resource", resource: me }]), ctx));
+
+  // Phase 1 growth Observations, every status either reference can emit
+  for (const status of ["small", "appropriate", "large"]) {
+    out.push(buildFentonObservation(BASE, { sex: "male", gestAgeWeeks: 32, day: 3, metric: "weight", value: 1500, unit: "g" }, { z: 0.1, percentile: 50, status }));
+  }
+  for (const status of ["severe thinness", "thinness", "normal", "overweight", "obesity"]) {
+    out.push(buildBmiForAgeObservation(BASE, { ageMonths: 120 }, { z: 0.1, percentile: 50, status }));
+  }
+  return out;
+}
+
+function walk(node, visit) {
+  if (Array.isArray(node)) return node.forEach((n) => walk(n, visit));
+  if (node && typeof node === "object") {
+    visit(node);
+    for (const v of Object.values(node)) walk(v, visit);
+  }
+}
+
+test("every emitted CodeSystem code and extension URL has a definition", () => {
+  const samples = emittedSamples();
+  const csPrefix = `${BASE}/fhir/CodeSystem/`;
+  const sdPrefix = `${BASE}/fhir/StructureDefinition/`;
+  const missing = new Set();
+  let checkedCodes = 0;
+  let checkedExt = 0;
+  for (const sample of samples) {
+    walk(sample, (o) => {
+      if (typeof o.system === "string" && o.system.startsWith(csPrefix) && typeof o.code === "string") {
+        const name = o.system.slice(csPrefix.length);
+        if (name === "ncp-diagnosis") return; // Supabase-backed, covered above
+        checkedCodes++;
+        const def = codeSystemResource(BASE, name);
+        if (!def) missing.add(`CodeSystem ${name}`);
+        else if (!def.concept.some((c) => c.code === o.code)) missing.add(`code "${o.code}" in ${name}`);
+      }
+      if (typeof o.url === "string" && o.url.startsWith(sdPrefix)) {
+        checkedExt++;
+        if (!structureDefinitionResource(BASE, o.url.slice(sdPrefix.length))) missing.add(`StructureDefinition ${o.url.slice(sdPrefix.length)}`);
+      }
+    });
+  }
+  assert.deepEqual([...missing], []);
+  assert.ok(checkedCodes > 100 && checkedExt > 10, `sanity: ${checkedCodes} codes, ${checkedExt} extensions checked`);
+});
+
+test("CapabilityStatement operation links and OperationDefinitions match one to one", () => {
+  const cap = buildCapabilityStatement(BASE);
+  const linked = cap.rest[0].resource.flatMap((r) => (r.operation ?? []).map((o) => o.definition));
+  const ids = linked.map((u) => u.slice(`${BASE}/fhir/OperationDefinition/`.length));
+  for (const id of ids) assert.ok(operationDefinitionResource(BASE, id), `missing OperationDefinition ${id}`);
+  assert.deepEqual([...ids].sort(), [...OPERATION_DEFINITION_IDS].sort());
+  const types = cap.rest[0].resource.map((r) => r.type);
+  for (const t of ["CodeSystem", "OperationDefinition", "StructureDefinition"]) assert.ok(types.includes(t));
+});
+
+test("OperationDefinitions describe the parameters each operation reads", () => {
+  const names = (id) => operationDefinitionResource(BASE, id).parameter.filter((p) => p.use === "in").map((p) => p.name);
+  assert.deepEqual(names("Observation-screen").sort(), ["acuteDiseaseNoIntake", "bmi", "effectiveDateTime", "height", "subject", "usualWeight", "weight", "weightLossPercent3to6Months"]);
+  for (const n of ["subject", "diagnosis"]) assert.ok(names("Condition-diagnose").includes(n));
+  for (const n of ["subject", "author", "resource"]) assert.ok(names("Bundle-ncp-document").includes(n));
+  const diag = operationDefinitionResource(BASE, "Condition-diagnose").parameter.find((p) => p.name === "diagnosis");
+  assert.deepEqual(diag.part.map((x) => x.name), ["problemCode", "problemSystem", "problemDisplay", "problemSpecify", "domain", "problem", "etiology", "signsSymptoms", "severity", "verificationStatus", "evidence", "recordedDate"]);
+  for (const id of OPERATION_DEFINITION_IDS) {
+    const od = operationDefinitionResource(BASE, id);
+    assert.equal(od.url, `${BASE}/fhir/OperationDefinition/${id}`);
+    assert.equal(od.parameter.at(-1).use, "out");
+    for (const prm of od.parameter) assert.ok(prm.min === 0 || prm.min === 1);
+  }
+});
+
+test("static conformance resources are well formed", () => {
+  for (const n of STATIC_CODE_SYSTEM_NAMES) {
+    const cs = codeSystemResource(BASE, n);
+    assert.equal(cs.url, `${BASE}/fhir/CodeSystem/${n}`);
+    assert.equal(new Set(cs.concept.map((c) => c.code)).size, cs.concept.length, `${n} has duplicate codes`);
+    if (cs.content === "complete") assert.equal(cs.count, cs.concept.length);
+  }
+  for (const n of STRUCTURE_DEFINITION_NAMES) {
+    const sd = structureDefinitionResource(BASE, n);
+    assert.equal(sd.differential.element.find((e) => e.path === "Extension.url").fixedUri, sd.url);
+  }
+  assert.equal(staticConformanceResource("CodeSystem", "nope", BASE), null);
+  assert.equal(staticConformanceResource("Patient", "x", BASE), null);
 });

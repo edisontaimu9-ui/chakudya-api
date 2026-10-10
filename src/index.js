@@ -556,6 +556,7 @@ import {
   toCm,
 } from "./fhir.js";
 import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./fhirNcp.js";
+import { staticConformanceResource } from "./fhirTerminology.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
   OAUTH_TOKEN_TTL_SECONDS,
@@ -887,7 +888,7 @@ function routePolicy(resource, method, param, action) {
   const isFhirMetadata = resource === "fhir" && param === "metadata" && method === "GET";
   const isFhirEvaluateGrowth = resource === "fhir" && param === "Observation" && action === "$evaluate-growth" && method === "POST";
   const isFhirNcpOperation = resource === "fhir" && method === "POST" && ncpOperationFor(param, action) !== null;
-  const isFhirNcpCodeSystem = resource === "fhir" && param === "CodeSystem" && action === "ncp-diagnosis" && method === "GET";
+  const isFhirNcpCodeSystem = resource === "fhir" && method === "GET" && Boolean(action) && ["CodeSystem", "OperationDefinition", "StructureDefinition"].includes(param);
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
@@ -6602,6 +6603,7 @@ function handleRoot(env) {
         "POST /fhir/Goal/$evaluate → NCP monitoring & evaluation: goal achievementStatus vs baseline/target",
         "POST /fhir/Bundle/$ncp-document → ADIME Composition document Bundle from the above",
         "GET  /fhir/CodeSystem/ncp-diagnosis → NCP nutrition diagnostic terminology (2006 ed., NI/NC/NB; stored in Supabase table ncp_diagnosis_terms)",
+        "GET  /fhir/CodeSystem/{name}, /fhir/OperationDefinition/{id}, /fhir/StructureDefinition/{name} → conformance resources for every canonical URL the facade emits (see /fhir/metadata)",
         "Stateless facade, no storage. $evaluate-growth wraps bmi-for-age + fenton-preterm only (WHO 0-59-month returns OperationOutcome). Not yet registered with any OpenHIM/HIE instance. See src/fhir.js and src/fhirNcp.js.",
       ],
       exchange_lists: [
@@ -7835,12 +7837,21 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
           if (request.method !== "GET") return err("Method not allowed", 405);
           return await handleFhirNcpCodeSystem(url, db);
         }
+        // Static conformance resources: every CodeSystem / OperationDefinition /
+        // StructureDefinition URL the facade emits resolves here.
+        if (["CodeSystem", "OperationDefinition", "StructureDefinition"].includes(param) && action) {
+          if (request.method !== "GET") return err("Method not allowed", 405);
+          const def = staticConformanceResource(param, action, url.origin);
+          return def
+            ? json(def)
+            : json(operationOutcome("error", `${param}/${action} not found.`, "not-found"), 404);
+        }
       }
       return notFound(
         "FHIR route. Available: GET /fhir/metadata, POST /fhir/Observation/$evaluate-growth, " +
           "POST /fhir/Observation/$screen, POST /fhir/Observation/$assess-nutrition, POST /fhir/Condition/$diagnose, " +
           "POST /fhir/CarePlan/$intervene, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document, " +
-          "GET /fhir/CodeSystem/ncp-diagnosis."
+          "GET /fhir/CodeSystem/{name}, GET /fhir/OperationDefinition/{id}, GET /fhir/StructureDefinition/{name}."
       );
     }
 

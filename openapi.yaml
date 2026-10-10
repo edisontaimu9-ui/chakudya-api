@@ -1604,6 +1604,81 @@ paths:
               schema: { type: object }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /fhir/CodeSystem/{name}:
+    get:
+      tags: [FHIR]
+      summary: FHIR CodeSystem used by the facade
+      description: >
+        Static code lists behind the system URLs in FHIR responses (ncp-step, ncp-assessment-domain, glim, growth-status, ...). ncp-diagnosis is served from Supabase and has its own path above.
+      security: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: FHIR CodeSystem
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: FHIR OperationOutcome — unknown name
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/OperationDefinition/{id}:
+    get:
+      tags: [FHIR]
+      summary: FHIR OperationDefinition
+      description: >
+        One per operation listed in /fhir/metadata. id is <Resource>-<operation>, e.g. Observation-screen, Condition-diagnose, Bundle-ncp-document.
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: FHIR OperationDefinition
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: FHIR OperationOutcome — unknown id
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/StructureDefinition/{name}:
+    get:
+      tags: [FHIR]
+      summary: FHIR Extension StructureDefinition
+      description: >
+        The Extensions the facade attaches to resources (e.g. pes-specify, goal-baseline, period-days).
+      security: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: FHIR StructureDefinition
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: FHIR OperationOutcome — unknown name
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /packaged:
     get:
       tags: [Packaged]

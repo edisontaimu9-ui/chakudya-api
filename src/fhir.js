@@ -361,8 +361,10 @@ export function buildCapabilityStatement(base) {
           {
             type: "CodeSystem",
             interaction: [{ code: "read" }],
-            documentation: "Only id 'ncp-diagnosis' (NCP nutrition diagnostic terminology, 2006 edition).",
+            documentation: "Every code system the facade emits, incl. 'ncp-diagnosis' (NCP nutrition diagnostic terminology, 2006 edition, from Supabase).",
           },
+          { type: "OperationDefinition", interaction: [{ code: "read" }], documentation: "One per operation listed here (id = <Resource>-<operation>)." },
+          { type: "StructureDefinition", interaction: [{ code: "read" }], documentation: "The Extensions the facade attaches to resources." },
           {
             type: "Bundle",
             interaction: [],
