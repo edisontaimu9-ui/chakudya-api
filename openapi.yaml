@@ -2624,7 +2624,8 @@ paths:
       tags: [FHIR]
       summary: NCP Step 3 — nutrition intervention
       description: >
-        Shapes clinician-supplied goals, NutritionOrders (oral diet, supplement, enteral formula), education, counseling and care coordination into a CarePlan Bundle (CarePlan, Goal, NutritionOrder, ServiceRequest). Defaults to status draft / intent proposal.
+        Shapes clinician-supplied goals, NutritionOrders (oral diet, supplement, enteral formula), education, counseling, care coordination, follow-up and referrals into a CarePlan Bundle (CarePlan, Goal, NutritionOrder, ServiceRequest, Task). Defaults to status draft / intent proposal.
+        Pass the $diagnose Bundle as `resource` to link the plan, goals, orders, requests and tasks to the nutrition diagnosis. Goal dates, measures and units, order units and diagnosis references are validated and every problem is reported together (400). Activities with `assignedTo` or `dueDate`, and every `followUp` and `referral`, also create a Task. With `author` the Bundle includes a Provenance.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success
         is a Bundle; errors are OperationOutcomes. See README "NCP operations".
       security: []

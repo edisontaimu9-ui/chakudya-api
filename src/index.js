@@ -570,6 +570,7 @@ import { measurementsToAssessQuery, buildWhoGrowthBundle } from "./fhirGrowth.js
 import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./fhirNcp.js";
 import { staticConformanceResource } from "./fhirTerminology.js";
 import { diagnosisOperationFor } from "./fhirDiagnosis.js";
+import { interventionOperationFor } from "./fhirIntervention.js";
 import { assessmentOperationFor, questionnaireResource, questionnaireSearchBundle } from "./fhirAssessment.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
@@ -3277,7 +3278,7 @@ async function handleFhirEvaluateGrowth(request, db, url) {
 
 // One lookup over the NCP operations (src/fhirNcp.js) and the assessment
 // foundation operations (src/fhirAssessment.js); all are pure and DB-free.
-const fhirOperationFor = (param, action) => diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
+const fhirOperationFor = (param, action) => interventionOperationFor(param, action) ?? diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
 
 // NCP operations (src/fhirNcp.js) — pure functions, no DB. Stateless: the
 // request body is never stored or logged by this handler.

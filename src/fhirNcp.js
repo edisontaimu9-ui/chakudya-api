@@ -1766,8 +1766,8 @@ export function evaluateIntervene(body, ctx) {
     }
   }
 
-  if (activityEntries.length === 0 && goalEntries.length === 0) {
-    return bad("Nothing to plan: supply at least one 'goal', 'nutritionOrder', 'education', 'counseling' or 'coordination' part.");
+  if (activityEntries.length === 0 && goalEntries.length === 0 && p.all("followUp").length === 0 && p.all("referral").length === 0) {
+    return bad("Nothing to plan: supply at least one 'goal', 'nutritionOrder', 'education', 'counseling', 'coordination', 'followUp' or 'referral' part.");
   }
 
   const carePlan = {
@@ -1925,13 +1925,13 @@ function narrative(resources) {
   return { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml"><ul>${lis}</ul></div>` };
 }
 
-const DOC_RESOURCE_TYPES = new Set(["Observation", "Condition", "Goal", "NutritionOrder", "ServiceRequest", "CarePlan"]);
+const DOC_RESOURCE_TYPES = new Set(["Observation", "Condition", "Goal", "NutritionOrder", "ServiceRequest", "CarePlan", "Task"]);
 const DOC_CONTEXT_TYPES = new Set(["Patient", "Encounter", "QuestionnaireResponse", "Provenance"]);
 
 function stepOf(r) {
   switch (r.resourceType) {
     case "Condition": return "diagnosis";
-    case "NutritionOrder": case "ServiceRequest": case "CarePlan": return "intervention";
+    case "NutritionOrder": case "ServiceRequest": case "CarePlan": case "Task": return "intervention";
     case "Goal": return r.achievementStatus ? "monitoring" : "intervention";
     case "Observation": {
       const codes = (r.category ?? []).flatMap((c) => c.coding ?? []).filter((c) => c.system?.endsWith("/CodeSystem/ncp-step")).map((c) => c.code);
@@ -2001,8 +2001,8 @@ export function evaluateNcpDocument(body, ctx) {
       context.push({ fullUrl: c.fullUrl ?? newUuid(ctx), resource: c.resource });
       continue;
     }
-    if (!DOC_RESOURCE_TYPES.has(t)) return bad(`Resource type "${t}" is not supported in an NCP document (use Observation, Condition, Goal, NutritionOrder, ServiceRequest or CarePlan; Patient, Encounter, QuestionnaireResponse and Provenance are carried as supporting entries).`);
-    const subj = c.resource.subject?.reference ?? c.resource.patient?.reference;
+    if (!DOC_RESOURCE_TYPES.has(t)) return bad(`Resource type "${t}" is not supported in an NCP document (use Observation, Condition, Goal, NutritionOrder, ServiceRequest, Task or CarePlan; Patient, Encounter, QuestionnaireResponse and Provenance are carried as supporting entries).`);
+    const subj = c.resource.subject?.reference ?? c.resource.patient?.reference ?? c.resource.for?.reference;
     if (subj && subj !== subject.reference) {
       return bad(`${t} has subject "${subj}" but the document subject is "${subject.reference}". One NCP document covers one patient.`);
     }

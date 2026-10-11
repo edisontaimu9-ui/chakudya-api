@@ -287,7 +287,7 @@ export function buildCapabilityStatement(base) {
     status: "draft",
     date: "2026-10-11",
     kind: "instance",
-    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-5-diagnosis" },
+    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-6-intervention" },
     implementation: {
       description:
         "Stateless FHIR facade covering the Nutrition Care Process (screening, assessment, diagnosis, " +
@@ -343,8 +343,8 @@ export function buildCapabilityStatement(base) {
                 "intervene",
                 "CarePlan",
                 "NCP Step 3: shapes clinician-supplied goals, nutrition orders (oral diet, supplement, " +
-                  "enteral formula), education, counseling and coordination into a CarePlan Bundle " +
-                  "(CarePlan, Goal, NutritionOrder, ServiceRequest)."
+                  "enteral formula), education, counseling, coordination, follow-up and referrals into a CarePlan Bundle " +
+                  "(CarePlan, Goal, NutritionOrder, ServiceRequest, Task) linked to the nutrition diagnosis, with Provenance."
               ),
             ],
           },
