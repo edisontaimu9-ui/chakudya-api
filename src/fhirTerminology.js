@@ -74,6 +74,17 @@ const CODE_SYSTEMS = {
     description: "Composition type for documents assembled by Bundle/$ncp-document.",
     concepts: [c("adime-note", "Nutrition Care Process (ADIME) note")],
   },
+  "ncp-care-role": {
+    title: "NCP care team role",
+    description: "Professional role of a practitioner in a nutrition care team, used on PractitionerRole.code and CareTeam.participant.role by Bundle/$care-context. A role that is not in this list is sent as text only; it is never guessed into a code.",
+    concepts: [
+      c("dietitian", "Dietitian"), c("nutritionist", "Nutritionist"), c("nutrition-assistant", "Nutrition assistant"),
+      c("physician", "Physician"), c("clinical-officer", "Clinical officer"), c("nurse", "Nurse"), c("pharmacist", "Pharmacist"),
+      c("speech-language-therapist", "Speech and language therapist"), c("physiotherapist", "Physiotherapist"),
+      c("occupational-therapist", "Occupational therapist"), c("psychologist", "Psychologist"), c("social-worker", "Social worker"),
+      c("diabetes-educator", "Diabetes educator"), c("community-health-worker", "Community health worker"), c("other", "Other team role"),
+    ],
+  },
   "ncp-indicator": {
     title: "Chakudya nutrition indicators",
     description:
@@ -721,7 +732,7 @@ const OPERATIONS = {
   "Bundle-ncp-document": {
     resource: "Bundle", code: "ncp-document", title: "ADIME document",
     description:
-      "NCP step 5: assembles resources or Bundles returned by the other NCP operations into one complete ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present). The document gets an identifier, a status and a narrative, and is validated before it is returned: structure, section placement, internal references, one patient, and links between diagnosis, care plan, goals and follow-up. Broken references are an error (422). Pass whole Bundles to keep urn:uuid links valid. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries.",
+      "NCP step 5: assembles resources or Bundles returned by the other NCP operations into one complete ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present). The document gets an identifier, a status and a narrative, and is validated before it is returned: structure, section placement, internal references, one patient, and links between diagnosis, care plan, goals and follow-up. Broken references are an error (422). Pass whole Bundles to keep urn:uuid links valid. Patient, Encounter, QuestionnaireResponse and (from $care-context) Practitioner, PractitionerRole, Organization and CareTeam entries are carried as supporting entries: the author is resolved to the PractitionerRole, the facility becomes Composition.custodian and the CareTeam is linked from the CarePlan.",
     parameters: [
       P("subject", "string", 0, "1", 'Patient reference, e.g. "Patient/123". Optional when a supplied Bundle (from $nutrition-assessment) has a Patient entry: its urn:uuid is used.'),
       P("author", "string", 1, "1", 'A reference ("Practitioner/123") or the dietitian\'s name.'),
@@ -730,6 +741,73 @@ const OPERATIONS = {
       P("date", "dateTime", 0, "1", "Document date. Defaults to now."),
       P("encounter", "string", 0, "1", "Encounter reference. Defaults to the Encounter entry of a supplied $nutrition-assessment Bundle."),
       P("status", "code", 0, "1", "Composition status: preliminary, final (default) or amended."),
+      P("custodian", "string", 0, "1", "Facility that holds the note: a reference or a name. Defaults to the author's top-level organization from a $care-context Bundle."),
+    ],
+  },
+  "Bundle-care-context": {
+    resource: "Bundle", code: "care-context", title: "Professional and institutional context",
+    description:
+      "NCP step 6: shapes the people and the facility behind a nutrition note into linked Organization, Practitioner, PractitionerRole and CareTeam resources (collection Bundle, urn:uuid links). Parts refer to each other by a local id, or by a reference to a resource the caller already holds. Chakudya does not look anyone up or verify registration numbers. Pass the Bundle to $ncp-document as a resource: the author is resolved to the PractitionerRole, the facility becomes Composition.custodian and the CareTeam is linked from the CarePlan.",
+    parameters: [
+      P("subject", "string", 0, "1", 'Patient reference, e.g. "Patient/123". Required with a careTeam.'),
+      P("encounter", "string", 0, "1", 'Encounter reference for the care team, e.g. "Encounter/456".'),
+      P("organization", "Resource", 0, "*", "A facility or department.", [
+        part("id", "string", 0, "1", "Local id used by other parts to refer to this organization."),
+        part("name", "string", 0, "1", "Name (a name or an identifier is required)."),
+        part("identifier", "string", 0, "1", "Facility code or registration number."),
+        part("identifierSystem", "uri", 0, "1", "System of the identifier."),
+        part("type", "string", 0, "1", "prov, dept, team, govt, edu, other ... (HL7 organization-type) or free text."),
+        part("partOf", "string", 0, "1", "Local id (or reference) of the parent organization."),
+        part("address", "string", 0, "1", "Address as text."),
+        part("city", "string", 0, "1", "City."),
+        part("district", "string", 0, "1", "District."),
+        part("country", "string", 0, "1", "Country."),
+        part("phone", "string", 0, "1", "Phone."),
+        part("email", "string", 0, "1", "Email."),
+      ]),
+      P("practitioner", "Resource", 0, "*", "A clinician.", [
+        part("id", "string", 0, "1", "Local id."),
+        part("name", "string", 0, "1", "Full name; the last word is taken as the family name."),
+        part("family", "string", 0, "1", "Family name (use with given)."),
+        part("given", "string", 0, "*", "Given name."),
+        part("identifier", "string", 0, "1", "Registration or licence number (not verified)."),
+        part("identifierSystem", "uri", 0, "1", "System of the identifier."),
+        P("qualification", "Resource", 0, "*", "A professional qualification.", [
+          part("code", "string", 1, "1", 'e.g. "Registered Dietitian".'),
+          part("identifier", "string", 0, "1", "Certificate or licence number."),
+          part("issuer", "string", 0, "1", "Local id or reference of the issuing organization, or its name."),
+          part("periodStart", "dateTime", 0, "1", "Valid from."),
+          part("periodEnd", "dateTime", 0, "1", "Valid to."),
+        ]),
+        part("phone", "string", 0, "1", "Phone."),
+        part("email", "string", 0, "1", "Email."),
+      ]),
+      P("role", "Resource", 0, "*", "A practitioner's role at an organization.", [
+        part("id", "string", 0, "1", "Local id (needed for a care team member to refer to it)."),
+        part("practitioner", "string", 1, "1", 'Local id or "Practitioner/123".'),
+        part("organization", "string", 0, "1", "Local id or reference."),
+        part("role", "string", 1, "1", "dietitian, nutritionist, physician, nurse ... (see the ncp-care-role code system); any other text is kept as text."),
+        part("specialty", "string", 0, "1", "Specialty, as text."),
+        part("location", "string", 0, "1", "Ward or clinic, as text."),
+        part("periodStart", "dateTime", 0, "1", "Role start."),
+        part("periodEnd", "dateTime", 0, "1", "Role end."),
+      ]),
+      P("careTeam", "Resource", 0, "*", "The multidisciplinary team around the patient.", [
+        part("name", "string", 0, "1", "Team name."),
+        part("status", "code", 0, "1", "proposed, active (default), suspended, inactive or entered-in-error."),
+        part("managingOrganization", "string", 0, "1", "Local id or reference."),
+        part("reason", "string", 0, "1", "Why the team exists, as text."),
+        part("periodStart", "dateTime", 0, "1", "Team start."),
+        part("periodEnd", "dateTime", 0, "1", "Team end."),
+        P("member", "Resource", 1, "*", "A team member: give a role, or a practitioner with memberRole.", [
+          part("role", "string", 0, "1", "Local id or reference of a PractitionerRole."),
+          part("practitioner", "string", 0, "1", "Local id or reference of a Practitioner."),
+          part("memberRole", "string", 0, "1", "Role in the team when a practitioner is given."),
+          part("onBehalfOf", "string", 0, "1", "Local id or reference of the organization represented."),
+          part("periodStart", "dateTime", 0, "1", "Member start."),
+          part("periodEnd", "dateTime", 0, "1", "Member end."),
+        ]),
+      ]),
     ],
   },
   "Bundle-validate-document": {

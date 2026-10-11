@@ -25,6 +25,13 @@
 //   * errors stop the document (422 with every problem listed); warnings are
 //     reported by $validate-document, where an OperationOutcome is returned.
 //
+// Step 6 context: Practitioner, PractitionerRole, Organization and CareTeam
+// resources (from POST /fhir/Bundle/$care-context, src/fhirContext.js, or your
+// own) can be passed as `resource`. They are carried as supporting entries and
+// wired in: the author is resolved to the PractitionerRole, the top-level
+// facility becomes Composition.custodian, and the CareTeam is linked from each
+// CarePlan that has none. They are never section content.
+//
 // STATELESS and pure, like the rest of the facade. Chakudya assembles and
 // checks what the dietitian's earlier operations produced; it does not write
 // clinical content and it does not sign the note.
@@ -38,6 +45,7 @@ const newUuid = (ctx) => `urn:uuid:${(ctx.uuid ?? (() => crypto.randomUUID()))()
 const STATUSES = new Set(["preliminary", "final", "amended"]);
 const URI_SYSTEM = "urn:ietf:rfc:3986";
 const REQUIRED_SECTIONS = ["nutrition-assessment", "nutrition-diagnosis", "nutrition-intervention", "nutrition-monitoring"];
+const CONTEXT_TYPES = new Set(["Practitioner", "PractitionerRole", "Organization", "CareTeam"]);
 const SECTION_FOR = {
   Condition: "nutrition-diagnosis",
   NutritionOrder: "nutrition-intervention",
@@ -145,7 +153,7 @@ export function checkAdimeDocument(bundle) {
       const expected = SECTION_FOR[t.resourceType]
         ?? (t.resourceType === "Goal" ? (t.achievementStatus ? "nutrition-monitoring" : "nutrition-intervention") : null);
       if (expected && code !== expected) err(`${t.resourceType} "${r.reference}" is in section "${code}" but belongs in "${expected}".`);
-      if (["Patient", "Encounter", "Composition"].includes(t.resourceType)) err(`${t.resourceType} "${r.reference}" is context, not section content.`);
+      if (["Patient", "Encounter", "Composition", ...CONTEXT_TYPES].includes(t.resourceType)) err(`${t.resourceType} "${r.reference}" is context, not section content.`);
     }
   }
 
@@ -199,6 +207,44 @@ export function checkAdimeDocument(bundle) {
   const assessment = present.get("nutrition-assessment");
   if (!assessment?.entry?.length) warn("No assessment findings are in the document.");
 
+  // Professional and institutional context (step 6).
+  const byType = (t) => all.filter((x) => x.r.resourceType === t);
+  const roles = byType("PractitionerRole");
+  const teams = byType("CareTeam");
+  const practitioners = byType("Practitioner");
+  const organizations = byType("Organization");
+  for (const x of practitioners) {
+    if (!x.r.name?.length && !x.r.identifier?.length) err(`Practitioner ${x.key} has neither a name nor an identifier.`);
+  }
+  for (const x of organizations) {
+    if (!x.r.name && !x.r.identifier?.length) err(`Organization ${x.key} has neither a name nor an identifier.`);
+  }
+  for (const x of roles) {
+    if (!x.r.practitioner?.reference) err(`PractitionerRole ${x.key} has no practitioner.`);
+    if (!x.r.code?.length) warn(`PractitionerRole ${x.key} has no role code.`);
+  }
+  for (const x of teams) {
+    if (!x.r.subject?.reference) err(`CareTeam ${x.key} has no subject (patient).`);
+    if (!Array.isArray(x.r.participant) || x.r.participant.length === 0) err(`CareTeam ${x.key} has no participants.`);
+    for (const m of x.r.participant ?? []) if (!m?.member?.reference) err(`CareTeam ${x.key} has a participant without a member.`);
+    const kinds = new Set((x.r.participant ?? []).map((m) => m?.role?.[0]?.coding?.[0]?.code ?? m?.role?.[0]?.text).filter(Boolean));
+    if (kinds.size < 2) warn(`CareTeam ${x.key} lists fewer than two disciplines (multidisciplinary team expected).`);
+    if (plans.length > 0 && !plans.some((p) => (p.r.careTeam ?? []).some((c) => c.reference === x.key))) warn(`CareTeam ${x.key} is not linked from any care plan.`);
+  }
+  const authorRef = comp.author?.[0]?.reference;
+  const authorTarget = authorRef ? byKey.get(authorRef) : null;
+  if (!authorRef) warn("Composition.author is a name only; add a Practitioner or PractitionerRole so the author can be identified.");
+  else if (!authorTarget && authorRef.startsWith("urn:uuid:")) { /* reported above as a broken reference */ }
+  else if (authorTarget && !["Practitioner", "PractitionerRole"].includes(authorTarget.resource.resourceType)) err(`Composition.author ${authorRef} is a ${authorTarget.resource.resourceType}, not a Practitioner or PractitionerRole.`);
+  if (authorTarget?.resource.resourceType === "PractitionerRole" && !authorTarget.resource.organization) warn("The author's PractitionerRole has no organization.");
+  if (authorTarget) {
+    const pr = authorTarget.resource.resourceType === "Practitioner" ? authorTarget.resource : byKey.get(authorTarget.resource.practitioner?.reference)?.resource;
+    if (pr && !pr.qualification?.length) warn("No professional qualification is recorded for the author.");
+  }
+  if (!comp.custodian?.reference) warn("Composition.custodian (the facility that holds the note) is not set.");
+  else if (comp.custodian.reference.startsWith("urn:uuid:") && !resolves(comp.custodian.reference)) err(`Composition.custodian refers to ${comp.custodian.reference}, which is not in the document.`);
+  else if (byKey.get(comp.custodian.reference) && byKey.get(comp.custodian.reference).resource.resourceType !== "Organization") err("Composition.custodian must be an Organization.");
+
   // Reachability: every entry hangs off the Composition.
   const reached = new Set([keyOf(first)]);
   const queue = [first.resource];
@@ -238,6 +284,85 @@ const outcomeOf = (result) => ({
   ],
 });
 
+
+// ─── Step 6 context wiring ─────────────────────────────────────────────────
+
+/** Moves Practitioner/PractitionerRole/Organization/CareTeam out of the `resource` parameters. */
+function splitContext(body) {
+  const context = [];
+  const parameter = (body.parameter ?? []).map((prm) => {
+    const r = prm?.resource;
+    if (prm?.name !== "resource" || !isObj(r)) return prm;
+    if (CONTEXT_TYPES.has(r.resourceType)) { context.push({ fullUrl: undefined, resource: r }); return null; }
+    if (r.resourceType === "Bundle") {
+      const keep = [];
+      for (const en of r.entry ?? []) {
+        if (CONTEXT_TYPES.has(en?.resource?.resourceType)) context.push({ fullUrl: en.fullUrl, resource: en.resource });
+        else keep.push(en);
+      }
+      return { ...prm, resource: { ...r, entry: keep } };
+    }
+    return prm;
+  }).filter(Boolean);
+  // The same resource twice (a context Bundle passed again): the later one wins.
+  const merged = [];
+  const at = new Map();
+  for (const c of context) {
+    if (c.fullUrl && at.has(c.fullUrl)) merged[at.get(c.fullUrl)] = c;
+    else { if (c.fullUrl) at.set(c.fullUrl, merged.length); merged.push(c); }
+  }
+  return { body: { ...body, parameter }, context: merged };
+}
+
+const nameText = (pr) => {
+  const n = pr?.name?.[0];
+  return str(n?.text ?? [...(n?.given ?? []), n?.family].filter(Boolean).join(" "))?.toLowerCase();
+};
+const REFERENCE_LIKE = /^(https?:\/\/\S+\/)?[A-Za-z]+\/[A-Za-z0-9\-.]{1,64}$|^urn:uuid:[0-9a-fA-F-]{36}$/;
+
+/** Author -> PractitionerRole, custodian -> top-level Organization, CarePlan -> CareTeam. */
+function linkContext(comp, bundle, contextEntries, custodianParam) {
+  if (contextEntries.length === 0 && !custodianParam) return;
+  const keys = (en) => [en.fullUrl, en.resource.id ? `${en.resource.resourceType}/${en.resource.id}` : null].filter(Boolean);
+  const find = (ref) => contextEntries.find((en) => keys(en).includes(ref));
+  const ofType = (t) => contextEntries.filter((en) => en.resource.resourceType === t);
+  const roleFor = (pr) => ofType("PractitionerRole").find((r) => keys(pr).includes(r.resource.practitioner?.reference));
+
+  // Author given as a name: use the Practitioner with that name (and their role).
+  const a = comp.author?.[0];
+  let role = null;
+  if (a?.display && !a.reference) {
+    const hit = ofType("Practitioner").filter((pr) => nameText(pr.resource) === a.display.trim().toLowerCase());
+    if (hit.length === 1) {
+      role = roleFor(hit[0]) ?? null;
+      comp.author = [{ reference: (role ?? hit[0]).fullUrl, display: a.display }];
+    }
+  } else if (a?.reference) {
+    const t = find(a.reference);
+    role = t?.resource.resourceType === "PractitionerRole" ? t : t?.resource.resourceType === "Practitioner" ? roleFor(t) ?? null : null;
+  }
+
+  // Custodian: the parameter, else the author's facility, else the only top-level Organization.
+  const orgs = ofType("Organization");
+  const root = (en) => { const seen = new Set([en.fullUrl]); let cur = en; for (;;) { const up = cur.resource.partOf?.reference ? find(cur.resource.partOf.reference) : null; if (!up || seen.has(up.fullUrl)) return cur; seen.add(up.fullUrl); cur = up; } };
+  if (custodianParam) {
+    comp.custodian = REFERENCE_LIKE.test(custodianParam) ? { reference: custodianParam } : { display: custodianParam.slice(0, 200) };
+  } else {
+    const fromRole = role?.resource.organization?.reference ? find(role.resource.organization.reference) : null;
+    const top = orgs.filter((o) => !o.resource.partOf);
+    const pick = fromRole ? root(fromRole) : top.length === 1 ? top[0] : null;
+    if (pick) comp.custodian = { reference: pick.fullUrl };
+  }
+
+  // CarePlans without a team point at the document's care team(s).
+  const teams = ofType("CareTeam");
+  if (teams.length) {
+    for (const en of bundle.entry) {
+      if (en.resource.resourceType === "CarePlan" && !(en.resource.careTeam ?? []).length) en.resource.careTeam = teams.map((t) => ({ reference: t.fullUrl }));
+    }
+  }
+}
+
 // ─── Bundle/$ncp-document (complete ADIME note) ────────────────────────────
 
 const xhtmlEsc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -250,12 +375,20 @@ export function evaluateAdimeDocument(body, ctx) {
   const status = str(p.get("status")) ?? "final";
   if (!STATUSES.has(status)) return fail([`Parameter 'status' must be one of ${[...STATUSES].join(", ")}.`]);
 
+  // Context resources are not section content: take them out, let the existing
+  // operation assemble the ADIME sections, then wire them in below.
+  const { body: sectionBody, context } = splitContext(body);
+
   // Assembly (sections, subject/encounter defaults, patient consistency) is
-  // the existing operation; this layer adds identity and validation.
-  const base = evaluateNcpDocument(body, ctx);
+  // the existing operation; this layer adds identity, context and validation.
+  const base = evaluateNcpDocument(sectionBody, ctx);
   if (!base.ok) return base;
   const bundle = base.body;
   const comp = bundle.entry[0].resource;
+
+  const contextEntries = context.map((c) => ({ fullUrl: c.fullUrl ?? newUuid(ctx), resource: c.resource }));
+  bundle.entry.push(...contextEntries);
+  linkContext(comp, bundle, contextEntries, str(p.get("custodian")));
 
   const docId = newUuid(ctx);
   bundle.identifier = { system: URI_SYSTEM, value: docId };

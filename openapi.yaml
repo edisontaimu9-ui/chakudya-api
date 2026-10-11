@@ -2736,7 +2736,7 @@ paths:
       tags: [FHIR]
       summary: NCP Step 5 - complete ADIME document Bundle
       description: >
-        Assembles resources/Bundles returned by the other NCP operations (send the $intervene Bundle before the $monitor Bundle) into one ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present) with identifiers, a narrative and optional `status` (preliminary, final, amended). The document is validated before it is returned: structure, section placement, internal references, one patient. Any problem is a 422 listing every error. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment Bundle.
+        Assembles resources/Bundles returned by the other NCP operations (send the $intervene Bundle before the $monitor Bundle) into one ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present) with identifiers, a narrative and optional `status` (preliminary, final, amended) and `custodian`. Practitioner, PractitionerRole, Organization and CareTeam resources (from $care-context) are carried as supporting entries and wired in (author, custodian, CarePlan.careTeam). The document is validated before it is returned: structure, section placement, internal references, one patient. Any problem is a 422 listing every error. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment Bundle.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success
         is a Bundle; errors are OperationOutcomes. See README "NCP operations".
       security: []
@@ -2763,6 +2763,38 @@ paths:
               schema: { type: object }
         "422":
           description: FHIR OperationOutcome - the document failed validation (broken reference, wrong section, mixed patients; every error listed)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Bundle/$care-context:
+    post:
+      tags: [FHIR]
+      summary: NCP Step 6 - professional and institutional context
+      description: >
+        Shapes the clinicians and the facility behind a nutrition note into linked Organization, Practitioner, PractitionerRole and CareTeam resources. Repeatable `organization`, `practitioner`, `role` and `careTeam` parts refer to each other by a local `id` (or by a reference to a resource the caller already holds). A CareTeam needs `subject` (the patient) and members; roles outside the built-in list are kept as text. Registration numbers are recorded, never verified. Pass the Bundle to $ncp-document as a `resource`: the author is resolved to the PractitionerRole, the facility becomes Composition.custodian and the CareTeam is linked from the CarePlan.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a collection Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle (collection) of Organization, Practitioner, PractitionerRole and CareTeam
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome - malformed or incomplete input (every problem listed)
           content:
             application/json:
               schema: { type: object }
