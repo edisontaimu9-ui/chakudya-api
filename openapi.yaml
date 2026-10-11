@@ -45,6 +45,7 @@ tags:
   - name: Weight for length height
   - name: BMI for age under 5
   - name: HC for age
+  - name: Growth assessment
   - name: Fenton Preterm
   - name: FHIR
   - name: Packaged
@@ -2098,6 +2099,116 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/BulkSuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /growth/assess:
+    get:
+      tags: [Growth assessment]
+      summary: Combined WHO growth assessment (every applicable indicator in one call)
+      description: >
+        Runs every WHO indicator that applies to the child's age and the
+        measurements supplied: length/height-for-age, weight-for-age,
+        weight-for-length/height, BMI-for-age, head circumference-for-age,
+        MUAC z-score and fixed MUAC cut-offs. Each result is identical to its own
+        endpoint. Indicators that cannot be calculated are listed in
+        not_assessed with the reason; a bad value in one measurement only errors
+        that indicator. attention lists everything outside the normal range,
+        most serious first. acute_malnutrition_signals combines
+        weight-for-length/height and MUAC but cannot assess oedema. Screening
+        aid only, not a diagnosis.
+      security: []
+      parameters:
+        - name: sex
+          in: query
+          required: true
+          description: girls or boys (girl, boy, female, male, f, m also accepted)
+          schema: { type: string }
+        - name: age_months
+          in: query
+          required: true
+          description: Whole completed months (0-228)
+          schema: { type: integer, minimum: 0, maximum: 228 }
+        - name: weight_kg
+          in: query
+          description: Weight in KILOGRAMS (weight_g in grams)
+          schema: { type: number }
+        - name: weight_g
+          in: query
+          schema: { type: number }
+        - name: length_cm
+          in: query
+          description: Length or height in CENTIMETRES (height_cm, length_mm, height_mm also accepted)
+          schema: { type: number }
+        - name: height_cm
+          in: query
+          schema: { type: number }
+        - name: hc_cm
+          in: query
+          description: Head circumference in CENTIMETRES (hc_mm in millimetres)
+          schema: { type: number }
+        - name: muac_cm
+          in: query
+          description: Mid-upper arm circumference in CENTIMETRES (muac_mm in millimetres)
+          schema: { type: number }
+        - name: measured
+          in: query
+          description: How length/height was measured; default lying under 24 months, standing from 24
+          schema: { type: string, enum: [lying, standing] }
+        - name: muac_scheme
+          in: query
+          description: Fixed MUAC scheme; cmam covers 6-59 months only
+          schema: { type: string, enum: [who_hiv_2008, cmam], default: who_hiv_2008 }
+      responses:
+        "200":
+          description: Assessment
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sex: { type: string, enum: [girls, boys] }
+                          age_months: { type: integer }
+                          indicators:
+                            type: object
+                            description: >
+                              Keys length_height_for_age, weight_for_age,
+                              weight_for_length_height, bmi_for_age, hc_for_age,
+                              muac_for_age, muac_fixed (only those calculated).
+                              Each value has the same fields as its own endpoint
+                              (status, z_score, percentile, cutoffs, ...) or an
+                              error string.
+                            additionalProperties: { type: object }
+                          not_assessed:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                indicator: { type: string }
+                                reason: { type: string }
+                          attention:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                indicator: { type: string }
+                                status: { type: string }
+                                severity: { type: string, enum: [severe, concern, watch] }
+                                z_score: { type: number }
+                          acute_malnutrition_signals:
+                            type: object
+                            nullable: true
+                            properties:
+                              level: { type: string, enum: [none, moderate, severe] }
+                              reasons: { type: array, items: { type: string } }
+                              oedema_assessed: { type: boolean, example: false }
+                              note: { type: string }
+                          note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /fenton-preterm/classify:
     get:

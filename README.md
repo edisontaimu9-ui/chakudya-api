@@ -378,7 +378,7 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 
 | Resource | Cached? | TTL |
 |---|---|---|
-| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height`, `/bmi-for-age-under-5`, `/hc-for-age` | ✅ | 1 hour |
+| `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height`, `/bmi-for-age-under-5`, `/hc-for-age`, `/growth/assess` | ✅ | 1 hour |
 | `GET /foods/compare` | ✅ | 1 hour |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
@@ -996,6 +996,28 @@ GET /hc-for-age/classify?sex=girls&age_months=6&hc_cm=42
 ```
 
 Setup: run `sql/027_add_who_hc_for_age.sql` in the Supabase SQL editor, then `POST /hc-for-age/bulk` once with the seed file.
+
+### Combined growth assessment (`/growth/assess`)
+
+One call, every applicable WHO indicator for the measurements you give. It only orchestrates the single-indicator modules ([`src/growthAssess.js`](src/growthAssess.js)), so each number is identical to what that indicator's own endpoint returns. Needs no new table: it reads the tables from sql/012 and sql/021 to sql/027.
+
+- `GET /growth/assess` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-228) and **at least one** measurement: `weight_kg`/`weight_g`, `length_cm`/`height_cm` (or `_mm`), `hc_cm`/`hc_mm`, `muac_cm`/`muac_mm`. Optional `measured=lying|standing` (default lying under 24 months, standing from 24; a mismatch converts by 0.7 cm and is reported) and `muac_scheme=who_hiv_2008|cmam` (for the fixed MUAC result).
+
+| Indicator in the response | Needs | Ages |
+|---|---|---|
+| `length_height_for_age` | length/height | 0-228 months |
+| `weight_for_age` | weight | 0-120 months |
+| `weight_for_length_height` | weight + length/height | 0-60 months |
+| `bmi_for_age` | weight + length/height | 0-60 months (WHO 2006), 61-228 months (WHO 2007 / Malawi guide) |
+| `hc_for_age` | head circumference | 0-60 months |
+| `muac_for_age` | MUAC | 3-60 months |
+| `muac_fixed` | MUAC | 6 months and over (`cmam`: 6-59 months) |
+
+The response has `indicators` (one entry per indicator that could be calculated), `not_assessed` (each skipped indicator with its reason: missing measurement or outside the WHO age range), `attention` (everything outside the normal range, most serious first, with `severity` severe / concern / watch), and `acute_malnutrition_signals` (combines weight-for-length/height wasting with MUAC 115/125 mm; `oedema_assessed` is always `false`, because bilateral pitting oedema must be checked by a person). A bad value in one measurement (say MUAC in mm) only errors that indicator; the others still return. Tallness and a high weight-for-age are only ever "watch". Screening aid only, not a diagnosis.
+
+```
+GET /growth/assess?sex=girls&age_months=18&weight_kg=9.2&length_cm=78&hc_cm=45&muac_cm=13.5
+```
 
 ### Fenton Preterm Growth Chart (`/fenton-preterm`)
 

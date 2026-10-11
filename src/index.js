@@ -537,6 +537,7 @@ import { parseWeightForAgeQuery, classifyWeightForAge } from "./weightForAge.js"
 import { parseWflhQuery, resolveLookup, classifyWflh } from "./weightForLengthHeight.js";
 import { parseBmiUnder5Query, resolveBmi, classifyBmiUnder5 } from "./bmiForAgeUnder5.js";
 import { parseHcForAgeQuery, classifyHcForAge } from "./hcForAge.js";
+import { parseAssessQuery, assessGrowth } from "./growthAssess.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
   parseFentonQuery,
@@ -769,7 +770,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1016,6 +1017,12 @@ function routePolicy(resource, method, param, action) {
   // /chart adds SVG rendering server-side but is still cheap; cached at the
   // edge too (see cachePolicy) so repeat requests for the same curve don't
   // hit the DB at all.
+  // Combined growth assessment fans out up to seven local reference lookups
+  // per request (no external API cost) — public, a bit tighter than a single
+  // classify call.
+  if (resource === "growth" && param === "assess" && method === "GET") {
+    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+  }
   if (isFentonCompute) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
@@ -2888,6 +2895,34 @@ async function handleHcForAge(request, url, db, param) {
     filters.age_months = `eq.${Number(age)}`;
   }
   return await paginatedList(db, "who_hc_for_age", url, { filters, order: "age_months.asc" });
+}
+
+// ─── COMBINED GROWTH ASSESSMENT (/growth/assess) ──────────────────────────
+//
+// One call, every applicable WHO indicator for the measurements given (see
+// src/growthAssess.js). It reuses the single-indicator modules, so each result
+// is identical to its own endpoint. Public, read-only. Screening aid only.
+async function handleGrowth(request, url, db, param) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+  if (param !== "assess") return notFound("Growth route (use /growth/assess)");
+  const parsed = parseAssessQuery(url.searchParams);
+  if (parsed.error) return err(parsed.error);
+
+  const fetchRows = async (table, filters, limit) => {
+    const { ok, status, body } = await db.select(table, { filters, limit });
+    if (!ok) throw new Error(body?.message || `Query failed (${status})`);
+    return Array.isArray(body) ? body : [];
+  };
+  const result = await assessGrowth(parsed, fetchRows);
+  return success(
+    {
+      sex: parsed.sex,
+      age_months: parsed.ageMonths,
+      ...result,
+      note: "Screening aid only, not a diagnosis. Each indicator is the same calculation as its own endpoint (/length-height-for-age, /weight-for-age, /weight-for-length-height, /bmi-for-age-under-5 or /bmi-for-age, /hc-for-age, /muac-for-age, /muac/classify). Indicators without the needed measurement, or outside their WHO age range, are listed in not_assessed. A bad value in one measurement only errors that indicator. attention lists everything outside the normal range, most serious first (severity: severe, concern, watch). acute_malnutrition_signals combines weight-for-length/height and MUAC but cannot assess oedema. Interpret with the child's history, clinical signs and growth trend, and confirm age and measurements.",
+    },
+    { message: "Growth assessment" }
+  );
 }
 
 // Fenton preterm growth chart — classify ONLY. See sql/013_add_fenton_preterm.sql
@@ -7198,6 +7233,9 @@ function handleRoot(env) {
         "GET  /hc-for-age?sex=&age_months=   → raw reference rows (-3SD to +3SD, cm, plus L/M/S)",
         "POST /hc-for-age/bulk    (admin) → body {items:[...]}, 122 rows; seed file: scripts/hc_for_age_seed.json",
       ],
+      growth: [
+        "GET  /growth/assess?sex=girls&age_months=18&weight_kg=9.2&length_cm=78&hc_cm=45&muac_cm=13.5  → every applicable WHO indicator for the measurements given (length/height-for-age, weight-for-age, weight-for-length/height, BMI-for-age, head circumference-for-age, MUAC z-score and fixed MUAC), plus an attention list and acute-malnutrition signals; optional &measured=lying|standing and &muac_scheme=who_hiv_2008|cmam; at least one measurement required",
+      ],
       fenton_preterm: [
         "GET  /fenton-preterm/classify?sex=&metric=weight|length|hc&reference_year=2013|2025&gest_age_weeks=&day=&value=  → z-score, percentile, status (2013/2025 Fenton preterm growth chart; screening aid, see sql/013_add_fenton_preterm.sql)",
         "POST /fenton-preterm/profile  → body {sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?} → classify weight+length+HC together at one timepoint (at least one metric required)",
@@ -8655,6 +8693,10 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         });
       }
       return await handleHcForAge(request, url, db, param || null);
+    }
+
+    case "growth": {
+      return await handleGrowth(request, url, db, param || null);
     }
 
     case "fenton-preterm": {
