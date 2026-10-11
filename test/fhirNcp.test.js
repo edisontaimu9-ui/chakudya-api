@@ -923,7 +923,7 @@ test("OperationDefinitions describe the parameters each operation reads", () => 
   for (const n of ["subject", "diagnosis"]) assert.ok(names("Condition-diagnose").includes(n));
   for (const n of ["subject", "author", "resource"]) assert.ok(names("Bundle-ncp-document").includes(n));
   const diag = operationDefinitionResource(BASE, "Condition-diagnose").parameter.find((p) => p.name === "diagnosis");
-  assert.deepEqual(diag.part.map((x) => x.name), ["problemCode", "problemSystem", "problemDisplay", "problemSpecify", "domain", "problem", "etiology", "signsSymptoms", "severity", "verificationStatus", "evidence", "recordedDate"]);
+  assert.deepEqual(diag.part.map((x) => x.name), ["problemCode", "problemSystem", "problemDisplay", "problemSpecify", "domain", "problem", "etiology", "signsSymptoms", "severity", "verificationStatus", "evidence", "recordedDate", "etiologyItem", "signItem", "additionalCoding"]);
   for (const id of OPERATION_DEFINITION_IDS) {
     const od = operationDefinitionResource(BASE, id);
     assert.equal(od.url, `${BASE}/fhir/OperationDefinition/${id}`);

@@ -185,6 +185,7 @@ export const ITEMS = {
   length: { area: "anthropometry", cat: "vital-signs", loinc: "8306-3", display: "Body height --lying", kind: "quantity", units: LEN_CM, min: 20, max: 130, normalise: true },
   hc: { area: "anthropometry", cat: "vital-signs", loinc: "9843-4", display: "Head Occipital-frontal circumference", kind: "quantity", units: { cm: 1, mm: 0.1, "[in_i]": 2.54 }, min: 15, max: 80, normalise: true },
   muac: { area: "anthropometry", cat: "exam", loinc: "56072-2", display: "Mid upper arm circumference", kind: "quantity", units: { cm: 1, mm: 0.1 }, min: 2, max: 70, normalise: true },
+  "weight-change-percent": { area: "anthropometry", cat: "exam", display: "Weight change from usual weight (% ; positive = loss)", kind: "quantity", units: { "%": 1 }, min: -100, max: 100 },
   waist: { area: "anthropometry", cat: "vital-signs", loinc: "8280-0", display: "Waist Circumference at umbilicus by Tape measure", kind: "quantity", units: LEN_CM, min: 20, max: 300, normalise: true },
 
   // Biochemical data (BD). Values keep the reported unit; factors are only for the plausibility check.
@@ -226,6 +227,7 @@ export const ITEMS = {
   "fat-intake-g": intake("Fat intake", "g/d", 1000),
   "carbohydrate-intake-g": intake("Carbohydrate intake", "g/d", 3000),
   "fluid-intake": { area: "dietary", cat: "survey", display: "Fluid intake", kind: "quantity", units: { "mL/d": 1, "L/d": 1000 }, min: 0, max: 20000 },
+  "intake-percent-of-requirement": { area: "dietary", cat: "survey", display: "Intake as % of estimated requirement", kind: "quantity", units: { "%": 1 }, min: 0, max: 500 },
   "meals-per-day": { area: "dietary", cat: "survey", display: "Meals per day", kind: "integer", min: 0, max: 20 },
   "food-group-count": { area: "dietary", cat: "survey", display: "Number of food groups consumed", kind: "integer", min: 0, max: 20 },
   appetite: { area: "dietary", cat: "survey", display: "Appetite", kind: "coded", codeSystem: "appetite-level", options: APPETITE_LEVELS },
@@ -931,6 +933,52 @@ function makeEnv(ctx) {
   };
 }
 
+// ─── Reading an `observation` part ─────────────────────────────────────────
+
+/** One `observation` part -> a spec for buildObservation, or null (issue reported). */
+function specFromObservationPart(o, path, I) {
+  if (!o || typeof o.get !== "function") { I.error("invalid", "observation must be a part with nested parts (code, value, ...).", path); return null; }
+  const code = str(o.get("code"));
+  if (!code) { I.error("required", "observation.code is required.", path); return null; }
+  if (o.all("value").length > 1) { I.error("invalid", "observation has more than one 'value'.", path); return null; }
+  const common = {
+    path, raw: o.get("value"), refLow: o.get("referenceLow"), refHigh: o.get("referenceHigh"),
+    interpretation: str(o.get("interpretation")), dataAbsentReason: str(o.get("dataAbsentReason")),
+    note: str(o.get("note")), effective: str(o.get("effectiveDateTime")), area: str(o.get("domain")),
+  };
+  if (common.area && !AREAS[common.area]) { I.error("code-invalid", `observation.domain must be one of ${ASSESSMENT_AREAS.join(", ")}.`, path); return null; }
+  if (str(o.get("system"))) {
+    const display = str(o.get("display"));
+    if (!display) { I.error("required", "observation.display is required with a custom system + code.", path); return null; }
+    if (!common.area) { I.error("required", `observation.domain is required for a custom code (${ASSESSMENT_AREAS.join(", ")}).`, path); return null; }
+    return { ...common, custom: { system: str(o.get("system")), code, display, area: common.area } };
+  }
+  return { ...common, key: code };
+}
+
+/**
+ * Builds validated Observations from `observation` part readers for another
+ * operation (used by $diagnose for the evidence behind a diagnosis).
+ * link: { patientRef, encounterRef?, performer?, effective? }.
+ * Returns { ok, entries: [{fullUrl, resource}], issues } (issues = OperationOutcome issue list).
+ */
+export function buildObservationsFromParts(ctx, link, readers) {
+  const env = makeEnv(ctx);
+  env.patientRef = link.patientRef ?? null;
+  env.encounterRef = link.encounterRef ?? null;
+  env.performer = link.performer ?? null;
+  if (link.effective) env.defaultEffective = { str: link.effective };
+  const entries = [];
+  const specs = readers.map((r, i) => specFromObservationPart(r.reader, r.path ?? `observation[${i}]`, env.issues));
+  specs.forEach((spec, i) => {
+    if (!spec) return;
+    if (readers[i].derivedFrom) spec.derivedFrom = readers[i].derivedFrom;
+    const m = buildObservation(env, spec);
+    if (m) entries.push({ fullUrl: m.fullUrl, resource: m.resource });
+  });
+  return { ok: !env.issues.hasError, entries, issues: env.issues.list };
+}
+
 // ─── POST /fhir/Bundle/$nutrition-assessment ───────────────────────────────
 
 const fail400 = (issues) => ({ ok: false, status: 400, outcome: outcomeOf(issues.list) });
@@ -1007,24 +1055,8 @@ export function evaluateNutritionAssessment(body, ctx) {
   const measures = [];
   if (obsParts.length <= MAX_OBSERVATIONS) {
     for (const [i, o] of obsParts.entries()) {
-      const path = `Parameters.parameter[observation:${i}]`;
-      if (!o || typeof o.get !== "function") { I.error("invalid", "observation must be a part with nested parts (code, value, ...).", path); continue; }
-      const code = str(o.get("code"));
-      if (!code) { I.error("required", "observation.code is required.", path); continue; }
-      if (o.all("value").length > 1) { I.error("invalid", "observation has more than one 'value'.", path); continue; }
-      const common = {
-        path, raw: o.get("value"), refLow: o.get("referenceLow"), refHigh: o.get("referenceHigh"),
-        interpretation: str(o.get("interpretation")), dataAbsentReason: str(o.get("dataAbsentReason")),
-        note: str(o.get("note")), effective: str(o.get("effectiveDateTime")), area: str(o.get("domain")),
-      };
-      if (common.area && !AREAS[common.area]) { I.error("code-invalid", `observation.domain must be one of ${ASSESSMENT_AREAS.join(", ")}.`, path); continue; }
-      let spec;
-      if (str(o.get("system"))) {
-        const display = str(o.get("display"));
-        if (!display) { I.error("required", "observation.display is required with a custom system + code.", path); continue; }
-        if (!common.area) { I.error("required", `observation.domain is required for a custom code (${ASSESSMENT_AREAS.join(", ")}).`, path); continue; }
-        spec = { ...common, custom: { system: str(o.get("system")), code, display, area: common.area } };
-      } else spec = { ...common, key: code };
+      const spec = specFromObservationPart(o, `Parameters.parameter[observation:${i}]`, I);
+      if (!spec) continue;
       const m = buildObservation(env, spec);
       if (m) measures.push(m);
     }

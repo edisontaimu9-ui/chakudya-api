@@ -1926,7 +1926,7 @@ function narrative(resources) {
 }
 
 const DOC_RESOURCE_TYPES = new Set(["Observation", "Condition", "Goal", "NutritionOrder", "ServiceRequest", "CarePlan"]);
-const DOC_CONTEXT_TYPES = new Set(["Patient", "Encounter", "QuestionnaireResponse"]);
+const DOC_CONTEXT_TYPES = new Set(["Patient", "Encounter", "QuestionnaireResponse", "Provenance"]);
 
 function stepOf(r) {
   switch (r.resourceType) {
@@ -2001,7 +2001,7 @@ export function evaluateNcpDocument(body, ctx) {
       context.push({ fullUrl: c.fullUrl ?? newUuid(ctx), resource: c.resource });
       continue;
     }
-    if (!DOC_RESOURCE_TYPES.has(t)) return bad(`Resource type "${t}" is not supported in an NCP document (use Observation, Condition, Goal, NutritionOrder, ServiceRequest or CarePlan; Patient, Encounter and QuestionnaireResponse are carried as supporting entries).`);
+    if (!DOC_RESOURCE_TYPES.has(t)) return bad(`Resource type "${t}" is not supported in an NCP document (use Observation, Condition, Goal, NutritionOrder, ServiceRequest or CarePlan; Patient, Encounter, QuestionnaireResponse and Provenance are carried as supporting entries).`);
     const subj = c.resource.subject?.reference ?? c.resource.patient?.reference;
     if (subj && subj !== subject.reference) {
       return bad(`${t} has subject "${subj}" but the document subject is "${subject.reference}". One NCP document covers one patient.`);

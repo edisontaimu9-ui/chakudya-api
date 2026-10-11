@@ -2585,8 +2585,11 @@ paths:
       summary: NCP Step 2 — nutrition diagnosis (PES statement)
       description: >
         Validates and shapes clinician-supplied PES statements (problem, etiology, signs/symptoms) into Condition resources. Does not choose the diagnosis. problemCode values like NI-5.2 are resolved against the NCP diagnostic terminology in Supabase (503 if sql/017 has not been run).
+        The PES statement is stored as components (`pes-statement` extension: statement, coded problem, etiologies, signs with evidence references) as well as text.
+        Optional `etiologyItem` / `signItem` parts add coded components and evidence: a `signItem` can hold an inline `observation` (validated like $nutrition-assessment, returned in the Bundle and linked from Condition.evidence) or `evidence` references to existing Observations; `additionalCoding` adds ICD-10/SNOMED CT beside the NCP term.
+        With `author` (and optional `source`, `asserter`, `encounter`) the Conditions get recorder/encounter and one Provenance per diagnosis.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success
-        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+        is a Bundle of Conditions (plus evidence Observations and Provenance); errors are OperationOutcomes listing every problem. See README "NCP operations".
       security: []
       requestBody:
         required: true

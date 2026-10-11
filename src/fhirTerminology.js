@@ -518,6 +518,11 @@ const OPERATIONS = {
       "NCP step 2. Shapes clinician-supplied PES statements into Condition resources; it does not choose the diagnosis. problemCode values such as NI-5.2 are resolved against the NCP diagnostic terminology (CodeSystem ncp-diagnosis).",
     parameters: [
       SUBJECT_REQ,
+      P("encounter", "string", 0, "1", 'Encounter reference, e.g. "Encounter/456"; set on each Condition and on inline evidence Observations.'),
+      P("author", "string", 0, "1", 'A reference ("Practitioner/123") or the dietitian\'s name. Sets Condition.recorder and creates a Provenance resource per diagnosis.'),
+      P("asserter", "string", 0, "1", "Who asserts the diagnosis, if not the author: a reference or a name."),
+      P("source", "string", 0, "*", 'Where the information came from, e.g. "patient interview", "medical record". Needs author; listed in Provenance.entity.'),
+      P("effectiveDateTime", "dateTime", 0, "1", "Default measurement time for inline evidence observations. Defaults to now."),
       P("diagnosis", "Element", 1, "*", "One PES statement.", [
         part("problemCode", "string", 0, "1", "NI-/NC-/NB- term code (resolves problem and domain), a public shortcut, or your own code with problemSystem."),
         part("problemSystem", "uri", 0, "1", "Your own code system for problemCode."),
@@ -525,14 +530,18 @@ const OPERATIONS = {
         part("problemSpecify", "string", 0, "1", 'Required for terms marked "(specify)".'),
         part("domain", "code", 0, "1", "intake | clinical | behavioral-environmental. Derived from problemCode when omitted."),
         part("problem", "string", 0, "1", "Diagnosis label. Required unless problemCode is an NI/NC/NB term."),
-        part("etiology", "string", 1, "*", 'The "related to" part.'),
-        part("signsSymptoms", "string", 1, "*", 'The "as evidenced by" part.'),
+        part("etiology", "string", 0, "*", 'The "related to" part, as text. At least one etiology (here or as etiologyItem) is required.'),
+        part("signsSymptoms", "string", 0, "*", 'The "as evidenced by" part, as text. At least one sign (here or as signItem) is required.'),
         part("severity", "code", 0, "1", "mild | moderate | severe"),
         part("verificationStatus", "code", 0, "1", "provisional (default) | confirmed"),
         part("evidence", "string", 0, "*", "References to supporting Observations (e.g. urn:uuid)."),
-        part("recordedDate", "dateTime", 0, "1", "Defaults to now."),
+        part("recordedDate", "dateTime", 0, "1", "Defaults to now. Must be valid and not in the future."),
+        part("etiologyItem", "Element", 0, "*", 'A structured etiology: parts text (required) and optionally system + code + display. Stored as its own CodeableConcept in the pes-statement extension.'),
+        part("signItem", "Element", 0, "*", 'A structured sign or symptom: parts text, optional system + code + display, optional evidence (an Observation reference, repeatable) and optional observation (an inline measurement with the same parts as $nutrition-assessment: code, value, effectiveDateTime, ...). An inline observation is validated, returned in the Bundle and linked from Condition.evidence; text defaults to a description of it.'),
+        part("additionalCoding", "Element", 0, "*", "An extra coding for the problem (parts system, code, display), e.g. ICD-10 or SNOMED CT alongside the NCP term. Carried as given; the code is not verified against its code system."),
       ]),
     ],
+    returnDoc: "A Bundle of Conditions (plus evidence Observations and Provenance resources when requested); an OperationOutcome on failure (400 malformed, all structured-input errors listed together).",
   },
   "CarePlan-intervene": {
     resource: "CarePlan", code: "intervene", title: "Nutrition intervention plan",
@@ -705,6 +714,7 @@ const EXTENSIONS = {
   "pes-etiology": X("string", ["Condition"], 'The "related to" part of the PES statement.'),
   "pes-signs-symptoms": X("string", ["Condition"], 'The "as evidenced by" part of the PES statement.'),
   "pes-specify": X("string", ["Condition"], 'The specifying detail for diagnosis terms marked "(specify)", e.g. Iron.'),
+  "pes-statement": { ...X(null, ["Condition"], "The PES statement as components: statement (the readable sentence), problem, etiology (repeatable CodeableConcept) and signSymptom (repeatable; description plus evidence references to Observations)."), complex: ["statement", "problem", "etiology", "signSymptom"] },
 };
 
 export const STRUCTURE_DEFINITION_NAMES = Object.keys(EXTENSIONS);
@@ -734,8 +744,16 @@ export function structureDefinitionResource(base, name) {
     differential: {
       element: [
         { id: "Extension", path: "Extension", short: x.description, definition: x.description, min: 0, max: "1" },
-        { id: "Extension.url", path: "Extension.url", fixedUri: url },
-        { id: "Extension.value[x]", path: "Extension.value[x]", min: 1, type: [{ code: x.valueType }] },
+        ...(x.complex
+          ? [
+              ...x.complex.map((n) => ({ id: `Extension.extension:${n}`, path: "Extension.extension", sliceName: n, min: n === "statement" || n === "problem" ? 1 : 0, max: n === "etiology" || n === "signSymptom" ? "*" : "1" })),
+              { id: "Extension.url", path: "Extension.url", fixedUri: url },
+              { id: "Extension.value[x]", path: "Extension.value[x]", max: "0" },
+            ]
+          : [
+              { id: "Extension.url", path: "Extension.url", fixedUri: url },
+              { id: "Extension.value[x]", path: "Extension.value[x]", min: 1, type: [{ code: x.valueType }] },
+            ]),
       ],
     },
   };

@@ -287,7 +287,7 @@ export function buildCapabilityStatement(base) {
     status: "draft",
     date: "2026-10-11",
     kind: "instance",
-    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-4-assessment" },
+    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-5-diagnosis" },
     implementation: {
       description:
         "Stateless FHIR facade covering the Nutrition Care Process (screening, assessment, diagnosis, " +
@@ -330,7 +330,8 @@ export function buildCapabilityStatement(base) {
                 "diagnose",
                 "Condition",
                 "NCP Step 2: shapes clinician-supplied PES statements (problem, etiology, signs/symptoms) " +
-                  "into Condition resources. Does not choose the diagnosis."
+                  "into Condition resources, stored as structured components plus the readable statement, with evidence " +
+                  "Observations and Provenance. Does not choose the diagnosis."
               ),
             ],
           },
