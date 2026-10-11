@@ -2695,7 +2695,7 @@ paths:
       tags: [FHIR]
       summary: ADIME document Bundle
       description: >
-        Assembles resources/Bundles returned by the other NCP operations into a Composition document Bundle (screening, assessment, diagnosis, intervention, monitoring and evaluation sections).
+        Assembles resources/Bundles returned by the other NCP operations (including $nutrition-assessment) into a Composition document Bundle (screening, assessment, diagnosis, intervention, monitoring and evaluation sections). Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment Bundle.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success
         is a Bundle; errors are OperationOutcomes. See README "NCP operations".
       security: []
@@ -2722,6 +2722,114 @@ paths:
               schema: { type: object }
         "422":
           description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Bundle/$nutrition-assessment:
+    post:
+      tags: [FHIR]
+      summary: Structured nutrition assessment (NCP step 1 foundation)
+      description: >
+        Validates a Patient (resource, or `subject` reference) and an Encounter (resource or reference, required)
+        plus repeatable `observation` parts (anthropometry, biochemical, clinical, dietary, NFPE) and
+        `questionnaireResponse` resources, and returns one collection Bundle of linked Patient, Encounter,
+        QuestionnaireResponse and Observation resources (urn:uuid fullUrls; every Observation points at the Patient
+        and Encounter). Units are never guessed; plausibility, timestamps and missing data are checked and all problems
+        are reported together. Computes BMI (+ WHO adult class, 18+) and, from the nutrition-screening form, the MUST score.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource. See README "Assessment foundation".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle (collection); a trailing OperationOutcome entry lists warnings and missing-data notes
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — every validation error found (units, ranges, timestamps, required items, references)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/QuestionnaireResponse/$validate:
+    post:
+      tags: [FHIR]
+      summary: Validate a QuestionnaireResponse against a built-in form
+      description: >
+        Body is a FHIR Parameters resource with one `resource` (the QuestionnaireResponse). Checks linkIds, answer types,
+        units and ranges, answer options and required items for the built-in forms; other forms are checked structurally.
+        Always 200 with an OperationOutcome when the input is well formed: look at issue severity. Nothing is built or stored.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR OperationOutcome
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome — body is not a Parameters resource, or 'resource' is missing
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Questionnaire:
+    get:
+      tags: [FHIR]
+      summary: List the built-in assessment forms
+      description: A searchset Bundle of the Questionnaires nutrition-screening, nfpe and diet-history.
+      security: []
+      responses:
+        "200":
+          description: FHIR Bundle (searchset)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Questionnaire/{id}:
+    get:
+      tags: [FHIR]
+      summary: One built-in assessment form
+      description: >
+        nutrition-screening (the MUST inputs; submitting it to $nutrition-assessment also computes MUST),
+        nfpe (nutrition-focused physical examination) or diet-history (24-hour recall / usual-day summary).
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, enum: [nutrition-screening, nfpe, diet-history] }
+      responses:
+        "200":
+          description: FHIR Questionnaire
+          content:
+            application/json:
+              schema: { type: object }
+        "404":
+          description: FHIR OperationOutcome — unknown form
           content:
             application/json:
               schema: { type: object }

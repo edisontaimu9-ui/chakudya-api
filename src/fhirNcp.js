@@ -1926,6 +1926,7 @@ function narrative(resources) {
 }
 
 const DOC_RESOURCE_TYPES = new Set(["Observation", "Condition", "Goal", "NutritionOrder", "ServiceRequest", "CarePlan"]);
+const DOC_CONTEXT_TYPES = new Set(["Patient", "Encounter", "QuestionnaireResponse"]);
 
 function stepOf(r) {
   switch (r.resourceType) {
@@ -1956,8 +1957,19 @@ export function evaluateNcpDocument(body, ctx) {
   const p = readParams(body);
   const base = ctx.base;
 
-  const subject = subjectRef(p.get("subject"));
-  if (!subject) return bad("Parameter 'subject' is required (e.g. valueString \"Patient/123\").");
+  // A Bundle from $nutrition-assessment carries its own Patient and Encounter
+  // (urn:uuid fullUrls); when 'subject' / 'encounter' are not given, use those.
+  const entryUrl = (type) => {
+    for (const r of p.all("resource")) {
+      if (r?.resourceType !== "Bundle") continue;
+      const en = (r.entry ?? []).find((x) => x?.resource?.resourceType === type && typeof x.fullUrl === "string");
+      if (en) return en.fullUrl;
+    }
+    return null;
+  };
+  const subject = subjectRef(p.get("subject") ?? entryUrl("Patient"));
+  if (!subject) return bad("Parameter 'subject' is required (e.g. valueString \"Patient/123\"), unless a Bundle with a Patient entry is supplied.");
+  const encounterParam = str(p.get("encounter")) ?? entryUrl("Encounter");
   const author = authorRef(p.get("author"));
   if (!author) return bad("Parameter 'author' is required: a reference (\"Practitioner/123\") or the dietitian's name.");
 
@@ -1976,9 +1988,20 @@ export function evaluateNcpDocument(body, ctx) {
   if (collected.length > 300) return bad("At most 300 resources per document.");
 
   const grouped = Object.fromEntries(SECTIONS.map((s) => [s.step, []]));
+  const context = []; // Patient / Encounter / QuestionnaireResponse: supporting entries, not section content
   for (const c of collected) {
     const t = c.resource.resourceType;
-    if (!DOC_RESOURCE_TYPES.has(t)) return bad(`Resource type "${t}" is not supported in an NCP document (use Observation, Condition, Goal, NutritionOrder, ServiceRequest or CarePlan).`);
+    if (t === "OperationOutcome") continue; // the assessment's validation notes are not part of the note
+    if (DOC_CONTEXT_TYPES.has(t)) {
+      const ref = t === "Patient" ? (c.fullUrl ?? (c.resource.id ? `Patient/${c.resource.id}` : undefined)) : c.resource.subject?.reference;
+      const ok = t === "Patient"
+        ? ref === subject.reference || (c.resource.id && subject.reference === `Patient/${c.resource.id}`)
+        : !ref || ref === subject.reference;
+      if (!ok) return bad(`${t} ${t === "Patient" ? "is not" : "has subject \"" + ref + "\", not"} the document subject "${subject.reference}". One NCP document covers one patient.`);
+      context.push({ fullUrl: c.fullUrl ?? newUuid(ctx), resource: c.resource });
+      continue;
+    }
+    if (!DOC_RESOURCE_TYPES.has(t)) return bad(`Resource type "${t}" is not supported in an NCP document (use Observation, Condition, Goal, NutritionOrder, ServiceRequest or CarePlan; Patient, Encounter and QuestionnaireResponse are carried as supporting entries).`);
     const subj = c.resource.subject?.reference ?? c.resource.patient?.reference;
     if (subj && subj !== subject.reference) {
       return bad(`${t} has subject "${subj}" but the document subject is "${subject.reference}". One NCP document covers one patient.`);
@@ -2017,7 +2040,7 @@ export function evaluateNcpDocument(body, ctx) {
     date: str(p.get("date")) ?? ctx.now,
     author: [author],
     title: str(p.get("title")) ?? "Nutrition Care Process note (ADIME)",
-    ...(str(p.get("encounter")) ? { encounter: { reference: str(p.get("encounter")) } } : {}),
+    ...(encounterParam ? { encounter: { reference: encounterParam } } : {}),
     section: sections,
   };
 
@@ -2026,7 +2049,7 @@ export function evaluateNcpDocument(body, ctx) {
     resourceType: "Bundle",
     type: "document",
     timestamp: ctx.now,
-    entry: [compEntry, ...SECTIONS.flatMap((s) => grouped[s.step])],
+    entry: [compEntry, ...SECTIONS.flatMap((s) => grouped[s.step]), ...context],
   };
   return okRes(body2);
 }

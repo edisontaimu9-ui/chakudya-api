@@ -644,14 +644,14 @@ const OPERATIONS = {
   "Bundle-ncp-document": {
     resource: "Bundle", code: "ncp-document", title: "ADIME document",
     description:
-      "Assembles resources or Bundles returned by the other NCP operations into a Composition document Bundle (screening, assessment, diagnosis, intervention, monitoring and evaluation sections). Pass whole Bundles to keep urn:uuid links valid.",
+      "Assembles resources or Bundles returned by the other NCP operations into a Composition document Bundle (screening, assessment, diagnosis, intervention, monitoring and evaluation sections). Pass whole Bundles to keep urn:uuid links valid. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries.",
     parameters: [
-      SUBJECT_REQ,
+      P("subject", "string", 0, "1", 'Patient reference, e.g. "Patient/123". Optional when a supplied Bundle (from $nutrition-assessment) has a Patient entry: its urn:uuid is used.'),
       P("author", "string", 1, "1", 'A reference ("Practitioner/123") or the dietitian\'s name.'),
       P("resource", "Resource", 1, "*", "Observation, Condition, Goal, NutritionOrder, ServiceRequest or CarePlan; or a Bundle of them."),
       P("title", "string", 0, "1", "Document title."),
       P("date", "dateTime", 0, "1", "Document date. Defaults to now."),
-      P("encounter", "string", 0, "1", "Encounter reference."),
+      P("encounter", "string", 0, "1", "Encounter reference. Defaults to the Encounter entry of a supplied $nutrition-assessment Bundle."),
     ],
   },
 };

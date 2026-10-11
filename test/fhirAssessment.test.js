@@ -10,7 +10,7 @@ import {
   QUESTIONNAIRE_IDS,
   ITEMS,
 } from "../src/fhirAssessment.js";
-import { evaluateScreen } from "../src/fhirNcp.js";
+import { evaluateScreen, evaluateNcpDocument } from "../src/fhirNcp.js";
 import { buildCapabilityStatement } from "../src/fhir.js";
 import {
   codeSystemResource, operationDefinitionResource, structureDefinitionResource, OPERATION_DEFINITION_IDS,
@@ -558,4 +558,28 @@ test("CapabilityStatement and OperationDefinitions describe the new operations",
   assert.deepEqual(obsPart.part.map((x) => x.name), ["code", "value", "domain", "effectiveDateTime", "referenceLow", "referenceHigh", "interpretation", "dataAbsentReason", "note", "system", "display"]);
   assert.equal(operationDefinitionResource(BASE, "QuestionnaireResponse-validate").parameter.at(-1).type, "OperationOutcome");
   assert.equal(operationDefinitionResource(BASE, "Bundle-nutrition-assessment").parameter.at(-1).type, "Bundle");
+});
+
+// ─── Feeding the assessment into the ADIME document ───────────────────────
+test("$ncp-document accepts the assessment Bundle: Patient/Encounter/response are supporting entries, observations fill the sections", () => {
+  const b = ok(evaluateNutritionAssessment(withPE({ name: "questionnaireResponse", resource: QR("nutrition-screening", SCREEN_ITEMS()) }), ctx));
+  const patientUrl = b.entry.find((e) => e.resource.resourceType === "Patient").fullUrl;
+  const encounterUrl = b.entry.find((e) => e.resource.resourceType === "Encounter").fullUrl;
+  const r = evaluateNcpDocument(P([{ name: "author", valueString: "Dietitian A" }, { name: "resource", resource: b }]), ctx);
+  const doc = ok(r);
+  const comp = doc.entry[0].resource;
+  assert.equal(comp.subject.reference, patientUrl);
+  assert.equal(comp.encounter.reference, encounterUrl);
+  const section = (code) => comp.section.find((s) => s.code.coding[0].code === code);
+  assert.ok(section("nutrition-screening").entry.length === 1, "MUST in screening");
+  assert.ok(section("nutrition-assessment").entry.length >= 3, "weight, height, BMI in assessment");
+  const types = doc.entry.map((e) => e.resource.resourceType);
+  for (const t of ["Patient", "Encounter", "QuestionnaireResponse"]) assert.ok(types.includes(t), t);
+  assert.ok(!types.includes("OperationOutcome"));
+  const urls = new Set(doc.entry.map((e) => e.fullUrl));
+  for (const s of comp.section) for (const e of s.entry ?? []) assert.ok(urls.has(e.reference), "section entry resolves");
+  // an explicit subject still has to match; a stranger's resource is refused
+  assert.equal(evaluateNcpDocument(P([{ name: "subject", valueString: "Patient/other" }, { name: "author", valueString: "X" }, { name: "resource", resource: b }]), ctx).ok, false);
+  // a bare Patient that is not the subject is refused, one that is, is carried
+  assert.equal(evaluateNcpDocument(P([{ name: "subject", valueString: "Patient/p-1" }, { name: "author", valueString: "X" }, { name: "resource", resource: PATIENT }, { name: "resource", resource: { resourceType: "Observation", code: { text: "x" }, valueString: "a" } }]), ctx).ok, true);
 });

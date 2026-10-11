@@ -1161,6 +1161,8 @@ Stateless like the rest of `/fhir`: nothing is stored. Source: [`src/fhirAssessm
 
 **Forms.** A QuestionnaireResponse for a built-in form is validated item by item (linkIds, types, units, options, required items; `completed` needs all required items) and its answers become Observations (`derivedFrom` the response; `preliminary` while in progress). Submitting `nutrition-screening` also computes the MUST score, identical to `$screen`. Other forms are checked structurally and carried without extraction. Limits: 100 observations, 10 responses per request.
 
+**Into the ADIME note.** Pass the returned Bundle to `POST /fhir/Bundle/$ncp-document` as a `resource` (with `author`): `subject` and `encounter` default to the Bundle's Patient and Encounter, observations land in their NCP sections, and Patient/Encounter/QuestionnaireResponse are carried as supporting entries.
+
 #### NCP operations (FHIR Phase 2)
 
 The Academy of Nutrition and Dietetics Nutrition Care Process, end to end, as stateless FHIR R4 operations. Same contract as Phase 1: **nothing is stored or logged beyond method/path/status** — the caller's EHR persists what comes back. All are `POST`, public, rate-limited (100/min/IP), body is a FHIR `Parameters` resource, success is a `Bundle`, failure is an `OperationOutcome` (400 malformed, 422 valid-but-unsupported). Source: [`src/fhirNcp.js`](src/fhirNcp.js) (pure functions, tests in `test/fhirNcp.test.js`).
