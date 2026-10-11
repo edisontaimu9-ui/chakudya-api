@@ -2155,8 +2155,8 @@ paths:
           schema: { type: string, enum: [lying, standing] }
         - name: muac_scheme
           in: query
-          description: Fixed MUAC scheme; cmam covers 6-59 months only
-          schema: { type: string, enum: [who_hiv_2008, cmam], default: who_hiv_2008 }
+          description: Fixed MUAC scheme; cmam covers 6-59 months only. Default is cmam for 6-59 months (matches acute_malnutrition_signals), who_hiv_2008 otherwise.
+          schema: { type: string, enum: [who_hiv_2008, cmam] }
       responses:
         "200":
           description: Assessment

@@ -106,6 +106,17 @@ describe("assessGrowth", () => {
     assert.equal(r.indicators.weight_for_length_height.position_adjustment.adjustment_cm, -0.7);
     assert.equal(r.indicators.bmi_for_age.position_adjustment.adjustment_cm, -0.7);
   });
+  test("fixed MUAC defaults to cmam for 6-59 months so it agrees with the acute signals", async () => {
+    const r = await assess("sex=girls&age_months=12&muac_cm=11");
+    assert.equal(r.indicators.muac_fixed.scheme, "cmam");
+    assert.equal(r.indicators.muac_fixed.status, "severe");
+    assert.equal(r.acute_malnutrition_signals.level, "severe");
+    const old = await assess("sex=girls&age_months=100&muac_cm=15");
+    assert.equal(old.indicators.muac_fixed.scheme, "who_hiv_2008");
+    const chart = await assess("sex=girls&age_months=12&muac_cm=11&muac_scheme=who_hiv_2008");
+    assert.equal(chart.indicators.muac_fixed.status, "moderate");
+  });
+
   test("muac_scheme=cmam is used for the fixed MUAC result; out-of-range age is skipped", async () => {
     const r = await assess("sex=girls&age_months=18&muac_cm=11.2&muac_scheme=cmam");
     assert.equal(r.indicators.muac_fixed.status, "severe");

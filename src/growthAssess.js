@@ -50,7 +50,10 @@ export function parseAssessQuery(searchParams) {
   if (!has(searchParams, ALL_MEASUREMENT_PARAMS)) {
     return { error: "Provide at least one measurement: weight_kg/weight_g, length_cm/height_cm (or _mm), hc_cm/hc_mm, muac_cm/muac_mm" };
   }
-  const scheme = (searchParams.get("muac_scheme") || "who_hiv_2008").trim().toLowerCase();
+  // Default matches the acute-malnutrition signals: CMAM (115/125 mm) for 6-59 months, so one MUAC
+  // never reads "severe" in one block and "moderate" in another. Older children use the FANTA chart.
+  const defaultScheme = ageMonths >= 6 && ageMonths <= 59 ? "cmam" : "who_hiv_2008";
+  const scheme = (searchParams.get("muac_scheme") || defaultScheme).trim().toLowerCase();
   if (!["who_hiv_2008", "cmam"].includes(scheme)) return { error: "'muac_scheme' must be who_hiv_2008 or cmam" };
   return { sex, ageMonths, searchParams, muacScheme: scheme };
 }

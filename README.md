@@ -1001,7 +1001,7 @@ Setup: run `sql/027_add_who_hc_for_age.sql` in the Supabase SQL editor, then `PO
 
 One call, every applicable WHO indicator for the measurements you give. It only orchestrates the single-indicator modules ([`src/growthAssess.js`](src/growthAssess.js)), so each number is identical to what that indicator's own endpoint returns. Needs no new table: it reads the tables from sql/012 and sql/021 to sql/027.
 
-- `GET /growth/assess` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-228) and **at least one** measurement: `weight_kg`/`weight_g`, `length_cm`/`height_cm` (or `_mm`), `hc_cm`/`hc_mm`, `muac_cm`/`muac_mm`. Optional `measured=lying|standing` (default lying under 24 months, standing from 24; a mismatch converts by 0.7 cm and is reported) and `muac_scheme=who_hiv_2008|cmam` (for the fixed MUAC result).
+- `GET /growth/assess` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-228) and **at least one** measurement: `weight_kg`/`weight_g`, `length_cm`/`height_cm` (or `_mm`), `hc_cm`/`hc_mm`, `muac_cm`/`muac_mm`. Optional `measured=lying|standing` (default lying under 24 months, standing from 24; a mismatch converts by 0.7 cm and is reported) and `muac_scheme=who_hiv_2008|cmam` (for the fixed MUAC result; default `cmam` for 6-59 months so it agrees with `acute_malnutrition_signals`, `who_hiv_2008` for older children).
 
 | Indicator in the response | Needs | Ages |
 |---|---|---|
