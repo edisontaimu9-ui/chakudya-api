@@ -566,6 +566,7 @@ import {
   toKg,
   toCm,
 } from "./fhir.js";
+import { measurementsToAssessQuery, buildWhoGrowthBundle } from "./fhirGrowth.js";
 import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./fhirNcp.js";
 import { staticConformanceResource } from "./fhirTerminology.js";
 import { capSearchTerms } from "./searchTerms.js";
@@ -3202,6 +3203,28 @@ async function handleFhirEvaluateGrowth(request, db, url) {
     }
 
     return json(bundleObservations(observations));
+  }
+
+  if (route.route === "who-growth") {
+    const mapped = measurementsToAssessQuery({
+      sex: parsed.sex, ageMonths: route.ageMonths, measurements: parsed.measurements,
+      measured: parsed.measured, muacScheme: parsed.muacScheme,
+    });
+    if (mapped.error) return json(operationOutcome("error", mapped.error), 400);
+    const q = parseAssessQuery(mapped.query);
+    if (q.error) return json(operationOutcome("error", q.error), 400);
+    const fetchRows = async (table, filters, limit) => {
+      const { ok, status, body: rows } = await db.select(table, { filters, limit });
+      if (!ok) throw new Error(rows?.message || `Query failed (${status})`);
+      return Array.isArray(rows) ? rows : [];
+    };
+    let result;
+    try {
+      result = await assessGrowth(q, fetchRows);
+    } catch (e) {
+      return json(operationOutcome("error", e.message || "Growth lookup failed", "exception"), 502);
+    }
+    return json(buildWhoGrowthBundle(base, route.ageMonths, result, parsed.effectiveDateTime));
   }
 
   // route.route === "bmi-for-age"
@@ -7248,7 +7271,7 @@ function handleRoot(env) {
       ],
       fhir: [
         "GET  /fhir/metadata → FHIR R4 CapabilityStatement",
-        "POST /fhir/Observation/$evaluate-growth → body: FHIR Parameters {sex, gestationalAgeWeeks+day OR birthDate, measurement:[{type,value}, ...], reference_year?, effectiveDateTime?} → Observation or Bundle of Observations",
+        "POST /fhir/Observation/$evaluate-growth → body: FHIR Parameters {sex, gestationalAgeWeeks+day OR birthDate, measurement:[{type: weight|length|hc|muac|bmi, value}, ...], measured?, muacScheme?, referenceYear?, effectiveDateTime?} → Observation or Bundle of Observations (birthDate: every WHO indicator, birth to 19 years)",
         "POST /fhir/Observation/$screen → NCP screening (MUST, adults)",
         "POST /fhir/Observation/$assess-nutrition → NCP assessment: BMI, % weight change, energy/protein needs + intake, GLIM, FH/AD/BD/PD/CH indicators",
         "POST /fhir/Condition/$diagnose → NCP diagnosis: PES statements → Condition",
@@ -7257,7 +7280,7 @@ function handleRoot(env) {
         "POST /fhir/Bundle/$ncp-document → ADIME Composition document Bundle from the above",
         "GET  /fhir/CodeSystem/ncp-diagnosis → NCP nutrition diagnostic terminology (2006 ed., NI/NC/NB; stored in Supabase table ncp_diagnosis_terms)",
         "GET  /fhir/CodeSystem/{name}, /fhir/OperationDefinition/{id}, /fhir/StructureDefinition/{name} → conformance resources for every canonical URL the facade emits (see /fhir/metadata)",
-        "Stateless facade, no storage. $evaluate-growth wraps bmi-for-age + fenton-preterm only (WHO 0-59-month returns OperationOutcome). Not yet registered with any OpenHIM/HIE instance. See src/fhir.js and src/fhirNcp.js.",
+        "Stateless facade, no storage. $evaluate-growth wraps fenton-preterm and the WHO indicators (length/height, weight, weight-for-length/height, BMI, head circumference, MUAC) from birth to 19 years. Not yet registered with any OpenHIM/HIE instance. See src/fhir.js and src/fhirNcp.js.",
       ],
       exchange_lists: [
         "GET  /exchange",

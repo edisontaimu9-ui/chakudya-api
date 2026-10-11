@@ -15,6 +15,8 @@
 // 0-59 months are NOT available through this facade, because chakudya-api
 // has no such endpoint yet — $evaluate-growth returns a FHIR OperationOutcome
 // for that age gap rather than silently guessing or misrouting.
+// UPDATE 2026-10-11: that gap is closed. Postnatal ages 0-228 months now route
+// to the WHO indicator endpoints through src/fhirGrowth.js.
 //
 // Every Observation this produces carries the same screening-aid language
 // as the underlying classify endpoints — a FHIR shape doesn't change that
@@ -128,8 +130,8 @@ export function parseEvaluateGrowth(body, now = new Date()) {
     return fhirError("At least one 'measurement' part ({type, value}) is required.");
   }
   for (const m of measurements) {
-    if (!["weight", "length", "hc", "bmi"].includes(m.type)) {
-      return fhirError(`measurement.type must be weight, length, hc, or bmi (got "${m.type}").`);
+    if (!["weight", "length", "hc", "bmi", "muac"].includes(m.type)) {
+      return fhirError(`measurement.type must be weight, length, hc, bmi, or muac (got "${m.type}").`);
     }
   }
 
@@ -152,6 +154,8 @@ export function parseEvaluateGrowth(body, now = new Date()) {
     gestationalAgeDays: typeof p.gestationalAgeDays === "number" ? p.gestationalAgeDays : 0,
     referenceYear: typeof p.referenceYear === "number" ? p.referenceYear : undefined,
     birthDate: hasBirthDate ? p.birthDate : null,
+    measured: typeof p.measured === "string" ? p.measured.toLowerCase() : null,
+    muacScheme: typeof p.muacScheme === "string" ? p.muacScheme.toLowerCase() : null,
   };
 }
 
@@ -166,8 +170,9 @@ function postnatalAgeMonths(birthDate, effectiveDateTime) {
 /**
  * Decides which chakudya-api backend covers this request, given what
  * parseEvaluateGrowth() returned. Returns { route: "fenton" } or
- * { route: "bmi-for-age" } or { error, outcome } — never guesses when the
- * age falls in the WHO-0-59-month gap this facade doesn't cover yet.
+ * { route: "bmi-for-age" } (a lone BMI value, 5y1m-19y0m), { route: "who-growth" }
+ * (birth to 19y0m: every WHO indicator the measurements allow, see fhirGrowth.js)
+ * or { error, outcome }.
  */
 export function decideGrowthRoute(parsed) {
   if (parsed.gestationalAgeWeeks !== null) {
@@ -181,16 +186,12 @@ export function decideGrowthRoute(parsed) {
   if (ageMonths === null) {
     return fhirError(`Could not parse birthDate "${parsed.birthDate}" / effectiveDateTime "${parsed.effectiveDateTime}".`);
   }
-  if (ageMonths >= 61 && ageMonths <= 228) {
-    return { route: "bmi-for-age", ageMonths };
+  if (ageMonths >= 0 && ageMonths <= 228) {
+    // A lone BMI value above 5 years keeps the original single-Observation BMI-for-age route.
+    if (ageMonths >= 61 && parsed.measurements.every((m) => m.type === "bmi")) return { route: "bmi-for-age", ageMonths };
+    return { route: "who-growth", ageMonths };
   }
-  if (ageMonths < 61) {
-    return fhirError(
-      `Postnatal age ${ageMonths} months falls in the WHO 0-59-month child growth standards range, which ` +
-        "chakudya-api does not yet expose an endpoint for. Not supported by this facade."
-    );
-  }
-  return fhirError(`Postnatal age ${ageMonths} months is outside every reference this facade covers (5y1m-19y0m, or use gestationalAgeWeeks for a preterm infant).`);
+  return fhirError(`Postnatal age ${ageMonths} months is outside every reference this facade covers (birth to 19y0m, or use gestationalAgeWeeks for a preterm infant).`);
 }
 
 // ─── Building the FHIR Observation response ────────────────────────────────
@@ -284,9 +285,9 @@ export function buildCapabilityStatement(base) {
   return {
     resourceType: "CapabilityStatement",
     status: "draft",
-    date: "2026-10-10",
+    date: "2026-10-11",
     kind: "instance",
-    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-2-ncp" },
+    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-3-who-growth" },
     implementation: {
       description:
         "Stateless FHIR facade covering the Nutrition Care Process (screening, assessment, diagnosis, " +

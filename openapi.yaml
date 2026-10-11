@@ -2465,12 +2465,16 @@ paths:
       tags: [FHIR]
       summary: Evaluate a growth/anthropometry measurement, FHIR-shaped
       description: >
-        Wraps /bmi-for-age/classify and /fenton-preterm/classify only. Routes
-        on age: gestationalAgeWeeks (22-50) -> Fenton preterm; birthDate
-        resolving to 5y1m-19y0m postnatal -> WHO BMI-for-age. The WHO
-        0-59-month gap returns a FHIR OperationOutcome rather than guessing —
-        chakudya-api has no endpoint for that range yet. One measurement ->
-        a single Observation; more than one -> a Bundle (type collection).
+        Routes on age: gestationalAgeWeeks (22-50) -> Fenton preterm; birthDate
+        resolving to 0-19 years postnatal -> every WHO indicator the
+        measurements allow (length/height-for-age, weight-for-age,
+        weight-for-length/height, BMI-for-age, head circumference-for-age,
+        MUAC-for-age, fixed MUAC cut-offs, acute-malnutrition signals), the same
+        calculations as /growth/assess, returned as a Bundle of Observations
+        with one Observation per indicator. Measurement types: weight (kg|g),
+        length (cm|m), hc (cm|m), muac (cm|mm), bmi. Optional parameters
+        measured (lying|standing) and muacScheme (who_hiv_2008|cmam).
+        Fenton with a single measurement returns a single Observation.
       security: []
       requestBody:
         required: true
@@ -2495,7 +2499,7 @@ paths:
             application/json:
               schema: { type: object }
         "422":
-          description: FHIR OperationOutcome — valid input, unsupported age/route (e.g. WHO 0-59-month gap)
+          description: FHIR OperationOutcome — valid input, unsupported age/route (e.g. older than 19 years)
           content:
             application/json:
               schema: { type: object }

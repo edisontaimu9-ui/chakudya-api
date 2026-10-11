@@ -1125,11 +1125,23 @@ Phase 1 (below) is a stateless FHIR R4 translation layer over the classify endpo
     ]
   }
   ```
-  Routes on age: `gestationalAgeWeeks` (22-50) → Fenton preterm; `birthDate` (+ optional `effectiveDateTime`, default now) resolving to 5y1m-19y0m postnatal → WHO BMI-for-age. **The WHO 0-59-month gap is honest, not silent** — that age range returns a FHIR `OperationOutcome`, because chakudya-api has no endpoint for it (yet). One `measurement` → a single `Observation`; more than one → a `Bundle` (type `collection`). BMI-for-age needs either a `bmi` measurement or `weight`+`length` together (computes BMI itself, same unrounded formula as `/bmi-for-age/classify`).
+  Routes on age: `gestationalAgeWeeks` (22-50) → Fenton preterm; `birthDate` (+ optional `effectiveDateTime`, default now) resolving to **0-19 years postnatal → every WHO indicator the measurements allow**, the same calculations as `/growth/assess`: length/height-for-age, weight-for-age, weight-for-length/height, BMI-for-age (under 5 or 5-19), head circumference-for-age, MUAC-for-age, fixed MUAC cut-offs, plus an `acute-malnutrition-signals` Observation. Fenton with one `measurement` → a single `Observation`; otherwise a `Bundle` (type `collection`) with one `Observation` per indicator. Indicators that don't apply (wrong age range, measurement not supplied) are listed as `information` issues in an `OperationOutcome` entry at the end of the Bundle, and a bad value in one measurement only errors that indicator. A lone `bmi` measurement above 5 years keeps the original single BMI-for-age Observation.
 
-  Units: weight accepts `g` or `kg`; length/hc accept `cm` or `m`; anything else is a 400, not a guess.
+  Measurement `type`: `weight` (kg|g), `length` (cm|m; lying under 24 months, standing from 24, override with the optional `measured` parameter `lying|standing`), `hc` (cm|m), `muac` (cm|mm), `bmi`. Each type at most once. Optional `muacScheme` (`who_hiv_2008|cmam`; default `cmam` for 6-59 months). A BMI is computed from `weight` + `length`.
 
-  Each `Observation` carries `z-score`/`percentile`/`status` as `component`s (Chakudya-specific codes — there's no LOINC fit for "Fenton status: appropriate"), a best-effort standard `interpretation` (v3-ObservationInterpretation N/L/H/LL/HH) for FHIR clients that only read that field, the same screening-aid `note` text as the native endpoints, and an `extension` recording which reference was used. Weight/length/HC use LOINC 29463-7/8302-2/9843-4; BMI uses 39156-5.
+  Example (12-month girl, `birthDate` one year before `effectiveDateTime`):
+  ```json
+  { "resourceType": "Parameters", "parameter": [
+    { "name": "sex", "valueCode": "female" },
+    { "name": "birthDate", "valueDate": "2025-10-11" },
+    { "name": "effectiveDateTime", "valueString": "2026-10-11T08:00:00Z" },
+    { "name": "measurement", "part": [{ "name": "type", "valueCode": "weight" }, { "name": "value", "valueQuantity": { "value": 6, "unit": "kg", "code": "kg" } }] },
+    { "name": "measurement", "part": [{ "name": "type", "valueCode": "length" }, { "name": "value", "valueQuantity": { "value": 74, "unit": "cm", "code": "cm" } }] },
+    { "name": "measurement", "part": [{ "name": "type", "valueCode": "muac" }, { "name": "value", "valueQuantity": { "value": 11, "unit": "cm", "code": "cm" } }] }
+  ] }
+  ```
+
+  Each `Observation` carries `z-score`/`percentile`/`status` as `component`s (Chakudya-specific codes — there's no LOINC fit for "Fenton status: appropriate"), a best-effort standard `interpretation` (v3-ObservationInterpretation N/L/H/LL/HH) for FHIR clients that only read that field, the same screening-aid `note` text as the native endpoints, and an `extension` recording which reference was used. Weight/length/HC use LOINC 29463-7/8302-2/9843-4; BMI uses 39156-5; MUAC uses 56072-2. WHO-indicator Observations also carry an `indicator` component (code system `growth-indicator`: `length-height-for-age`, `weight-for-age`, …) because several indicators share one LOINC code (weight-for-age and weight-for-length/height are both body weight), and a `growth-reference-used` extension such as `who-2006-weight-for-age`. The new code systems resolve at `/fhir/CodeSystem/growth-indicator`, `/growth-status` and `/acute-malnutrition-level`.
 
 #### NCP operations (FHIR Phase 2)
 
