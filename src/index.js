@@ -571,6 +571,7 @@ import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./
 import { staticConformanceResource } from "./fhirTerminology.js";
 import { diagnosisOperationFor } from "./fhirDiagnosis.js";
 import { interventionOperationFor } from "./fhirIntervention.js";
+import { monitoringOperationFor } from "./fhirMonitoring.js";
 import { assessmentOperationFor, questionnaireResource, questionnaireSearchBundle } from "./fhirAssessment.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
@@ -3278,7 +3279,7 @@ async function handleFhirEvaluateGrowth(request, db, url) {
 
 // One lookup over the NCP operations (src/fhirNcp.js) and the assessment
 // foundation operations (src/fhirAssessment.js); all are pure and DB-free.
-const fhirOperationFor = (param, action) => interventionOperationFor(param, action) ?? diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
+const fhirOperationFor = (param, action) => monitoringOperationFor(param, action) ?? interventionOperationFor(param, action) ?? diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
 
 // NCP operations (src/fhirNcp.js) — pure functions, no DB. Stateless: the
 // request body is never stored or logged by this handler.
@@ -7288,6 +7289,7 @@ function handleRoot(env) {
         "POST /fhir/Condition/$diagnose → NCP diagnosis: PES statements → Condition",
         "POST /fhir/CarePlan/$intervene → NCP intervention: goals, NutritionOrder, education/counseling/coordination → CarePlan Bundle",
         "POST /fhir/Goal/$evaluate → NCP monitoring & evaluation: goal achievementStatus vs baseline/target",
+        "POST /fhir/CarePlan/$monitor → NCP step 4 follow-up: Observations/QuestionnaireResponses linked to patient, encounter and plan, change from baseline, Goal status, plan-review Tasks and a draft revised CarePlan",
         "POST /fhir/Bundle/$ncp-document → ADIME Composition document Bundle from the above",
         "GET  /fhir/CodeSystem/ncp-diagnosis → NCP nutrition diagnostic terminology (2006 ed., NI/NC/NB; stored in Supabase table ncp_diagnosis_terms)",
         "GET  /fhir/CodeSystem/{name}, /fhir/OperationDefinition/{id}, /fhir/StructureDefinition/{name} → conformance resources for every canonical URL the facade emits (see /fhir/metadata)",
@@ -8544,7 +8546,7 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       return notFound(
         "FHIR route. Available: GET /fhir/metadata, POST /fhir/Observation/$evaluate-growth, " +
           "POST /fhir/Observation/$screen, POST /fhir/Observation/$assess-nutrition, POST /fhir/Condition/$diagnose, " +
-          "POST /fhir/CarePlan/$intervene, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document, " +
+          "POST /fhir/CarePlan/$intervene, POST /fhir/CarePlan/$monitor, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document, " +
           "POST /fhir/Bundle/$nutrition-assessment, POST /fhir/QuestionnaireResponse/$validate, GET /fhir/Questionnaire[/{id}], " +
           "GET /fhir/CodeSystem/{name}, GET /fhir/OperationDefinition/{id}, GET /fhir/StructureDefinition/{name}."
       );

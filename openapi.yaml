@@ -2657,6 +2657,43 @@ paths:
               schema: { type: object }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /fhir/CarePlan/$monitor:
+    post:
+      tags: [FHIR]
+      summary: NCP Step 4 - monitoring and evaluation of a follow-up visit
+      description: >
+        Records a follow-up against a care plan. Follow-up `observation` and `questionnaireResponse` parts are validated like $nutrition-assessment and returned as Observations/QuestionnaireResponses linked to the patient, the encounter (required) and the plan, with change from baseline and from the previous value. Each Goal of the plan (pass the $intervene Bundle as `resource`) is evaluated against the follow-up value of its measure or an explicit `current`, and returned with achievementStatus, an outcome reference, progress and the patient's response. When a goal is worsening, unchanged, not achieved or overdue, a plan-review Task is created and a draft successor CarePlan carries the plan forward; the original plan is never edited. With `author` the Bundle includes a Provenance. Units are never converted.
+        Stateless: nothing is stored. Body is a FHIR Parameters resource; success
+        is a Bundle; errors are OperationOutcomes. See README "NCP operations".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Bundle
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome - malformed or incomplete input (every problem listed)
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          description: FHIR OperationOutcome - nothing could be recorded or evaluated
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /fhir/Goal/$evaluate:
     post:
       tags: [FHIR]

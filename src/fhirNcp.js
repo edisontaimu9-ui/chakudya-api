@@ -1794,7 +1794,7 @@ function achievement(code) {
   return { coding: [{ system: GOAL_ACHIEVEMENT, code }] };
 }
 
-function evaluateOneGoal(g, label) {
+export function evaluateOneGoal(g, label) {
   const description = str(g.get("description"));
   if (!description) return bad(`${label}.description is required.`);
   const direction = str(g.get("direction"));
