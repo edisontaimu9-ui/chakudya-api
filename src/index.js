@@ -569,6 +569,7 @@ import {
 import { measurementsToAssessQuery, buildWhoGrowthBundle } from "./fhirGrowth.js";
 import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./fhirNcp.js";
 import { staticConformanceResource } from "./fhirTerminology.js";
+import { assessmentOperationFor, questionnaireResource, questionnaireSearchBundle } from "./fhirAssessment.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
   OAUTH_TOKEN_TTL_SECONDS,
@@ -899,7 +900,8 @@ function routePolicy(resource, method, param, action) {
   const isFentonReferences = resource === "fenton-preterm" && param === "references" && method === "GET";
   const isFhirMetadata = resource === "fhir" && param === "metadata" && method === "GET";
   const isFhirEvaluateGrowth = resource === "fhir" && param === "Observation" && action === "$evaluate-growth" && method === "POST";
-  const isFhirNcpOperation = resource === "fhir" && method === "POST" && ncpOperationFor(param, action) !== null;
+  const isFhirNcpOperation = resource === "fhir" && method === "POST" && fhirOperationFor(param, action) !== null;
+  const isFhirQuestionnaire = resource === "fhir" && method === "GET" && param === "Questionnaire";
   const isFhirNcpCodeSystem = resource === "fhir" && method === "GET" && Boolean(action) && ["CodeSystem", "OperationDefinition", "StructureDefinition"].includes(param);
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
@@ -1038,7 +1040,7 @@ function routePolicy(resource, method, param, action) {
   if (isFhirMetadata) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
-  if (isFhirEvaluateGrowth || isFhirNcpOperation || isFhirNcpCodeSystem) {
+  if (isFhirEvaluateGrowth || isFhirNcpOperation || isFhirNcpCodeSystem || isFhirQuestionnaire) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -3271,6 +3273,10 @@ async function handleFhirEvaluateGrowth(request, db, url) {
 
   return json(obs);
 }
+
+// One lookup over the NCP operations (src/fhirNcp.js) and the assessment
+// foundation operations (src/fhirAssessment.js); all are pure and DB-free.
+const fhirOperationFor = (param, action) => ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
 
 // NCP operations (src/fhirNcp.js) — pure functions, no DB. Stateless: the
 // request body is never stored or logged by this handler.
@@ -7272,6 +7278,9 @@ function handleRoot(env) {
       fhir: [
         "GET  /fhir/metadata → FHIR R4 CapabilityStatement",
         "POST /fhir/Observation/$evaluate-growth → body: FHIR Parameters {sex, gestationalAgeWeeks+day OR birthDate, measurement:[{type: weight|length|hc|muac|bmi, value}, ...], measured?, muacScheme?, referenceYear?, effectiveDateTime?} → Observation or Bundle of Observations (birthDate: every WHO indicator, birth to 19 years)",
+        "POST /fhir/Bundle/$nutrition-assessment → NCP step 1 foundation: Patient + Encounter + anthropometry/biochemical/clinical/dietary/NFPE Observations + QuestionnaireResponses → one linked, validated Bundle",
+        "POST /fhir/QuestionnaireResponse/$validate → check a QuestionnaireResponse against a built-in form",
+        "GET  /fhir/Questionnaire, /fhir/Questionnaire/{nutrition-screening|nfpe|diet-history} → the built-in assessment forms",
         "POST /fhir/Observation/$screen → NCP screening (MUST, adults)",
         "POST /fhir/Observation/$assess-nutrition → NCP assessment: BMI, % weight change, energy/protein needs + intake, GLIM, FH/AD/BD/PD/CH indicators",
         "POST /fhir/Condition/$diagnose → NCP diagnosis: PES statements → Condition",
@@ -8506,9 +8515,16 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         return await handleFhirEvaluateGrowth(request, db, url);
       }
       {
-        const ncpOp = request.method === "POST" ? ncpOperationFor(param, action) : null;
+        const ncpOp = request.method === "POST" ? fhirOperationFor(param, action) : null;
         if (ncpOp) return await handleFhirNcpOperation(request, url, db, param, ncpOp);
-        if (ncpOperationFor(param, action)) return err("Method not allowed", 405);
+        if (fhirOperationFor(param, action)) return err("Method not allowed", 405);
+        // Built-in assessment forms (src/fhirAssessment.js): GET /fhir/Questionnaire[/{id}]
+        if (param === "Questionnaire") {
+          if (request.method !== "GET") return err("Method not allowed", 405);
+          if (!action) return json(questionnaireSearchBundle(url.origin));
+          const q = questionnaireResource(url.origin, action);
+          return q ? json(q) : json(operationOutcome("error", `Questionnaire/${action} not found.`, "not-found"), 404);
+        }
         if (param === "CodeSystem" && action === "ncp-diagnosis") {
           if (request.method !== "GET") return err("Method not allowed", 405);
           return await handleFhirNcpCodeSystem(url, db);
@@ -8527,6 +8543,7 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         "FHIR route. Available: GET /fhir/metadata, POST /fhir/Observation/$evaluate-growth, " +
           "POST /fhir/Observation/$screen, POST /fhir/Observation/$assess-nutrition, POST /fhir/Condition/$diagnose, " +
           "POST /fhir/CarePlan/$intervene, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document, " +
+          "POST /fhir/Bundle/$nutrition-assessment, POST /fhir/QuestionnaireResponse/$validate, GET /fhir/Questionnaire[/{id}], " +
           "GET /fhir/CodeSystem/{name}, GET /fhir/OperationDefinition/{id}, GET /fhir/StructureDefinition/{name}."
       );
     }

@@ -287,7 +287,7 @@ export function buildCapabilityStatement(base) {
     status: "draft",
     date: "2026-10-11",
     kind: "instance",
-    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-3-who-growth" },
+    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-4-assessment" },
     implementation: {
       description:
         "Stateless FHIR facade covering the Nutrition Care Process (screening, assessment, diagnosis, " +
@@ -367,9 +367,30 @@ export function buildCapabilityStatement(base) {
           { type: "OperationDefinition", interaction: [{ code: "read" }], documentation: "One per operation listed here (id = <Resource>-<operation>)." },
           { type: "StructureDefinition", interaction: [{ code: "read" }], documentation: "The Extensions the facade attaches to resources." },
           {
+            type: "Questionnaire",
+            interaction: [{ code: "read" }, { code: "search-type" }],
+            documentation: "The built-in assessment forms: nutrition-screening (MUST inputs), nfpe and diet-history. GET /fhir/Questionnaire lists them.",
+          },
+          {
+            type: "QuestionnaireResponse",
+            interaction: [],
+            operation: [
+              op(
+                "validate",
+                "QuestionnaireResponse",
+                "Checks a QuestionnaireResponse against a built-in Questionnaire (linkIds, answer types, units, ranges, options, required items) and returns an OperationOutcome. Nothing is stored."
+              ),
+            ],
+          },
+          {
             type: "Bundle",
             interaction: [],
             operation: [
+              op(
+                "nutrition-assessment",
+                "Bundle",
+                "NCP step 1 foundation: validates a Patient and Encounter (or references to them) and anthropometric, biochemical, clinical, dietary and NFPE data plus QuestionnaireResponses, and returns one collection Bundle of linked Patient, Encounter, QuestionnaireResponse and Observation resources, with BMI and (from the screening form) MUST computed."
+              ),
               op(
                 "ncp-document",
                 "Bundle",

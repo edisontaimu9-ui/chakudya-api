@@ -13,6 +13,8 @@
 // real operation output and fails if an emitted system/code/extension/operation
 // link has no definition here — add the definition when you add the field.
 
+import { ASSESSMENT_ITEM_CONCEPTS, NFPE_SEVERITY, APPETITE_LEVELS } from "./fhirAssessment.js";
+
 const DATE = "2026-10-10";
 
 // ─── CodeSystems ───────────────────────────────────────────────────────────
@@ -316,6 +318,21 @@ const CODE_SYSTEMS = {
       c("severe", "Severe", "Fixed MUAC cut-offs: severe"),
     ],
   },
+  "assessment-item": {
+    title: "Nutrition assessment items",
+    description: "Assessment items that have no LOINC code: nutrition-impact symptoms, dietary intake summary items and nutrition-focused physical examination (NFPE) findings recorded by POST /fhir/Bundle/$nutrition-assessment and the built-in Questionnaires.",
+    concepts: ASSESSMENT_ITEM_CONCEPTS.map((x) => c(x.code, x.display, x.definition)),
+  },
+  "nfpe-severity": {
+    title: "NFPE finding severity",
+    description: "Severity of a muscle or fat finding at an NFPE site. The grade is the examiner's judgement; Chakudya records it and never derives it.",
+    concepts: NFPE_SEVERITY.map((x) => c(x.code, x.display, x.definition)),
+  },
+  "appetite-level": {
+    title: "Appetite level",
+    description: "Reported appetite, as recorded in the dietary intake summary.",
+    concepts: APPETITE_LEVELS.map((x) => c(x.code, x.display)),
+  },
 };
 
 export const STATIC_CODE_SYSTEM_NAMES = Object.keys(CODE_SYSTEMS);
@@ -587,6 +604,43 @@ const OPERATIONS = {
       ]),
     ],
   },
+  "Bundle-nutrition-assessment": {
+    resource: "Bundle", code: "nutrition-assessment", title: "Structured nutrition assessment",
+    description:
+      "NCP step 1 foundation. Validates a Patient (or takes a reference), an Encounter (or a reference) and the assessment data, and returns one collection Bundle of Patient, Encounter, QuestionnaireResponses and Observations linked to them: anthropometry, biochemical, clinical findings, dietary intake and NFPE. Units are never guessed and plausibility, timestamps and missing data are checked; several problems are reported at once. Computes BMI (with the WHO adult class for 18+) and the MUST score when the nutrition-screening form is submitted. Does not grade NFPE findings or invent reference ranges.",
+    parameters: [
+      P("patient", "Resource", 0, "1", "A Patient resource (identifier or name needed; telecom, address etc. are not carried). Give this or subject."),
+      P("subject", "string", 0, "1", 'A reference to an existing patient, e.g. "Patient/123". Give this or patient.'),
+      P("encounter", "Resource", 1, "1", 'An Encounter resource (status and class required), or a reference string such as "Encounter/456".'),
+      P("effectiveDateTime", "dateTime", 0, "1", "Default time of the observations. Defaults to the encounter's period.start, else now."),
+      P("author", "string", 0, "1", 'A reference ("Practitioner/123") or the assessor\'s name; set as performer.'),
+      P("ageYears", "integer", 0, "1", "Age in whole years if no full Patient.birthDate; used for the WHO adult BMI class and the MUST adult check."),
+      P("observation", "Element", 0, "*", "One measurement, up to 100. Registered codes (see GET /fhir/CodeSystem/assessment-item and the LOINC items in the README) or a custom system + code + display.", [
+        part("code", "code", 1, "1", "Registered measurement code, e.g. weight, height, hemoglobin, systolic-bp, energy-intake-kcal, temple-muscle. With system: your own code."),
+        part("value", "Quantity", 0, "1", "A Quantity with unit (quantities), integer, boolean, code (appetite, NFPE severity) or string, depending on the code. Absent only with dataAbsentReason."),
+        part("domain", "code", 0, "1", "anthropometry | biochemical | clinical | dietary | nfpe. Checked against a registered code; required for a custom code."),
+        part("effectiveDateTime", "dateTime", 0, "1", "When this was measured; overrides the default."),
+        part("referenceLow", "Quantity", 0, "1", "The lab's own lower reference limit, same unit as the value. Gives an interpretation flag."),
+        part("referenceHigh", "Quantity", 0, "1", "The lab's own upper reference limit, same unit as the value."),
+        part("interpretation", "code", 0, "1", "N | L | H | LL | HH | A | AA, if you want to state it."),
+        part("dataAbsentReason", "code", 0, "1", "unknown | asked-unknown | not-asked | asked-declined | not-performed | not-applicable, instead of a value."),
+        part("note", "string", 0, "1", "Free-text note."),
+        part("system", "uri", 0, "1", "Code system of a custom code."),
+        part("display", "string", 0, "1", "Display of a custom code; required with system."),
+      ]),
+      P("questionnaireResponse", "Resource", 0, "*", "A QuestionnaireResponse, up to 10. Built-in forms (GET /fhir/Questionnaire) are validated item by item and their answers become Observations; other forms are checked structurally."),
+    ],
+  },
+  "QuestionnaireResponse-validate": {
+    resource: "QuestionnaireResponse", code: "validate", title: "Validate a nutrition questionnaire response",
+    returnType: "OperationOutcome",
+    returnDoc: "An OperationOutcome listing every issue (200 even when invalid; check issue severity). Nothing is built or stored.",
+    description:
+      "Checks a QuestionnaireResponse against a built-in Questionnaire (GET /fhir/Questionnaire): linkIds, answer types, units and ranges, answer options and required items. A form that is not built in is checked structurally only.",
+    parameters: [
+      P("resource", "QuestionnaireResponse", 1, "1", "The QuestionnaireResponse to check."),
+    ],
+  },
   "Bundle-ncp-document": {
     resource: "Bundle", code: "ncp-document", title: "ADIME document",
     description:
@@ -628,8 +682,8 @@ export function operationDefinitionResource(base, id) {
     parameter: [
       ...o.parameters,
       {
-        name: "return", use: "out", min: 1, max: "1", type: "Bundle",
-        documentation: "A Bundle on success; an OperationOutcome on failure (400 malformed, 422 valid but unsupported).",
+        name: "return", use: "out", min: 1, max: "1", type: o.returnType ?? "Bundle",
+        documentation: o.returnDoc ?? "A Bundle on success; an OperationOutcome on failure (400 malformed, 422 valid but unsupported).",
       },
     ],
   };

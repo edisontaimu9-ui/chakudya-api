@@ -77,7 +77,7 @@ function readAny(p) {
 
 /** Reads a Parameters body into { get(name), all(name) }; `part` params
  * become nested readers of the same shape (any depth). */
-function readParams(params) {
+export function readParams(params) {
   const lists = {};
   for (const p of params?.parameter ?? []) {
     if (!p || typeof p.name !== "string") continue;
@@ -91,7 +91,7 @@ function readParams(params) {
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
 const str = (x) => (typeof x === "string" && x.trim() ? x.trim() : undefined);
 
-function requireParameters(body) {
+export function requireParameters(body) {
   if (!body || body.resourceType !== "Parameters") {
     return bad('Body must be a FHIR Parameters resource (resourceType: "Parameters").');
   }
@@ -164,7 +164,7 @@ const STEP = {
   monitoring: "nutrition-monitoring",
 };
 
-function stepCategory(base, step, extraCodings = []) {
+export function stepCategory(base, step, extraCodings = []) {
   return [
     { coding: [{ system: cs(base, "ncp-step"), code: STEP[step] }] },
     ...extraCodings.map((c) => ({ coding: [c] })),
@@ -175,7 +175,7 @@ const bodyText = (concept) => concept?.text ?? concept?.coding?.[0]?.display ?? 
 
 // ─── Shared adult anthropometry ────────────────────────────────────────────
 
-function whoAdultBmiClass(bmi) {
+export function whoAdultBmiClass(bmi) {
   if (bmi < 16) return { code: "severe-thinness", interp: "LL" };
   if (bmi < 17) return { code: "moderate-thinness", interp: "LL" };
   if (bmi < 18.5) return { code: "mild-thinness", interp: "L" };
@@ -1128,7 +1128,7 @@ function round(x, dp) {
 
 // ─── $assess-nutrition ─────────────────────────────────────────────────────
 
-const ASSESSMENT_DOMAINS = {
+export const ASSESSMENT_DOMAINS = {
   FH: "Food/nutrition-related history",
   AD: "Anthropometric measurements",
   BD: "Biochemical data, medical tests and procedures",
