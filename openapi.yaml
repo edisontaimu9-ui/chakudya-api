@@ -2734,9 +2734,9 @@ paths:
   /fhir/Bundle/$ncp-document:
     post:
       tags: [FHIR]
-      summary: ADIME document Bundle
+      summary: NCP Step 5 - complete ADIME document Bundle
       description: >
-        Assembles resources/Bundles returned by the other NCP operations (including $nutrition-assessment) into a Composition document Bundle (screening, assessment, diagnosis, intervention, monitoring and evaluation sections). Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment Bundle.
+        Assembles resources/Bundles returned by the other NCP operations (send the $intervene Bundle before the $monitor Bundle) into one ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present) with identifiers, a narrative and optional `status` (preliminary, final, amended). The document is validated before it is returned: structure, section placement, internal references, one patient. Any problem is a 422 listing every error. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment Bundle.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success
         is a Bundle; errors are OperationOutcomes. See README "NCP operations".
       security: []
@@ -2762,7 +2762,38 @@ paths:
             application/json:
               schema: { type: object }
         "422":
-          description: FHIR OperationOutcome — valid input, unsupported case (e.g. a child sent to the adult assessment)
+          description: FHIR OperationOutcome - the document failed validation (broken reference, wrong section, mixed patients; every error listed)
+          content:
+            application/json:
+              schema: { type: object }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/Bundle/$validate-document:
+    post:
+      tags: [FHIR]
+      summary: Validate an ADIME document Bundle
+      description: >
+        Checks a document Bundle (from $ncp-document or another system): Composition first and complete, the four ADIME sections, narrative, unique fullUrls, internal references, one patient, section placement and links between diagnosis, care plan, goals and follow-up. Returns 200 with an OperationOutcome of errors, warnings and, when valid, one information issue. Stateless: nothing is stored.
+        Body is a FHIR Parameters resource with one `resource` parameter (the Bundle).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR OperationOutcome (errors, warnings or a valid note)
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: FHIR OperationOutcome - body is not Parameters or has no single resource
           content:
             application/json:
               schema: { type: object }

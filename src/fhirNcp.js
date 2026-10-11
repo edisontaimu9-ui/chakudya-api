@@ -1985,6 +1985,15 @@ export function evaluateNcpDocument(body, ctx) {
     }
   }
   if (collected.length === 0) return bad("Supply one or more 'resource' parameters (resources or Bundles returned by the other NCP operations).");
+  // The same resource can arrive twice: $monitor returns each evaluated Goal
+  // under the plan's own fullUrl. The later one supersedes the earlier one
+  // (pass Bundles in the order the steps happened), in the earlier one's place.
+  const seen = new Map();
+  for (let i = 0; i < collected.length; i++) {
+    const u = collected[i].fullUrl;
+    if (!u) continue;
+    if (seen.has(u)) { collected[seen.get(u)] = collected[i]; collected.splice(i--, 1); } else seen.set(u, i);
+  }
   if (collected.length > 300) return bad("At most 300 resources per document.");
 
   const grouped = Object.fromEntries(SECTIONS.map((s) => [s.step, []]));

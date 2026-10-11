@@ -287,7 +287,7 @@ export function buildCapabilityStatement(base) {
     status: "draft",
     date: "2026-10-11",
     kind: "instance",
-    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-7-monitoring" },
+    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-8-document" },
     implementation: {
       description:
         "Stateless FHIR facade covering the Nutrition Care Process (screening, assessment, diagnosis, " +
@@ -402,7 +402,13 @@ export function buildCapabilityStatement(base) {
               op(
                 "ncp-document",
                 "Bundle",
-                "Assembles resources returned by the operations above into an ADIME Composition document Bundle."
+                "NCP Step 5: assembles the Step 1-4 resources into one complete ADIME Composition document Bundle " +
+                  "(Assessment, Diagnosis, Intervention, Monitoring/Evaluation), identified and validated for structure and references."
+              ),
+              op(
+                "validate-document",
+                "Bundle",
+                "Checks an ADIME document Bundle (structure, section placement, references, patient consistency, ADIME links) and returns an OperationOutcome."
               ),
             ],
           },

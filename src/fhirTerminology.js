@@ -721,16 +721,26 @@ const OPERATIONS = {
   "Bundle-ncp-document": {
     resource: "Bundle", code: "ncp-document", title: "ADIME document",
     description:
-      "Assembles resources or Bundles returned by the other NCP operations into a Composition document Bundle (screening, assessment, diagnosis, intervention, monitoring and evaluation sections). Pass whole Bundles to keep urn:uuid links valid. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries.",
+      "NCP step 5: assembles resources or Bundles returned by the other NCP operations into one complete ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present). The document gets an identifier, a status and a narrative, and is validated before it is returned: structure, section placement, internal references, one patient, and links between diagnosis, care plan, goals and follow-up. Broken references are an error (422). Pass whole Bundles to keep urn:uuid links valid. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries.",
     parameters: [
       P("subject", "string", 0, "1", 'Patient reference, e.g. "Patient/123". Optional when a supplied Bundle (from $nutrition-assessment) has a Patient entry: its urn:uuid is used.'),
       P("author", "string", 1, "1", 'A reference ("Practitioner/123") or the dietitian\'s name.'),
-      P("resource", "Resource", 1, "*", "Observation, Condition, Goal, NutritionOrder, ServiceRequest or CarePlan; or a Bundle of them."),
+      P("resource", "Resource", 1, "*", "Observation, Condition, Goal, NutritionOrder, ServiceRequest, Task or CarePlan; or a Bundle of them."),
       P("title", "string", 0, "1", "Document title."),
       P("date", "dateTime", 0, "1", "Document date. Defaults to now."),
       P("encounter", "string", 0, "1", "Encounter reference. Defaults to the Encounter entry of a supplied $nutrition-assessment Bundle."),
+      P("status", "code", 0, "1", "Composition status: preliminary, final (default) or amended."),
     ],
   },
+  "Bundle-validate-document": {
+    resource: "Bundle", code: "validate-document", title: "Validate an ADIME document",
+    description:
+      "Checks a document Bundle: Composition first and complete, the four ADIME sections each with entries or an emptyReason, narrative on every section with entries, unique fullUrls, every internal reference resolving, resources in the section their NCP step says, one patient throughout, and links between diagnosis, care plan, goals and follow-up. Returns an OperationOutcome (200): errors, warnings and, when valid, one information issue.",
+    parameters: [
+      P("resource", "Bundle", 1, "1", "The document Bundle to check."),
+    ],
+  },
+
 };
 
 export const OPERATION_DEFINITION_IDS = Object.keys(OPERATIONS);

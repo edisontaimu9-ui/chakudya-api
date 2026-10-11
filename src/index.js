@@ -572,6 +572,7 @@ import { staticConformanceResource } from "./fhirTerminology.js";
 import { diagnosisOperationFor } from "./fhirDiagnosis.js";
 import { interventionOperationFor } from "./fhirIntervention.js";
 import { monitoringOperationFor } from "./fhirMonitoring.js";
+import { documentOperationFor } from "./fhirDocument.js";
 import { assessmentOperationFor, questionnaireResource, questionnaireSearchBundle } from "./fhirAssessment.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
@@ -3279,7 +3280,7 @@ async function handleFhirEvaluateGrowth(request, db, url) {
 
 // One lookup over the NCP operations (src/fhirNcp.js) and the assessment
 // foundation operations (src/fhirAssessment.js); all are pure and DB-free.
-const fhirOperationFor = (param, action) => monitoringOperationFor(param, action) ?? interventionOperationFor(param, action) ?? diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
+const fhirOperationFor = (param, action) => documentOperationFor(param, action) ?? monitoringOperationFor(param, action) ?? interventionOperationFor(param, action) ?? diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
 
 // NCP operations (src/fhirNcp.js) — pure functions, no DB. Stateless: the
 // request body is never stored or logged by this handler.
@@ -7290,7 +7291,8 @@ function handleRoot(env) {
         "POST /fhir/CarePlan/$intervene → NCP intervention: goals, NutritionOrder, education/counseling/coordination → CarePlan Bundle",
         "POST /fhir/Goal/$evaluate → NCP monitoring & evaluation: goal achievementStatus vs baseline/target",
         "POST /fhir/CarePlan/$monitor → NCP step 4 follow-up: Observations/QuestionnaireResponses linked to patient, encounter and plan, change from baseline, Goal status, plan-review Tasks and a draft revised CarePlan",
-        "POST /fhir/Bundle/$ncp-document → ADIME Composition document Bundle from the above",
+        "POST /fhir/Bundle/$ncp-document → complete ADIME note: Composition + document Bundle, identified and validated (structure, references, links)",
+        "POST /fhir/Bundle/$validate-document → check any document Bundle; returns an OperationOutcome",
         "GET  /fhir/CodeSystem/ncp-diagnosis → NCP nutrition diagnostic terminology (2006 ed., NI/NC/NB; stored in Supabase table ncp_diagnosis_terms)",
         "GET  /fhir/CodeSystem/{name}, /fhir/OperationDefinition/{id}, /fhir/StructureDefinition/{name} → conformance resources for every canonical URL the facade emits (see /fhir/metadata)",
         "Stateless facade, no storage. $evaluate-growth wraps fenton-preterm and the WHO indicators (length/height, weight, weight-for-length/height, BMI, head circumference, MUAC) from birth to 19 years. Not yet registered with any OpenHIM/HIE instance. See src/fhir.js and src/fhirNcp.js.",
