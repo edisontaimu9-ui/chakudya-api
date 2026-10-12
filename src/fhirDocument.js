@@ -32,11 +32,18 @@
 // facility becomes Composition.custodian, and the CareTeam is linked from each
 // CarePlan that has none. They are never section content.
 //
+// Step 7 governance: the document declares its profiles (meta.profile), carries
+// a confidentiality label (Composition.confidentiality and meta.security,
+// default "N"), and gets a Provenance (who authored, who assembled, which
+// earlier records it derives from). The finished Bundle also passes the R4
+// structural checker (src/fhirGovernance.js); any R4 error is a 422.
+//
 // STATELESS and pure, like the rest of the facade. Chakudya assembles and
 // checks what the dietitian's earlier operations produced; it does not write
 // clinical content and it does not sign the note.
 
 import { readParams, requireParameters, evaluateNcpDocument } from "./fhirNcp.js";
+import { checkR4 } from "./fhirGovernance.js";
 
 const str = (x) => (typeof x === "string" && x.trim() ? x.trim() : undefined);
 const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
@@ -44,6 +51,10 @@ const newUuid = (ctx) => `urn:uuid:${(ctx.uuid ?? (() => crypto.randomUUID()))()
 
 const STATUSES = new Set(["preliminary", "final", "amended"]);
 const URI_SYSTEM = "urn:ietf:rfc:3986";
+const CONF_SYSTEM = "http://terminology.hl7.org/CodeSystem/v3-Confidentiality";
+const CONF = { U: "unrestricted", L: "low", M: "moderate", N: "normal", R: "restricted", V: "very restricted" };
+const PROV_PARTICIPANT = "http://terminology.hl7.org/CodeSystem/provenance-participant-type";
+const V3_DATA_OPERATION = "http://terminology.hl7.org/CodeSystem/v3-DataOperation";
 const REQUIRED_SECTIONS = ["nutrition-assessment", "nutrition-diagnosis", "nutrition-intervention", "nutrition-monitoring"];
 const CONTEXT_TYPES = new Set(["Practitioner", "PractitionerRole", "Organization", "CareTeam"]);
 const SECTION_FOR = {
@@ -406,9 +417,45 @@ export function evaluateAdimeDocument(body, ctx) {
       `<p>Sections: ${comp.section.map((s) => xhtmlEsc(s.title)).join("; ")}. ${lines} supporting entries.</p></div>`,
   };
 
+  // Governance: profiles, confidentiality label, provenance.
+  const conf = str(p.get("confidentiality")) ?? "N";
+  if (!CONF[conf]) return fail([`Parameter 'confidentiality' must be one of ${Object.keys(CONF).join(", ")}.`]);
+  const security = [{ system: CONF_SYSTEM, code: conf, display: CONF[conf] }];
+  comp.confidentiality = conf;
+  comp.meta = { ...(comp.meta ?? {}), profile: [`${ctx.base}/fhir/StructureDefinition/adime-composition`], security };
+  bundle.meta = { ...(bundle.meta ?? {}), profile: [`${ctx.base}/fhir/StructureDefinition/adime-document-bundle`], security };
+  bundle.entry.push(documentProvenance(comp, bundle, ctx));
+
   const result = checkAdimeDocument(bundle);
   if (result.errors.length) return fail(result.errors, 422);
+  const r4 = checkR4(bundle, { base: ctx.base });
+  if (r4.errors.length) return fail(r4.errors.map((i) => `R4: ${i.message} (${i.path})`), 422);
   return { ok: true, status: 200, body: bundle };
+}
+
+/** Provenance for the document: author, assembler (this facade), custodian; derived from earlier Provenance. */
+function documentProvenance(comp, bundle, ctx) {
+  const agent = (code, display, who, extra = {}) => ({ type: { coding: [{ system: PROV_PARTICIPANT, code, display }] }, who, ...extra });
+  const authorWho = comp.author?.[0]?.reference ? { reference: comp.author[0].reference, ...(comp.author[0].display ? { display: comp.author[0].display } : {}) } : { display: comp.author?.[0]?.display ?? "unknown" };
+  const agents = [
+    agent("author", "Author", authorWho),
+    agent("assembler", "Assembler", { display: "Chakudya Nutrition Registry (CNR) FHIR facade" }),
+  ];
+  if (comp.custodian) agents.push(agent("custodian", "Custodian", comp.custodian.reference ? { reference: comp.custodian.reference } : { display: comp.custodian.display }));
+  const earlier = bundle.entry.filter((e) => e.resource?.resourceType === "Provenance" && e.fullUrl);
+  const entity = earlier.map((e) => ({ role: "source", what: { reference: e.fullUrl } }));
+  return {
+    fullUrl: newUuid(ctx),
+    resource: {
+      resourceType: "Provenance",
+      meta: { profile: [`${ctx.base}/fhir/StructureDefinition/ncp-document-provenance`] },
+      target: [{ reference: bundle.entry[0].fullUrl }],
+      recorded: ctx.now,
+      activity: { coding: [{ system: V3_DATA_OPERATION, code: "CREATE", display: "create" }] },
+      agent: agents,
+      ...(entity.length ? { entity } : {}),
+    },
+  };
 }
 
 // ─── Bundle/$validate-document ─────────────────────────────────────────────
@@ -419,7 +466,13 @@ export function evaluateValidateDocument(body, ctx) {
   const p = readParams(body);
   const docs = p.all("resource").filter((r) => isObj(r));
   if (docs.length !== 1) return fail(["Supply exactly one 'resource' parameter: the document Bundle to check."]);
-  return { ok: true, status: 200, body: outcomeOf(checkAdimeDocument(docs[0])) };
+  const result = checkAdimeDocument(docs[0]);
+  if (isObj(docs[0]) && docs[0].resourceType === "Bundle") {
+    const r4 = checkR4(docs[0], { base: ctx.base });
+    result.errors.push(...r4.errors.map((i) => `R4: ${i.message} (${i.path})`));
+    result.warnings.push(...r4.warnings.map((i) => `R4: ${i.message} (${i.path})`));
+  }
+  return { ok: true, status: 200, body: outcomeOf(result) };
 }
 
 export const DOCUMENT_OPERATIONS = {

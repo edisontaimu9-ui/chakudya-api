@@ -810,6 +810,27 @@ const OPERATIONS = {
       ]),
     ],
   },
+  "ConceptMap-translate": {
+    resource: "ConceptMap", code: "translate", title: "Translate a code",
+    description: "Translates one Chakudya code to LOINC, the HL7 practitioner-role code system or v3 ObservationInterpretation using the published ConceptMaps (GET /fhir/ConceptMap/{id}). Only true mappings are returned; a code with no mapping gives result=false. Nothing is guessed. Open even when authentication is enforced: it only reads published reference data.",
+    returnType: "Parameters",
+    returnDoc: "Parameters: result (boolean), message, and one match part (equivalence, concept, source) per mapping.",
+    parameters: [
+      P("url", "uri", 0, "1", "ConceptMap url or id (e.g. assessment-item-to-loinc). Omitted: every map whose source system matches is tried."),
+      P("system", "uri", 1, "1", "Source code system, e.g. the assessment-item or ncp-care-role system URL."),
+      P("code", "code", 1, "1", "Source code."),
+      P("targetSystem", "uri", 0, "1", "Restrict to a target system, e.g. http://loinc.org."),
+    ],
+  },
+  "validate": {
+    system: true, resource: "Resource", code: "validate", title: "Check a resource against R4 structure",
+    description: "System-level structural check of one resource or Bundle: element names, required elements, cardinality, required value-set bindings, primitive formats, references, extensions and the main invariants for the resource types this facade emits, plus the min-cardinality of any Chakudya profile claimed in meta.profile. This is NOT the HL7 FHIR Validator: it does not load StructureDefinitions or check terminology beyond required bindings. Always returns 200 with an OperationOutcome.",
+    returnType: "OperationOutcome",
+    returnDoc: "An OperationOutcome: errors, warnings, or one information issue when no structural error was found.",
+    parameters: [
+      P("resource", "Resource", 1, "1", "The resource or Bundle to check."),
+    ],
+  },
   "Bundle-validate-document": {
     resource: "Bundle", code: "validate-document", title: "Validate an ADIME document",
     description:
@@ -840,9 +861,9 @@ export function operationDefinitionResource(base, id) {
     description: o.description + " Stateless: nothing is stored.",
     affectsState: false,
     code: o.code,
-    resource: [o.resource],
-    system: false,
-    type: true,
+    ...(o.system ? {} : { resource: [o.resource] }),
+    system: Boolean(o.system),
+    type: !o.system,
     instance: false,
     parameter: [
       ...o.parameters,

@@ -2029,6 +2029,8 @@ export function evaluateNcpDocument(body, ctx) {
       sections.push({
         title: s.title,
         code: { coding: [{ system: cs(base, "ncp-step"), code: STEP[s.step] }] },
+        // R4 cmp-1: a section needs text, entries or sub-sections, so an empty one still carries a line of text.
+        text: { status: "generated", div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>Nothing recorded for this step.</p></div>` },
         emptyReason: { coding: [{ system: LIST_EMPTY_REASON, code: "notstarted" }] },
       });
       continue;

@@ -169,8 +169,9 @@ export function resolveScope(clientRole, requestedScope) {
 }
 
 /** Builds the claim set for a new access token. */
-export function buildAccessTokenClaims({ clientId, label, role, issuer, now = Math.floor(Date.now() / 1000) }) {
+export function buildAccessTokenClaims({ clientId, label, role, issuer, fhirScopes, now = Math.floor(Date.now() / 1000) }) {
   return {
+    ...(fhirScopes ? { fhir_scopes: fhirScopes } : {}),
     iss: issuer,
     sub: clientId,
     label,

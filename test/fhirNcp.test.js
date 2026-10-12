@@ -905,7 +905,8 @@ test("every emitted CodeSystem code and extension URL has a definition", () => {
 
 test("CapabilityStatement operation links and OperationDefinitions match one to one", () => {
   const cap = buildCapabilityStatement(BASE);
-  const linked = cap.rest[0].resource.flatMap((r) => (r.operation ?? []).map((o) => o.definition));
+  // type-level operations plus the system-level ones (rest.operation, e.g. $validate)
+  const linked = [...cap.rest[0].resource.flatMap((r) => (r.operation ?? []).map((o) => o.definition)), ...(cap.rest[0].operation ?? []).map((o) => o.definition)];
   const ids = linked.map((u) => u.slice(`${BASE}/fhir/OperationDefinition/`.length));
   for (const id of ids) assert.ok(operationDefinitionResource(BASE, id), `missing OperationDefinition ${id}`);
   assert.deepEqual([...ids].sort(), [...OPERATION_DEFINITION_IDS].sort());

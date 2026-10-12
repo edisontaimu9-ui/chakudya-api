@@ -1179,6 +1179,7 @@ The Academy of Nutrition and Dietetics Nutrition Care Process, end to end, as st
 | Conformance | `GET /fhir/CodeSystem/{name}`, `/fhir/OperationDefinition/{id}`, `/fhir/StructureDefinition/{name}` | static definitions behind every URL the facade emits |
 | 5. Documentation | `POST /fhir/Bundle/$ncp-document` | one complete ADIME `Composition` **document Bundle** assembled from the Bundles above, identified and validated (structure, references, links) |
 | 6. Professional and institutional context | `POST /fhir/Bundle/$care-context` | linked `Organization`, `Practitioner`, `PractitionerRole` and `CareTeam` resources (author, role, facility, multidisciplinary team) |
+| 7. Interoperability and governance | `POST /fhir/$validate`, `POST /fhir/ConceptMap/$translate`, `GET /fhir/AuditEvent`, `GET /fhir/ConceptMap/{id}` | R4 structural check, terminology mappings, audit trail; scopes + `FHIR_AUTH_MODE`; profiles and Provenance on the document |
 | Documentation (check) | `POST /fhir/Bundle/$validate-document` | `OperationOutcome` with errors and warnings for any document Bundle |
 
 **What Chakudya computes vs. what the clinician supplies.** Chakudya computes the deterministic parts (BMI, % weight change, MUST score, Mifflin-St Jeor BEE, GLIM criteria logic, goal progress). It does **not** choose the nutrition diagnosis, goals or orders — the PES statement, targets, diet prescription etc. are inputs it validates and shapes into FHIR. Energy/protein requirements are only produced when you pass `energyFactor` / `proteinGPerKg`; the factor is your clinical call, not a default. Everything carries the screening-aid disclaimer.
@@ -1290,6 +1291,43 @@ curl -s -X POST "$BASE/fhir/Observation/\$assess-nutrition" -H 'content-type: ap
 ```
 
 **Honest limits.** Screening covers MUST, NRS-2002, MNA, SGA, PG-SGA and the NACS classification (no paediatric screening tools such as STRONGkids or PYMS yet, and no WHZ cutoffs — the MCP server has more). `$assess-nutrition` is adult-only; WHO 0–59-month growth is still unsupported (as in Phase 1). No `Patient`/`Encounter` resources are created — you pass references. Every canonical URL the facade emits now resolves: `GET /fhir/CodeSystem/{name}` (the code lists — `ncp-step`, `ncp-assessment-domain`, `glim`, `growth-status`, … — plus `ncp-diagnosis` from Supabase), `GET /fhir/OperationDefinition/{id}` (one per operation in `/fhir/metadata`, id = `<Resource>-<operation>`, e.g. `Observation-screen`) and `GET /fhir/StructureDefinition/{name}` (the Extensions, e.g. `pes-specify`). They are static definitions in [`src/fhirTerminology.js`](src/fhirTerminology.js); a test walks real operation output and fails if any emitted code system, code, extension or operation link lacks a definition, so add the definition when you add a field. These are conformance descriptions, not validated profiles. Not registered with any OpenHIM/HIE instance.
+
+#### Interoperability and governance (FHIR Phase 4, NCP step 7)
+
+Source: [`src/fhirGovernance.js`](src/fhirGovernance.js) (pure functions), wiring in `src/index.js`, tests in `test/fhirGovernance.test.js`, migration `sql/028_add_fhir_governance.sql`.
+
+**Authentication and access control.** Credentials are the ones that already exist: the root key, a per-consumer API key, or an OAuth 2.0 access token (`POST /oauth/token`, client_credentials), sent as `Authorization: Bearer`.
+
+| `FHIR_AUTH_MODE` | Behaviour |
+|---|---|
+| unset / `open` (default, unchanged) | Clinical operations stay public, as before. A valid token is still recognised, so the audit trail can name the caller. |
+| `enforce` | Every operation needs a credential **with the scope**. Always open: `GET /fhir/metadata`, `CodeSystem`, `OperationDefinition`, `StructureDefinition`, `ConceptMap`, `Questionnaire` and `POST /fhir/ConceptMap/$translate`. |
+
+*Use `enforce` in production.* `open` exists so existing integrations keep working until they hold credentials; it is not a safe setting for real patient data.
+
+Scopes are `system/<ResourceType|*>.<read|write|*>`. An operation that produces clinical content needs `write` on its resource type (`Condition/$diagnose` needs `system/Condition.write`, `Bundle/$ncp-document` needs `system/Bundle.write`); checking and translating (`$validate`, `Bundle/$validate-document`, `QuestionnaireResponse/$validate`) need `read`. With no explicit scopes, the role decides: `admin` and the root key carry `system/*.*`, `reviewer` carries `system/*.read` (so a reviewer key can validate but not generate). To narrow a credential, give it `fhir_scopes` when you create it: `POST /admin/keys` or `POST /admin/oauth-clients` with `{"label": "...", "role": "reviewer", "fhir_scopes": "system/Condition.write system/CarePlan.write"}` (run `sql/028` first). Failures: **401** (`issue.code: login`, with `WWW-Authenticate: Bearer`) with no or a bad credential; **403** (`forbidden`) when the scope is missing. `AuditEvent` is never covered by a wildcard type scope.
+
+**OperationOutcome everywhere.** Every error under `/fhir` (including auth failures, rate limits, 404 and 405) is an `OperationOutcome` with a proper `issue.code`, served as `application/fhir+json`. POST responses and AuditEvent reads carry `Cache-Control: no-store`; all carry `X-Content-Type-Options: nosniff` and `X-Request-Id`.
+
+**Audit.** Every non-conformance request under `/fhir`, and every failure, produces one `AuditEvent` (profile `ncp-audit-event`): `type` rest, subtype operation/read/search-type, action `E`/`R`, `recorded`, `outcome` (`0` success, `4` 4xx, `8` 5xx), the agent (API-key or OAuth-client label, or `anonymous`), the route (`POST /fhir/Condition/$diagnose`), the source and the request id as `AuditEvent.id` (= `X-Request-Id`). **Never recorded:** the request or response body, the query string, the token, the full IP (IPv4 is truncated to `a.b.c.0`, IPv6 to its first three groups) and, unless the operator opts in, the patient.
+
+| Variable | Effect |
+|---|---|
+| `FHIR_AUDIT_LOG=off` | Stop writing the audit line to the Worker logs (on by default: one `{"level":"audit","type":"fhir_audit_event",...}` JSON line per audited request). |
+| `FHIR_AUDIT_STORE=true` | Also store each event in `fhir_audit_events` (run `sql/028`), written after the response (`ctx.waitUntil`), so a slow or failed audit write never fails a request. |
+| `FHIR_AUDIT_INCLUDE_PATIENT=true` | Add the patient reference (`Patient/123`, from the `subject` parameter) as an audit entity. Off by default because the reference is personal data. |
+
+`GET /fhir/AuditEvent?date=ge2026-10-01&date=le2026-10-31&outcome=4&agent-name=<label>&_count=50` and `GET /fhir/AuditEvent/{id}` read the stored events (root/admin, or a credential with an explicit `system/AuditEvent.read`). They are read-only and immutable through the API: other methods are 405. Without `FHIR_AUDIT_STORE` the route answers 501 (still behind the credential check). Retention is yours to set (see the comment in `sql/028`). Requests made inside `POST /batch` are not audited by this layer.
+
+**Provenance and document governance.** `$ncp-document` now adds a `Provenance` (profile `ncp-document-provenance`): target = the Composition, agents author, assembler (this facade) and, when known, custodian, with the earlier steps' Provenance resources as `source` entities. It also sets `Composition.confidentiality` and `meta.security` from the optional `confidentiality` parameter (`U`, `L`, `M`, `N` default, `R`, `V`; HL7 v3-Confidentiality). Chakudya applies the label; enforcing it is the receiving EHR's job.
+
+**Profiles.** Five constraint profiles on R4 base resources are published at `GET /fhir/StructureDefinition/{name}` and listed as `supportedProfile` in the CapabilityStatement: `adime-document-bundle`, `adime-composition`, `ncp-document-provenance`, `ncp-care-team`, `ncp-audit-event`. The published definition and the check that enforces it come from one table, so they cannot drift. Outputs claim a profile in `meta.profile` only where they always satisfy it. Condition, CarePlan and Goal outputs do not claim a profile.
+
+**Terminology mappings.** `GET /fhir/ConceptMap/{id}`: `assessment-item-to-loinc`, `growth-metric-to-loinc`, `ncp-care-role-to-practitioner-role`, `growth-status-to-interpretation`. `POST /fhir/ConceptMap/$translate` (`system`, `code`, optional `url`, `targetSystem`) returns `result` and one `match` per mapping. A code with no true mapping is an explicit negative (`result=false`, or `unmatched` in the map), never a guess. For instance `dietitian` has no HL7 `practitioner-role` equivalent, and only `physician`, `nurse` and `pharmacist` are mapped. The growth-status map is `relatedto`, not `equivalent`.
+
+**R4 validation.** `POST /fhir/$validate` (one `resource` parameter; any resource or Bundle) returns an `OperationOutcome`; `$validate-document` and `$ncp-document` run the same check on every resource in the Bundle (an R4 error stops `$ncp-document` with a 422). It checks element names (unknown ones are warnings), required elements, array/single cardinality, required code bindings, primitive formats (instant, dateTime, date, code, uri, id), references, extensions, narrative XHTML, empty arrays/objects/nulls, and the main invariants (cmp-1, cmp-2, bdl-7/9/10/11, obs-6, gol-1, cpl-3, org-1) for 19 resource types, plus the minimum cardinality of any Chakudya profile named in `meta.profile`. **It is not the HL7 FHIR Validator.** It loads no StructureDefinitions and does not check terminology beyond required bindings. It does not validate against any implementation guide: this facade claims R4 base conformance and its own five profiles only, not IPS, SMART App Launch (OAuth here is client_credentials only), US Core or any national IG. Run the HL7 validator in your pipeline for those. While building this step the checker found and fixed three real defects in earlier steps: empty `entity`/`activity` arrays and Step 5 sections marked empty with no text.
+
+**CapabilityStatement.** `rest.security` (OAuth service, token URL, scope model, the current mode), system-level `validate`, `supportedProfile`s, and the `AuditEvent`, `ConceptMap`, `Composition`, `Provenance`, `CareTeam`, `StructureDefinition`, `CodeSystem`, `OperationDefinition` and `Questionnaire` resources.
 
 ### Recipes
 

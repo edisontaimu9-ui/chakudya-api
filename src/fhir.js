@@ -276,18 +276,18 @@ export function bundleObservations(observations) {
 
 // ─── CapabilityStatement (GET /fhir/metadata) ──────────────────────────────
 
-export function buildCapabilityStatement(base) {
+export function buildCapabilityStatement(base, opts = {}) {
   const op = (name, resource, documentation) => ({
     name,
     definition: `${base}/fhir/OperationDefinition/${resource}-${name}`,
     documentation,
   });
-  return {
+  const cap = {
     resourceType: "CapabilityStatement",
     status: "draft",
     date: "2026-10-11",
     kind: "instance",
-    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-9-context" },
+    software: { name: "Chakudya Nutrition Registry (CNR) FHIR facade", version: "phase-10-governance" },
     implementation: {
       description:
         "Stateless FHIR facade covering the Nutrition Care Process (screening, assessment, diagnosis, " +
@@ -296,7 +296,7 @@ export function buildCapabilityStatement(base) {
       url: `${base}/fhir`,
     },
     fhirVersion: "4.0.1",
-    format: ["json"],
+    format: ["application/fhir+json", "json"],
     rest: [
       {
         mode: "server",
@@ -422,6 +422,62 @@ export function buildCapabilityStatement(base) {
       },
     ],
   };
+  return withGovernance(cap, base, opts);
+}
+
+/**
+ * Step 7: security, profiles, system-level operations and the governance
+ * resources (AuditEvent, ConceptMap, conformance reads) on the CapabilityStatement.
+ */
+function withGovernance(cap, base, { authMode } = {}) {
+  const enforce = authMode === "enforce";
+  const sd = (n) => `${base}/fhir/StructureDefinition/${n}`;
+  const rest = cap.rest[0];
+  rest.security = {
+    cors: true,
+    service: [{ coding: [{ system: "http://terminology.hl7.org/CodeSystem/restful-security-service", code: "OAuth", display: "OAuth" }], text: "OAuth 2.0 client credentials, or an API key as a Bearer token" }],
+    description:
+      (enforce
+        ? "Authentication is REQUIRED for every operation except the conformance reads (metadata, CodeSystem, OperationDefinition, StructureDefinition, ConceptMap, Questionnaire, ConceptMap/$translate). "
+        : "This deployment runs in OPEN mode: operations do not require authentication (set FHIR_AUTH_MODE=enforce to require it). ") +
+      "Credentials: an OAuth 2.0 access token (client_credentials, POST /oauth/token) or an API key, sent as 'Authorization: Bearer'. " +
+      "Access is by scope: system/<ResourceType>.<read|write|*>; the admin role carries system/*.*, the reviewer role system/*.read. " +
+      "Reading AuditEvent always needs a credential with the admin role or an explicit system/AuditEvent.read scope. " +
+      "Not SMART App Launch: there is no authorization-code flow, patient or encounter context, or launch.",
+    extension: [{ url: "http://fhir-registry.smarthealthit.org/StructureDefinition/oauth-uris", extension: [{ url: "token", valueUri: `${base}/oauth/token` }] }],
+  };
+  rest.operation = [
+    { name: "validate", definition: `${base}/fhir/OperationDefinition/validate`, documentation: "Structural R4 check of one resource or Bundle (not the HL7 FHIR Validator). Returns an OperationOutcome." },
+  ];
+  const profiled = { Bundle: "adime-document-bundle" };
+  for (const r of rest.resource) if (profiled[r.type]) r.supportedProfile = [sd(profiled[r.type])];
+  rest.resource.push(
+    { type: "Composition", profile: "http://hl7.org/fhir/StructureDefinition/Composition", supportedProfile: [sd("adime-composition")], interaction: [] },
+    { type: "Provenance", profile: "http://hl7.org/fhir/StructureDefinition/Provenance", supportedProfile: [sd("ncp-document-provenance")], interaction: [] },
+    { type: "CareTeam", profile: "http://hl7.org/fhir/StructureDefinition/CareTeam", supportedProfile: [sd("ncp-care-team")], interaction: [] },
+    {
+      type: "AuditEvent",
+      profile: "http://hl7.org/fhir/StructureDefinition/AuditEvent",
+      supportedProfile: [sd("ncp-audit-event")],
+      interaction: [{ code: "read", documentation: "Admin only." }, { code: "search-type", documentation: "Admin only. No request bodies or query strings are ever recorded." }],
+      searchParam: [
+        { name: "date", type: "date", documentation: "ge/le/gt/lt/eq prefix on AuditEvent.recorded, e.g. date=ge2026-10-01" },
+        { name: "outcome", type: "token", documentation: "0 success, 4 minor failure (4xx), 8 serious failure (5xx)" },
+        { name: "agent-name", type: "string", documentation: "Label of the API key or OAuth client that made the request" },
+      ],
+    },
+    {
+      type: "ConceptMap",
+      profile: "http://hl7.org/fhir/StructureDefinition/ConceptMap",
+      interaction: [{ code: "read" }],
+      operation: [{ name: "translate", definition: `${base}/fhir/OperationDefinition/ConceptMap-translate`, documentation: "Translate a Chakudya code to LOINC, HL7 practitioner-role or v3 ObservationInterpretation. Nothing is guessed: no mapping is a negative result." }],
+    },
+    { type: "StructureDefinition", interaction: [{ code: "read" }] },
+    { type: "CodeSystem", interaction: [{ code: "read" }] },
+    { type: "OperationDefinition", interaction: [{ code: "read" }] },
+    { type: "Questionnaire", interaction: [{ code: "read" }, { code: "search-type" }] },
+  );
+  return cap;
 }
 
 export const LOINC_CODE_MAP = LOINC_CODES;

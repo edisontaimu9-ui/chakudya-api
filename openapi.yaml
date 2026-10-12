@@ -2736,7 +2736,7 @@ paths:
       tags: [FHIR]
       summary: NCP Step 5 - complete ADIME document Bundle
       description: >
-        Assembles resources/Bundles returned by the other NCP operations (send the $intervene Bundle before the $monitor Bundle) into one ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present) with identifiers, a narrative and optional `status` (preliminary, final, amended) and `custodian`. Practitioner, PractitionerRole, Organization and CareTeam resources (from $care-context) are carried as supporting entries and wired in (author, custodian, CarePlan.careTeam). The document is validated before it is returned: structure, section placement, internal references, one patient. Any problem is a 422 listing every error. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment Bundle.
+        Assembles resources/Bundles returned by the other NCP operations (send the $intervene Bundle before the $monitor Bundle) into one ADIME Composition document Bundle (assessment, diagnosis, intervention, monitoring and evaluation sections; screening when present) with identifiers, a narrative and optional `status` (preliminary, final, amended), `custodian` and `confidentiality` (U, L, M, N default, R, V). The document declares profiles, carries a confidentiality label and a Provenance, and must pass the R4 structural check. Practitioner, PractitionerRole, Organization and CareTeam resources (from $care-context) are carried as supporting entries and wired in (author, custodian, CarePlan.careTeam). The document is validated before it is returned: structure, section placement, internal references, one patient. Any problem is a 422 listing every error. Patient, Encounter and QuestionnaireResponse entries are carried as supporting entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment Bundle.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success
         is a Bundle; errors are OperationOutcomes. See README "NCP operations".
       security: []
@@ -2799,6 +2799,127 @@ paths:
             application/json:
               schema: { type: object }
         "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/$validate:
+    post:
+      tags: [FHIR]
+      summary: Structural R4 check of one resource or Bundle
+      description: >
+        System-level $validate. Checks element names, required elements, cardinality, required code bindings,
+        primitive formats, references, extensions, narrative and the main invariants for the resource types this
+        facade emits, plus the minimum cardinality of any Chakudya profile in meta.profile. NOT the HL7 FHIR
+        Validator and not an implementation-guide check. Always 200 with an OperationOutcome. Needs
+        system/*.read when FHIR_AUTH_MODE=enforce.
+      security: [{}, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR OperationOutcome (errors, warnings, or one information issue)
+          content:
+            application/fhir+json:
+              schema: { type: object }
+        "400": { description: FHIR OperationOutcome - body is not Parameters or has no single resource }
+        "401": { description: FHIR OperationOutcome (login) - credential required in enforce mode }
+        "403": { description: FHIR OperationOutcome (forbidden) - scope missing }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/ConceptMap/$translate:
+    post:
+      tags: [FHIR]
+      summary: Translate a Chakudya code (LOINC, HL7 practitioner-role, v3 ObservationInterpretation)
+      description: >
+        Parameters `system`, `code`, optional `url` (ConceptMap id) and `targetSystem`. Returns Parameters with
+        `result` and one `match` per mapping. A code with no true mapping gives result=false; nothing is guessed.
+        Always open: it only reads published reference data.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, parameter]
+              properties:
+                resourceType: { type: string, enum: [Parameters] }
+                parameter: { type: array, items: { type: object } }
+      responses:
+        "200":
+          description: FHIR Parameters (result, message, match)
+          content:
+            application/fhir+json:
+              schema: { type: object }
+        "400": { description: FHIR OperationOutcome - code and system are required }
+        "404": { description: FHIR OperationOutcome - unknown ConceptMap }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /fhir/ConceptMap/{id}:
+    get:
+      tags: [FHIR]
+      summary: Published terminology mapping
+      description: assessment-item-to-loinc, growth-metric-to-loinc, ncp-care-role-to-practitioner-role, growth-status-to-interpretation.
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: FHIR ConceptMap
+          content:
+            application/fhir+json:
+              schema: { type: object }
+        "404": { description: FHIR OperationOutcome }
+
+  /fhir/AuditEvent:
+    get:
+      tags: [FHIR]
+      summary: Search stored audit events (admin)
+      description: >
+        Requires the root key, the admin role, or a credential with an explicit system/AuditEvent.read scope, in every
+        FHIR_AUTH_MODE. Read-only and immutable through the API. Answers 501 unless FHIR_AUDIT_STORE=true (run sql/028).
+        Events never contain request bodies, query strings, tokens, full IPs or (by default) patient references.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: date, in: query, schema: { type: string }, description: "ge/le/gt/lt/eq prefix on recorded, e.g. ge2026-10-01; may be given twice for a range" }
+        - { name: outcome, in: query, schema: { type: string, enum: ["0", "4", "8", "12"] } }
+        - { name: agent-name, in: query, schema: { type: string }, description: "Label of the API key or OAuth client" }
+        - { name: _count, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        "200":
+          description: FHIR searchset Bundle of AuditEvent
+          content:
+            application/fhir+json:
+              schema: { type: object }
+        "400": { description: FHIR OperationOutcome - bad date or outcome }
+        "401": { description: FHIR OperationOutcome (login) }
+        "403": { description: FHIR OperationOutcome (forbidden) }
+        "501": { description: FHIR OperationOutcome (not-supported) - audit storage not enabled }
+
+  /fhir/AuditEvent/{id}:
+    get:
+      tags: [FHIR]
+      summary: Read one stored audit event (admin)
+      description: The id is the request id (X-Request-Id) of the audited request.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: FHIR AuditEvent
+          content:
+            application/fhir+json:
+              schema: { type: object }
+        "401": { description: FHIR OperationOutcome (login) }
+        "403": { description: FHIR OperationOutcome (forbidden) }
+        "404": { description: FHIR OperationOutcome }
+        "501": { description: FHIR OperationOutcome (not-supported) }
 
   /fhir/Bundle/$validate-document:
     post:
@@ -3490,7 +3611,10 @@ components:
       scheme: bearer
       description: >
         The root ADMIN_API_KEY, a per-consumer key minted via POST
-        /admin/keys, or an OAuth 2.0 access token from POST /oauth/token.
+        /admin/keys, or an OAuth 2.0 access token from POST /oauth/token. For /fhir, when
+        FHIR_AUTH_MODE=enforce every operation except conformance reads needs a credential with
+        the scope system/<ResourceType>.<read|write|*> (role defaults: admin system/*.*, reviewer
+        system/*.read; narrow with fhir_scopes on /admin/keys and /admin/oauth-clients).
         Only the root key can manage API keys and OAuth clients.
 
   parameters:

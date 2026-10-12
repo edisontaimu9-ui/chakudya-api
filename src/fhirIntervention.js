@@ -373,7 +373,9 @@ export function evaluateInterveneStructured(body, ctx) {
   };
   baseActivities.forEach((spec, i) => { if (baseSRs[i]) srFor(spec, baseSRs[i].resource); });
   const newSRs = newActivities.map((spec) => ({ fullUrl: newUuid(ctx), resource: srFor(spec), spec }));
-  carePlan.activity = [...(carePlan.activity ?? []), ...newSRs.map((s) => ({ reference: { reference: s.fullUrl } }))];
+  const activities = [...(carePlan.activity ?? []), ...newSRs.map((s) => ({ reference: { reference: s.fullUrl } }))];
+  if (activities.length) carePlan.activity = activities; // FHIR JSON has no empty arrays
+  else delete carePlan.activity;
 
   // Tasks: who does what by when
   const tasks = [];

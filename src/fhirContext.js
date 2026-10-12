@@ -259,7 +259,7 @@ export function evaluateCareContext(body, ctx) {
     const where = `careTeam[${ti}]`;
     const status = str(pt.get("status")) ?? "active";
     if (!TEAM_STATUS.has(status)) bad(`${where}: status must be one of ${[...TEAM_STATUS].join(", ")}.`);
-    const team = { resourceType: "CareTeam", status, category: [{ text: "Nutrition care team" }] };
+    const team = { resourceType: "CareTeam", meta: { profile: [`${base}/fhir/StructureDefinition/ncp-care-team`] }, status, category: [{ text: "Nutrition care team" }] };
     const name = str(pt.get("name"));
     if (name) team.name = name.slice(0, 200);
     if (subject) team.subject = { reference: subject };

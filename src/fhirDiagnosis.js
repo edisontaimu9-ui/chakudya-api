@@ -247,12 +247,14 @@ export function evaluateDiagnoseStructured(body, ctx) {
           recorded: ctx.now,
           activity: { coding: [{ system: V3_DATA_OPERATION, code: "CREATE", display: "create" }] },
           agent: [{ type: { coding: [{ system: PROV_PARTICIPANT, code: "author", display: "Author" }] }, who: author }],
-          entity: [
-            ...[...new Set(referenced)].map((reference) => ({ role: "source", what: { reference } })),
-            ...sources.map((display) => ({ role: "source", what: { display } })),
-          ],
         },
       });
+      // FHIR JSON has no empty arrays: entity is only present when there is a source.
+      const entity = [
+        ...[...new Set(referenced)].map((reference) => ({ role: "source", what: { reference } })),
+        ...sources.map((display) => ({ role: "source", what: { display } })),
+      ];
+      if (entity.length) extra[extra.length - 1].resource.entity = entity;
     }
   });
 

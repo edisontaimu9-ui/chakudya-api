@@ -43,12 +43,21 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # consolidation summaries — defaults to "llama-3.3-70b-versatile" (the same
 # one oasisAI.js already uses client-side).
 #
+# FHIR governance (optional, all default to the previous behaviour):
+#   FHIR_AUTH_MODE=enforce             require a credential + scope on /fhir operations
+#   FHIR_AUDIT_LOG=off                 stop writing audit lines to the Worker logs
+#   FHIR_AUDIT_STORE=true              also store AuditEvents in fhir_audit_events (sql/028)
+#   FHIR_AUDIT_INCLUDE_PATIENT=true    include the patient reference in audit events
+# Set them as plain [vars] below or in the dashboard. Not secrets.
+#
 # [vars] is for non-sensitive config only.
 # Secrets below are declared so wrangler knows they exist;
 # actual values live in the dashboard.
 
 # [vars]
 # ENVIRONMENT = "production"
+# FHIR_AUTH_MODE = "enforce"
+# FHIR_AUDIT_STORE = "true"
 
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
 # Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).

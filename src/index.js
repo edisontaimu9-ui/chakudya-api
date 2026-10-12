@@ -574,6 +574,10 @@ import { interventionOperationFor } from "./fhirIntervention.js";
 import { monitoringOperationFor } from "./fhirMonitoring.js";
 import { documentOperationFor } from "./fhirDocument.js";
 import { contextOperationFor } from "./fhirContext.js";
+import {
+  governanceOperationFor, decideAccess, parseScopes, operationOutcomeFor, legacyErrorMessage, buildAuditEvent, auditRow,
+  auditSubject, auditSearchBundle, profileResource, conceptMapResource, FHIR_JSON,
+} from "./fhirGovernance.js";
 import { assessmentOperationFor, questionnaireResource, questionnaireSearchBundle } from "./fhirAssessment.js";
 import { capSearchTerms } from "./searchTerms.js";
 import {
@@ -601,7 +605,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
   "Access-Control-Max-Age": "86400",
-  "Access-Control-Expose-Headers": "X-Cache",
+  "Access-Control-Expose-Headers": "X-Cache, X-Request-Id, Retry-After, WWW-Authenticate",
 };
 
 // ─── RESPONSE HELPERS ────────────────────────────────────────────────────────
@@ -745,7 +749,109 @@ async function isAdmin(request, env, db, ctx) {
     .catch(() => {});
   if (ctx?.waitUntil) ctx.waitUntil(bump);
 
-  return { valid: true, label: row.label, isRoot: false, keyId: row.id, role: row.role || "admin" };
+  return { valid: true, label: row.label, isRoot: false, keyId: row.id, role: row.role || "admin", fhirScopes: parseScopes(row.fhir_scopes) ?? [] };
+}
+
+// ─── FHIR ACCESS GATE + AUDIT CONTEXT ───────────────────────────────────────
+//
+// Per-request facts the audit trail needs (who, what route, whether denied).
+// Keyed by the Request object so nothing leaks between requests.
+const FHIR_REQUEST_CONTEXT = new WeakMap();
+
+/**
+ * Resolves the caller (if a Bearer token is present) and applies decideAccess().
+ * FHIR_AUTH_MODE=enforce makes clinical operations require a credential with
+ * the right scope; anything else keeps them open. AuditEvent reads always need
+ * a credential. Returns { response } to stop the request, or {}.
+ */
+async function fhirAccessGate(request, env, db, ctx, method, param, action) {
+  let identity = null;
+  if (getBearerToken(request)) {
+    const a = await isAdmin(request, env, db, ctx);
+    identity = a.valid ? { ...a, fhirScopes: a.fhirScopes ?? [] } : { valid: false };
+  }
+  const decision = decideAccess({ mode: env.FHIR_AUTH_MODE, method, param, action, identity });
+  FHIR_REQUEST_CONTEXT.set(request, { identity: identity?.valid ? identity : null, route: decision.route, denied: decision.allow ? null : decision.message });
+  if (decision.allow) return {};
+  const headers = decision.status === 401 ? { "WWW-Authenticate": 'Bearer realm="chakudya-fhir"' } : {};
+  return { response: json(operationOutcomeFor(decision.status, decision.message, decision.code), decision.status, headers) };
+}
+
+/**
+ * Adds FHIR content type, no-store and nosniff to /fhir responses, turns the
+ * facade's generic error bodies into OperationOutcomes, and records the audit
+ * event for the request (log line; stored when FHIR_AUDIT_STORE=true).
+ */
+async function finalizeFhirResponse(request, response, env, ctx, requestId, url, startedAt) {
+  const headers = new Headers(response.headers);
+  let body = response.body;
+  const isJson = (headers.get("Content-Type") || "").includes("json");
+
+  if (response.status >= 400 && isJson) {
+    const text = await response.text();
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch { /* keep as is */ }
+    const msg = legacyErrorMessage(parsed);
+    body = msg !== null ? JSON.stringify(operationOutcomeFor(response.status, msg)) : text;
+  }
+  if (isJson) headers.set("Content-Type", FHIR_JSON);
+  headers.set("X-Content-Type-Options", "nosniff");
+  if (request.method === "POST" || url.pathname.startsWith("/fhir/AuditEvent")) headers.set("Cache-Control", "no-store");
+  const out = new Response(body, { status: response.status, headers });
+
+  // Audit: every non-public request, and any failure. Never the body or query string.
+  const rc = FHIR_REQUEST_CONTEXT.get(request);
+  const audited = (rc && rc.route?.kind !== "public" && rc.route?.kind !== "other") || response.status >= 400;
+  if (audited && env.FHIR_AUDIT_LOG !== "off") {
+    const event = buildAuditEvent({
+      base: url.origin, requestId, now: new Date().toISOString(), method: request.method, path: url.pathname,
+      status: response.status, actor: rc?.identity ?? null, ip: clientIp(request),
+      patient: env.FHIR_AUDIT_INCLUDE_PATIENT === "true" ? rc?.subject : undefined, denied: rc?.denied ?? undefined,
+    });
+    console.log(JSON.stringify({ level: "audit", type: "fhir_audit_event", request_id: requestId, duration_ms: Date.now() - startedAt, audit_event: event }));
+    if (env.FHIR_AUDIT_STORE === "true") {
+      const db = supabase(env);
+      const write = db.insert("fhir_audit_events", auditRow(event)).catch(() => {});
+      if (ctx?.waitUntil) ctx.waitUntil(write);
+    }
+  }
+  return out;
+}
+
+/** GET /fhir/AuditEvent[?date=&outcome=&agent-name=&_count=] and GET /fhir/AuditEvent/{id}. Access is checked by fhirAccessGate. */
+async function handleFhirAuditEvent(request, url, db, env, id) {
+  if (env.FHIR_AUDIT_STORE !== "true") {
+    return json(operationOutcomeFor(501, "AuditEvent storage is not enabled on this deployment (set FHIR_AUDIT_STORE=true and run sql/028). Audit events are still written to the Worker logs.", "not-supported"), 501);
+  }
+  if (id) {
+    if (!/^[A-Za-z0-9\-.]{1,64}$/.test(id)) return json(operationOutcomeFor(400, "Invalid AuditEvent id."), 400);
+    const { ok, status, body } = await db.selectOne("fhir_audit_events", id);
+    if (!ok) return json(operationOutcomeFor(status === 404 ? 404 : 502, status === 404 ? `AuditEvent/${id} not found.` : "Audit query failed (has sql/028 been run?)"), status === 404 ? 404 : 502);
+    return json(body.event);
+  }
+  const filters = {};
+  const q = url.searchParams;
+  const dates = q.getAll("date");
+  const OPS = { eq: "eq", ge: "gte", le: "lte", gt: "gt", lt: "lt" };
+  const parts = [];
+  for (const d of dates.slice(0, 2)) {
+    const m = /^(eq|ge|le|gt|lt)?(\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:\d{2}))?)$/.exec(d);
+    if (!m) return json(operationOutcomeFor(400, `Invalid date parameter "${d}". Use date=ge2026-10-01 style values.`), 400);
+    parts.push([OPS[m[1] ?? "eq"], m[2]]);
+  }
+  if (parts.length === 1) filters.recorded = `${parts[0][0]}.${parts[0][1]}`;
+  else if (parts.length === 2) filters.and = `(recorded.${parts[0][0]}.${parts[0][1]},recorded.${parts[1][0]}.${parts[1][1]})`;
+  const outcome = q.get("outcome");
+  if (outcome) {
+    if (!/^(0|4|8|12)$/.test(outcome)) return json(operationOutcomeFor(400, "outcome must be 0, 4, 8 or 12."), 400);
+    filters.outcome = `eq.${outcome}`;
+  }
+  const agent = q.get("agent-name");
+  if (agent) filters.agent = `eq.${agent.slice(0, 120)}`;
+  const count = Math.min(Math.max(parseInt(q.get("_count") || "50", 10) || 50, 1), 200);
+  const { ok, body } = await db.select("fhir_audit_events", { filters, order: "recorded.desc", limit: count, select: "id,event" });
+  if (!ok || !Array.isArray(body)) return json(operationOutcomeFor(502, "Audit query failed (has sql/028 been run?)"), 502);
+  return json(auditSearchBundle(url.origin, body));
 }
 
 // ─── EDGE CACHING (Cloudflare Cache API) ────────────────────────────────────
@@ -907,7 +1013,9 @@ function routePolicy(resource, method, param, action) {
   const isFhirEvaluateGrowth = resource === "fhir" && param === "Observation" && action === "$evaluate-growth" && method === "POST";
   const isFhirNcpOperation = resource === "fhir" && method === "POST" && fhirOperationFor(param, action) !== null;
   const isFhirQuestionnaire = resource === "fhir" && method === "GET" && param === "Questionnaire";
-  const isFhirNcpCodeSystem = resource === "fhir" && method === "GET" && Boolean(action) && ["CodeSystem", "OperationDefinition", "StructureDefinition"].includes(param);
+  const isFhirNcpCodeSystem = resource === "fhir" && method === "GET" && Boolean(action) && ["CodeSystem", "OperationDefinition", "StructureDefinition", "ConceptMap"].includes(param);
+  // AuditEvent reads are public in the rate-limit sense only; the FHIR access gate (fhirAccessGate) always demands a credential.
+  const isFhirAudit = resource === "fhir" && method === "GET" && param === "AuditEvent";
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
@@ -1045,7 +1153,7 @@ function routePolicy(resource, method, param, action) {
   if (isFhirMetadata) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
-  if (isFhirEvaluateGrowth || isFhirNcpOperation || isFhirNcpCodeSystem || isFhirQuestionnaire) {
+  if (isFhirEvaluateGrowth || isFhirNcpOperation || isFhirNcpCodeSystem || isFhirQuestionnaire || isFhirAudit) {
     return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -3153,8 +3261,8 @@ async function handleFentonChart(request, url, db) {
 // src/fhir.js for the full scope note (Fenton preterm + WHO BMI-for-age
 // only; no WHO 0-59-month coverage yet; no OpenHIM registration yet).
 
-async function handleFhirMetadata(url) {
-  return json(buildCapabilityStatement(url.origin));
+async function handleFhirMetadata(url, env = {}) {
+  return json(buildCapabilityStatement(url.origin, { authMode: env.FHIR_AUTH_MODE }));
 }
 
 async function handleFhirEvaluateGrowth(request, db, url) {
@@ -3281,7 +3389,7 @@ async function handleFhirEvaluateGrowth(request, db, url) {
 
 // One lookup over the NCP operations (src/fhirNcp.js) and the assessment
 // foundation operations (src/fhirAssessment.js); all are pure and DB-free.
-const fhirOperationFor = (param, action) => contextOperationFor(param, action) ?? documentOperationFor(param, action) ?? monitoringOperationFor(param, action) ?? interventionOperationFor(param, action) ?? diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
+const fhirOperationFor = (param, action) => governanceOperationFor(param, action) ?? contextOperationFor(param, action) ?? documentOperationFor(param, action) ?? monitoringOperationFor(param, action) ?? interventionOperationFor(param, action) ?? diagnosisOperationFor(param, action) ?? ncpOperationFor(param, action) ?? assessmentOperationFor(param, action);
 
 // NCP operations (src/fhirNcp.js) — pure functions, no DB. Stateless: the
 // request body is never stored or logged by this handler.
@@ -3293,6 +3401,8 @@ async function handleFhirNcpOperation(request, url, db, param, operation) {
     return json(operationOutcome("error", "Invalid JSON body."), 400);
   }
   const ctx = { base: url.origin, now: new Date().toISOString() };
+  const rc = FHIR_REQUEST_CONTEXT.get(request);
+  if (rc) rc.subject = auditSubject(body); // used only if FHIR_AUDIT_INCLUDE_PATIENT=true
 
   // $diagnose resolves NI-/NC-/NB- codes against the Supabase terminology
   // table; fetch just the codes this request names (pure op stays DB-free).
@@ -8250,6 +8360,18 @@ function generateApiKey() {
   return `cnr_${hex}`;
 }
 
+
+/** Validates an optional `fhir_scopes` body field. Returns { value } (string or undefined) or { error }. */
+function readFhirScopesField(payload) {
+  const raw = payload?.fhir_scopes;
+  if (raw == null || raw === "") return { value: undefined };
+  const parsed = parseScopes(raw);
+  if (parsed === null || parsed.length === 0) {
+    return { error: "'fhir_scopes' must be space-separated scopes like \"system/Bundle.write system/*.read\" (system/<ResourceType|*>.<read|write|*>)" };
+  }
+  return { value: (Array.isArray(raw) ? raw : String(raw).split(/[\s,]+/)).filter(Boolean).join(" ") };
+}
+
 async function handleAdminKeys(request, db, idOrAction) {
   const method = request.method;
 
@@ -8275,10 +8397,13 @@ async function handleAdminKeys(request, db, idOrAction) {
       return err(`'role' must be one of: ${VALID_ROLES.join(", ")} (got "${role}")`);
     }
 
+    const fs = readFhirScopesField(payload);
+    if (fs.error) return err(fs.error);
+
     const rawKey = generateApiKey();
     const hash = await sha256Hex(rawKey);
 
-    const { ok, status, body } = await db.insert("api_keys", { key_hash: hash, label, role });
+    const { ok, status, body } = await db.insert("api_keys", { key_hash: hash, label, role, ...(fs.value ? { fhir_scopes: fs.value } : {}) });
     if (!ok) return err(body?.message || "Key creation failed", status);
 
     const { key_hash: _hash, ...safeRow } = body || {};
@@ -8350,6 +8475,7 @@ async function verifyOAuthToken(token, request, env) {
     keyId: null,
     role: claims.role,
     oauthClientId: claims.sub,
+    fhirScopes: parseScopes(claims.fhir_scopes) ?? [],
   };
 }
 
@@ -8402,6 +8528,7 @@ async function handleOAuthToken(request, db, env) {
     label: row.label,
     role: scope.role,
     issuer: oauthIssuer(request),
+    fhirScopes: row.fhir_scopes || undefined,
   });
   const accessToken = await signJwt(claims, env.OAUTH_SIGNING_SECRET);
 
@@ -8462,11 +8589,14 @@ async function handleAdminOAuthClients(request, db, env, id) {
     }
 
     const { clientId, clientSecret } = generateClientCredentials();
+    const fs = readFhirScopesField(payload);
+    if (fs.error) return err(fs.error);
     const { ok, status, body } = await db.insert("oauth_clients", {
       client_id: clientId,
       secret_hash: await sha256Hex(clientSecret),
       label,
       role,
+      ...(fs.value ? { fhir_scopes: fs.value } : {}),
     });
     if (!ok) return err(body?.message || "Client creation failed", status);
 
@@ -8516,7 +8646,7 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
     case "fhir": {
       if (param === "metadata") {
         if (request.method !== "GET") return err("Method not allowed", 405);
-        return await handleFhirMetadata(url);
+        return await handleFhirMetadata(url, env);
       }
       if (param === "Observation" && action === "$evaluate-growth") {
         if (request.method !== "POST") return err("Method not allowed", 405);
@@ -8533,15 +8663,21 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
           const q = questionnaireResource(url.origin, action);
           return q ? json(q) : json(operationOutcome("error", `Questionnaire/${action} not found.`, "not-found"), 404);
         }
+        if (param === "AuditEvent") {
+          if (request.method !== "GET") return json(operationOutcomeFor(405, "AuditEvent is read-only and immutable."), 405);
+          return await handleFhirAuditEvent(request, url, db, env, action);
+        }
         if (param === "CodeSystem" && action === "ncp-diagnosis") {
           if (request.method !== "GET") return err("Method not allowed", 405);
           return await handleFhirNcpCodeSystem(url, db);
         }
         // Static conformance resources: every CodeSystem / OperationDefinition /
         // StructureDefinition URL the facade emits resolves here.
-        if (["CodeSystem", "OperationDefinition", "StructureDefinition"].includes(param) && action) {
+        if (["CodeSystem", "OperationDefinition", "StructureDefinition", "ConceptMap"].includes(param) && action) {
           if (request.method !== "GET") return err("Method not allowed", 405);
-          const def = staticConformanceResource(param, action, url.origin);
+          const def = param === "ConceptMap"
+            ? conceptMapResource(url.origin, action)
+            : (param === "StructureDefinition" && profileResource(url.origin, action)) || staticConformanceResource(param, action, url.origin);
           return def
             ? json(def)
             : json(operationOutcome("error", `${param}/${action} not found.`, "not-found"), 404);
@@ -8552,7 +8688,8 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
           "POST /fhir/Observation/$screen, POST /fhir/Observation/$assess-nutrition, POST /fhir/Condition/$diagnose, " +
           "POST /fhir/CarePlan/$intervene, POST /fhir/CarePlan/$monitor, POST /fhir/Goal/$evaluate, POST /fhir/Bundle/$ncp-document, " +
           "POST /fhir/Bundle/$nutrition-assessment, POST /fhir/QuestionnaireResponse/$validate, GET /fhir/Questionnaire[/{id}], " +
-          "GET /fhir/CodeSystem/{name}, GET /fhir/OperationDefinition/{id}, GET /fhir/StructureDefinition/{name}."
+          "POST /fhir/Bundle/$care-context, POST /fhir/Bundle/$validate-document, POST /fhir/$validate, POST /fhir/ConceptMap/$translate, GET /fhir/AuditEvent[/{id}] (admin), " +
+          "GET /fhir/CodeSystem/{name}, GET /fhir/OperationDefinition/{id}, GET /fhir/StructureDefinition/{name}, GET /fhir/ConceptMap/{id}."
       );
     }
 
@@ -8934,6 +9071,12 @@ async function purgeResourceCache(origin, resource, param, ctx) {
 async function authAndRateGate(request, env, ctx, db, resource, method, param, action) {
   const policy = routePolicy(resource, method, param, action);
 
+  // FHIR governance: scopes, FHIR_AUTH_MODE, AuditEvent protection (src/fhirGovernance.js).
+  if (resource === "fhir") {
+    const fg = await fhirAccessGate(request, env, db, ctx, method, param, action);
+    if (fg.response) return fg;
+  }
+
   let admin = null;
   if (policy.auth === "admin") {
     admin = await isAdmin(request, env, db, ctx);
@@ -9261,6 +9404,16 @@ export default {
       response = await router(request, env, ctx, requestId);
     } catch (e) {
       response = serverErr(e, requestId);
+    }
+
+    if (url.pathname === "/fhir" || url.pathname.startsWith("/fhir/")) {
+      if (request.method !== "OPTIONS") {
+        try {
+          response = await finalizeFhirResponse(request, response, env, ctx, requestId, url, startedAt);
+        } catch (e) {
+          response = serverErr(e, requestId);
+        }
+      }
     }
 
     const tagged = new Response(response.body, response);
