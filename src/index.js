@@ -3,7 +3,17 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.31.0
+ * Version: 1.32.0
+ *
+ * v1.32.0 changes:
+ *  - Developer portal: people sign up on the docs site (Supabase Auth) and
+ *    create their own consumer API keys via POST/GET/DELETE /developer/keys,
+ *    authenticated with their login access token (verified against Supabase
+ *    Auth, src/developer.js). Consumer keys are role "consumer": every admin
+ *    route still rejects them (the role ranks 0), they get 3x each public
+ *    route's rate limit in their own per-key bucket, FHIR scopes system/*.*
+ *    (never AuditEvent), and per-key usage counts. Max 3 active keys per
+ *    user; email must be confirmed. Requires sql/029_add_developer_keys.sql.
  *
  * v1.31.0 changes:
  *  - FHIR facade now covers the whole Nutrition Care Process (new
@@ -540,6 +550,10 @@ import { parseHcForAgeQuery, classifyHcForAge } from "./hcForAge.js";
 import { parseAssessQuery, assessGrowth } from "./growthAssess.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import {
+  CONSUMER_ROLE, MAX_KEYS_PER_USER, consumerRateLimit, validateLabel, bumpUsage, readUsage,
+  verifySupabaseUser, buildConsumerKeyRow, publicKeyView,
+} from "./developer.js";
+import {
   parseFentonQuery,
   classifyRow,
   parseProfileBody,
@@ -596,7 +610,7 @@ import {
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.31.0";
+const CNR_VERSION = "1.32.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1036,6 +1050,12 @@ function routePolicy(resource, method, param, action) {
   const isDrugInteractionsSearch =
     resource === "drug-interactions" && param === "search" && method === "GET";
   const isBatch = resource === "batch" && method === "POST";
+
+  // Developer portal key management — public in the rate-limit sense; the handler
+  // verifies the caller's Supabase login token itself. Key creation capped tighter.
+  if (resource === "developer") {
+    return { auth: "public", rate: { limit: method === "POST" ? 10 : 30, windowSeconds: 60, scope: "ip" } };
+  }
 
   // OAuth token endpoint — public (the client secret IS the credential),
   // tightly capped per IP to blunt secret-guessing.
@@ -7292,6 +7312,12 @@ function handleRoot(env) {
       health: [
         "GET  /health           (public, rate-limited) → pings Supabase/Cohere/Groq/Open Food Facts in parallel, reports per-service status + overall healthy/degraded",
       ],
+      developer_keys: [
+        "POST   /developer/keys       (login token) → body {label}; creates a consumer key (max 3 active per account, email must be confirmed); returns the raw key ONCE",
+        "GET    /developer/keys       (login token) → your active keys with last-used time and usage counts",
+        "DELETE /developer/keys/:id   (login token) → revoke one of your keys",
+        "Send your Supabase login access token as 'Authorization: Bearer <token>' on these three routes only. Consumer keys then go on every other route the same way and get 3x the public rate limit.",
+      ],
       admin_keys: [
         "GET    /admin/keys       (root key only) → list keys (never returns the raw key or its hash)",
         "POST   /admin/keys       (root key only) → body {label, role?}; role: admin (default, full access) | reviewer (packaged review + reads only); returns the raw key ONCE, store it now",
@@ -8431,6 +8457,65 @@ async function handleAdminKeys(request, db, idOrAction) {
   return err("Method not allowed", 405);
 }
 
+// ─── /developer/keys ─────────────────────────────────────────────────────────
+//
+// Self-service consumer keys for the developer portal. Auth is the caller's
+// Supabase login access token, checked against Supabase Auth on every call.
+// A developer can only ever see, create or revoke their own keys.
+
+async function handleDeveloperKeys(request, db, env, idParam) {
+  const token = getBearerToken(request);
+  if (!token) return unauthorized("Sign in first and send your login access token as 'Authorization: Bearer <token>'");
+  const who = await verifySupabaseUser(env, token);
+  if (!who.ok) return who.status === 401 ? unauthorized(who.error) : err(who.error, who.status);
+  const user = who.user;
+  const mine = { owner_user_id: `eq.${user.id}`, role: `eq.${CONSUMER_ROLE}`, revoked_at: "is.null" };
+  const method = request.method;
+
+  if (method === "GET" && !idParam) {
+    const { ok, status, body } = await db.select("api_keys", { filters: mine, order: "created_at.desc", limit: 50 });
+    if (!ok) return err(body?.message || "Query failed", status);
+    const rows = Array.isArray(body) ? body : [];
+    const views = await Promise.all(rows.map(async (r) => publicKeyView(r, await readUsage(env, r.id))));
+    return success(views, { email: user.email, max_keys: MAX_KEYS_PER_USER });
+  }
+
+  if (method === "POST" && !idParam) {
+    if (!user.emailConfirmed) return err("Confirm your email address first (check your inbox), then create a key", 403);
+    const payload = await parseBody(request);
+    const lbl = validateLabel(payload?.label);
+    if (lbl.error) return err(lbl.error);
+
+    const existing = await db.select("api_keys", { filters: mine, limit: MAX_KEYS_PER_USER + 1 });
+    if (!existing.ok) return err(existing.body?.message || "Query failed", existing.status);
+    if ((Array.isArray(existing.body) ? existing.body.length : 0) >= MAX_KEYS_PER_USER) {
+      return err(`You already have ${MAX_KEYS_PER_USER} active keys. Revoke one before creating another`, 409);
+    }
+
+    const rawKey = generateApiKey();
+    const row = buildConsumerKeyRow({ keyHash: await sha256Hex(rawKey), label: lbl.value, user, rawKey });
+    const ins = await db.insert("api_keys", row);
+    if (!ins.ok) return err(ins.body?.message || "Key creation failed", ins.status);
+
+    return success(publicKeyView({ ...ins.body, key_prefix: row.key_prefix }), {
+      message: "API key created. Copy it now, it will not be shown again",
+      key: rawKey,
+    });
+  }
+
+  if (method === "DELETE") {
+    if (!idParam || !/^\d+$/.test(idParam)) return err("Key id required, e.g. DELETE /developer/keys/5");
+    const found = await db.select("api_keys", { filters: { ...mine, id: `eq.${idParam}` }, limit: 1 });
+    if (!found.ok) return err(found.body?.message || "Query failed", found.status);
+    if (!Array.isArray(found.body) || !found.body.length) return notFound("API key");
+    const upd = await db.update("api_keys", idParam, { revoked_at: new Date().toISOString() }, "PATCH");
+    if (!upd.ok) return err(upd.body?.message || "Revoke failed", upd.status);
+    return success({ id: Number(idParam) }, { message: `API key ${idParam} revoked` });
+  }
+
+  return err("Method not allowed", 405);
+}
+
 // ─── OAUTH 2.0 (client_credentials) ──────────────────────────────────────────
 //
 // Machine-to-machine auth for the MCP server, Thanzi Coach and other apps:
@@ -8704,6 +8789,11 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "oauth-clients") {
         return await handleAdminOAuthClients(request, db, env, action || null);
       }
+      return notFound();
+    }
+
+    case "developer": {
+      if (param === "keys") return await handleDeveloperKeys(request, db, env, action || null);
       return notFound();
     }
 
@@ -9104,8 +9194,17 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
     }
   }
 
-  const rateBucketKey =
-    policy.rate.scope === "admin"
+  // Developer-portal consumer keys: a valid consumer key on a public route gets
+  // its own per-key bucket at 3x the route's limit instead of the shared per-IP one.
+  let consumer = null;
+  if (policy.auth !== "admin" && resource !== "developer" && getBearerToken(request)) {
+    const who = await isAdmin(request, env, db, ctx);
+    if (who.valid && who.role === CONSUMER_ROLE && who.keyId != null) consumer = who;
+  }
+
+  const rateBucketKey = consumer
+    ? `key:${consumer.keyId}:${resource || "root"}`
+    : policy.rate.scope === "admin"
       ? `admin:${getBearerToken(request) || "unknown"}`
       : `ip:${clientIp(request)}:${resource || "root"}`;
 
@@ -9115,10 +9214,11 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
     const { allowed, retryAfter } = await checkRateLimit(
       env,
       rateBucketKey,
-      policy.rate.limit,
+      consumer ? consumerRateLimit(policy.rate.limit) : policy.rate.limit,
       policy.rate.windowSeconds
     );
     if (!allowed) return { response: rateLimited(retryAfter) };
+    if (consumer && ctx?.waitUntil) ctx.waitUntil(bumpUsage(env, consumer.keyId).catch(() => {}));
   }
 
   return { policy, admin };

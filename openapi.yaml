@@ -14,11 +14,15 @@ info:
     monitoring and ADIME documents).
 
 
+    People can sign in on the docs site and create their own consumer API keys (higher rate limits, FHIR access, usage counts)
+    with `/developer/keys`.
+
+
     Machine-to-machine callers can authenticate with OAuth 2.0 client_credentials (`POST /oauth/token`) instead of a long-lived
     admin key.
 
     '
-  version: 1.31.0
+  version: 1.32.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -36,6 +40,7 @@ tags:
 - name: Batch
 - name: API Keys
 - name: OAuth
+- name: Developer keys
 - name: Foods
 - name: Glycaemic Index
 - name: Exchange
@@ -431,6 +436,157 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /developer/keys:
+    get:
+      tags:
+      - Developer keys
+      summary: List your consumer API keys
+      security: &id001
+      - loginToken: []
+      description: Your active keys with last-used time and usage counts. Authenticate with your login access token (the docs
+        site account page does this for you). Never returns a raw key or its hash.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  data:
+                    type: array
+                    items: &id002
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        label:
+                          type: string
+                        key_prefix:
+                          type: string
+                          example: cnr_1a2b3c4d
+                        created_at:
+                          type: string
+                          format: date-time
+                        last_used_at:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        usage:
+                          type: object
+                          properties:
+                            today:
+                              type: integer
+                            last_7_days:
+                              type: integer
+                  email:
+                    type: string
+                  max_keys:
+                    type: integer
+                    example: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    post:
+      tags:
+      - Developer keys
+      summary: Create a consumer API key
+      security: *id001
+      description: Creates a key with the `consumer` role. The raw key is returned once; only its hash is stored. Up to 3
+        active keys per account, and the account email must be confirmed. A consumer key gets 3x each public route's rate
+        limit (tracked per key) and FHIR scopes `system/*.*` (never AuditEvent). It can never reach admin routes or write
+        data.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - label
+              properties:
+                label:
+                  type: string
+                  maxLength: 60
+                  description: The app or project this key is for.
+                  example: Thanzi mobile app
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  data: *id002
+                  message:
+                    type: string
+                  key:
+                    type: string
+                    example: cnr_0123...
+                    description: Shown once. Store it now.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Email address not confirmed yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Already at the limit of 3 active keys
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /developer/keys/{id}:
+    delete:
+      tags:
+      - Developer keys
+      summary: Revoke one of your keys
+      security: *id001
+      description: Revokes a key you own. Apps using it stop working immediately.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                  message:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /foods:
     get:
       tags:
@@ -6421,6 +6577,11 @@ components:
         with fhir_scopes on /admin/keys and /admin/oauth-clients). Only the root key can manage API keys and OAuth clients.
 
         '
+    loginToken:
+      type: http
+      scheme: bearer
+      description: The access token from a developer login (Supabase Auth), not an API key. Only /developer/keys uses it.
+        The docs site handles this for you on the account page.
   parameters:
     PathId:
       name: id

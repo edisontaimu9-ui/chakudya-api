@@ -53,6 +53,8 @@ export function parseScopes(value) {
 export function scopesForRole(role, isRoot = false) {
   if (isRoot || role === "admin") return [{ type: "*", level: "*" }];
   if (role === "reviewer") return [{ type: "*", level: "read" }];
+  // Developer-portal consumer keys: every clinical operation, never AuditEvent (a wildcard type excludes it).
+  if (role === "consumer") return [{ type: "*", level: "*" }];
   return [];
 }
 

@@ -286,6 +286,45 @@ curl -X DELETE https://your-worker-url/admin/keys/1 -H "Authorization: Bearer <A
 
 ---
 
+## Developer portal and consumer keys (`v1.32.0+`)
+
+People can create their own API keys without an admin. They sign up on the
+docs site (Supabase Auth: email and password, optionally Google), then the
+site calls `/developer/keys` with their login access token.
+
+| Route | Purpose |
+|---|---|
+| `POST /developer/keys` | body `{ "label": "My app" }`. Creates a key and returns the raw key **once**. |
+| `GET /developer/keys` | Your active keys: label, key prefix, created, last used, usage today and over 7 days. |
+| `DELETE /developer/keys/:id` | Revoke one of your keys. |
+
+Send the **login access token** (not an API key) as `Authorization: Bearer <token>`
+on these three routes only. The API checks it against Supabase Auth on every call.
+
+Rules:
+
+- The account email must be confirmed. Up to 3 active keys per account.
+- Keys have the `consumer` role. They fail every admin route (the role ranks below
+  `reviewer`), so a consumer key can read and compute but never write data, manage
+  keys or reach the packaged review queue.
+- On public routes a consumer key gets **3x** that route's rate limit, counted in its
+  own per-key bucket instead of the shared per-IP one. Batch sub-requests count too.
+- FHIR: consumer keys carry `system/*.*`, so every `/fhir` operation works in enforce
+  mode. A wildcard never covers `AuditEvent`, so audit reads stay admin-only.
+- Usage counts are approximate daily counters in KV (`usage:<key id>:<day>`, kept 8 days).
+- Only the SHA-256 hash of a key is stored, plus a short prefix for display.
+
+Setup (once):
+
+1. Run `sql/029_add_developer_keys.sql` in the Supabase SQL editor.
+2. In Supabase: Authentication > Providers > Email, keep "Confirm email" on. Under
+   Authentication > URL Configuration, set the Site URL and add the docs site URL to
+   Redirect URLs.
+3. `SUPABASE_URL` and `SUPABASE_KEY` must be the same project the docs site logs in
+   against (the API verifies tokens with `GET /auth/v1/user`; no JWT secret needed).
+
+---
+
 ## OAuth 2.0 (machine-to-machine)
 
 For services that call the API on their own behalf (MCP server, Thanzi Coach,
@@ -363,6 +402,8 @@ to 10 requests/min per IP.
 - **Memory recall (`GET /memory/recall`)**: `30/min` per IP
 - **Admin writes (general)**: `60/min` per admin token
 - **RAG ingest (`POST /rag/ingest`)**: `30/min` per admin token
+- **Developer keys (`/developer/keys`)**: `10/min` per IP to create, `30/min` to list or revoke
+- **Consumer keys**: 3x every public limit above, per key (see Developer portal)
 - **Batch (`POST /batch`)**: `10/min` per IP — on top of whatever limit each sub-request's own resource applies
 
 When exceeded:
