@@ -54,10 +54,10 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # Secrets below are declared so wrangler knows they exist;
 # actual values live in the dashboard.
 
-# [vars]
+[vars]
 # ENVIRONMENT = "production"
-# FHIR_AUTH_MODE = "enforce"
-# FHIR_AUDIT_STORE = "true"
+FHIR_AUTH_MODE = "enforce"
+FHIR_AUDIT_STORE = "true"
 
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
 # Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).
