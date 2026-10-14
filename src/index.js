@@ -3,7 +3,11 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.37.0
+ * Version: 1.38.0
+ * v1.38.0 changes: GET /admin/monitoring (root key only) - failed calls and slow endpoints for the admin monitor.
+ *   Failed (5xx, 429, 4xx except 401/404) and slow (>= REQUEST_LOG_SLOW_MS, default 1500) requests are stored in request_log
+ *   when REQUEST_LOG_STORE=true. Requires sql/031_add_request_log.sql; src/requestLog.js. Nothing stored by default.
+ *
  * v1.37.0 changes: GET /admin/activity (root key only) - recent admin actions for the admin monitor: API keys created
  *   and revoked, packaged foods approved and rejected (with reviewer). Built from existing tables, no SQL; src/adminActivity.js.
  *
@@ -577,6 +581,7 @@ import { parseAssessQuery, assessGrowth } from "./growthAssess.js";
 import { handleRagPipeline, handleIngestQueue } from "./ragPipeline.js";
 import { handleAdminOverview } from "./adminOverview.js";
 import { handleAdminActivity } from "./adminActivity.js";
+import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import {
   CONSUMER_ROLE, MAX_KEYS_PER_USER, consumerRateLimit, validateLabel, bumpUsage, readUsage,
   verifySupabaseUser, buildConsumerKeyRow, publicKeyView,
@@ -627,7 +632,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.37.0";
+const CNR_VERSION = "1.38.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1120,7 +1125,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
-  const isAdminKeys = resource === "admin" && (param === "keys" || param === "overview" || param === "activity");
+  const isAdminKeys = resource === "admin" && (param === "keys" || param === "overview" || param === "activity" || param === "monitoring");
   const isBulkInsert =
     ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
@@ -7403,6 +7408,7 @@ function handleRoot(env) {
         "Send your Supabase login access token as 'Authorization: Bearer <token>' on these three routes only. Consumer keys then go on every other route the same way and get 3x the standard rate limit.",
       ],
       admin_keys: [
+        "GET    /admin/monitoring (root key only) → failed calls and slow endpoints from request_log (?hours=, max 168); needs REQUEST_LOG_STORE=true and sql/031",
         "GET    /admin/activity   (root key only) → recent admin actions: keys created/revoked, packaged foods approved/rejected (?limit=, max 100)",
         "GET    /admin/overview   (root key only) → read-only snapshot for the admin monitor: registry record counts, packaged review queue, RAG ingest jobs, API key and usage totals",
         "GET    /admin/keys       (root key only) → list keys (never returns the raw key or its hash)",
@@ -8676,6 +8682,9 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "activity") {
         return await handleAdminActivity(request, db, { success, err });
       }
+      if (param === "monitoring") {
+        return await handleAdminMonitoring(request, db, env, { success, err });
+      }
       return notFound();
     }
 
@@ -9047,7 +9056,7 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
 
     // Managing other API keys is root-only — a per-consumer key can't
     // mint or revoke keys, so a single leaked non-root key can't escalate.
-    if (resource === "admin" && (param === "keys" || param === "overview" || param === "activity") && !admin.isRoot) {
+    if (resource === "admin" && (param === "keys" || param === "overview" || param === "activity" || param === "monitoring") && !admin.isRoot) {
       return { response: unauthorized("Only the root admin key can manage API keys") };
     }
 
@@ -9399,6 +9408,14 @@ export default {
 
     const tagged = new Response(response.body, response);
     tagged.headers.set("X-Request-Id", requestId);
+
+    // Failed and slow calls go to request_log for the admin monitor (off unless REQUEST_LOG_STORE=true).
+    try {
+      logRequest(env, ctx, env.REQUEST_LOG_STORE === "true" ? supabase(env) : null, {
+        requestId, method: request.method, path: url.pathname, status: tagged.status,
+        durationMs: Date.now() - startedAt, cache: tagged.headers.get("X-Cache") || undefined,
+      });
+    } catch (_) { /* monitoring must never break a response */ }
 
     if (env.DISABLE_REQUEST_LOGGING !== "true" || tagged.status >= 500) {
       const logFn = tagged.status >= 500 ? console.error : console.log;

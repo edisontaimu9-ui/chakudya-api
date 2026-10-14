@@ -64,6 +64,10 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # Authentication is not configurable: every route needs a valid API key except GET /,
 # GET /health and the FHIR conformance reads. Do not add a switch for it here.
 FHIR_AUDIT_STORE = "true"
+# Admin monitor "Errors and latency": store failed and slow requests in request_log (run sql/031 first).
+# Writes are fire-and-forget and fail silently, so this is safe to leave on before the table exists.
+# REQUEST_LOG_SLOW_MS sets what counts as slow (default 1500).
+REQUEST_LOG_STORE = "true"
 
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
 # Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).
