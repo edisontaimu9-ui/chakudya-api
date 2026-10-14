@@ -61,7 +61,7 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # /developer/*, /fhir (own gate) and the RAG storage webhook. Flip to "true" only after every
 # app that calls the API sends a key. Plain [vars] are reset to this file on each deploy, so
 # change it here and push, not in the dashboard.
-REQUIRE_API_KEY = "false"
+REQUIRE_API_KEY = "true"
 FHIR_AUTH_MODE = "enforce"
 FHIR_AUDIT_STORE = "true"
 
