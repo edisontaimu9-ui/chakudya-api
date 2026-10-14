@@ -18,17 +18,16 @@ info:
     with `/developer/keys`.
 
 
-    Machine-to-machine callers can authenticate with OAuth 2.0 client_credentials (`POST /oauth/token`) instead of a long-lived
-    admin key.
-
-
-    When the service runs in key-required mode, every route needs `Authorization: Bearer YOUR_API_KEY` (a consumer key, admin
-    key or OAuth token) except `GET /`, `GET /health`, the OAuth token endpoint and its metadata, `/developer/*` and `/fhir`
-    (which has its own access rules). Anonymous calls receive 401 with the code `api_key_required`. `GET /` reports the mode
-    in `api_key_required`.
+    Every operational route needs `Authorization: Bearer YOUR_API_KEY` (a consumer key from the developer console, or an
+    admin or reviewer key). The only routes that work without a key are `GET /`, `GET /health` and the FHIR conformance
+    reads (`GET /fhir/metadata`, `CodeSystem`, `OperationDefinition`, `StructureDefinition`, `ConceptMap`, `Questionnaire`).
+    `/developer/keys` takes your Supabase login token instead of an API key, and `POST /rag/webhook` takes a shared secret.
+    Privileged registry writes (foods, exchange, renal, formulas, drug interactions, glycaemic index, reference tables,
+    packaged CRUD and review, RAG ingest, bulk inserts) and key management need an admin key; a consumer key is refused
+    there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.33.0
+  version: 1.34.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -38,14 +37,12 @@ servers:
 - url: https://chakudya-api.edisontaimu9.workers.dev
   description: Production (Cloudflare Workers)
 security:
-- {}
 - bearerAuth: []
 tags:
 - name: Meta
 - name: Health
 - name: Batch
 - name: API Keys
-- name: OAuth
 - name: Developer keys
 - name: Foods
 - name: Glycaemic Index
@@ -128,7 +125,6 @@ paths:
         never short-circuits the rest.
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -308,140 +304,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
-  /oauth/token:
-    post:
-      tags:
-      - OAuth
-      summary: OAuth 2.0 token endpoint (client_credentials)
-      description: 'Exchange a client_id/client_secret (HTTP Basic or form fields) for a 1-hour bearer token usable on any
-        admin route. Rate limited to 10/min per IP.
-
-        '
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required:
-              - grant_type
-              properties:
-                grant_type:
-                  type: string
-                  enum:
-                  - client_credentials
-                scope:
-                  type: string
-                  enum:
-                  - admin
-                  - reviewer
-                  description: Optional; may only narrow the client's role.
-                client_id:
-                  type: string
-                client_secret:
-                  type: string
-      responses:
-        '200':
-          description: Access token
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  access_token:
-                    type: string
-                  token_type:
-                    type: string
-                    example: Bearer
-                  expires_in:
-                    type: integer
-                    example: 3600
-                  scope:
-                    type: string
-                    example: admin
-        '400':
-          description: invalid_scope or unsupported_grant_type
-        '401':
-          description: invalid_client
-        '429':
-          $ref: '#/components/responses/RateLimited'
-  /.well-known/oauth-authorization-server:
-    get:
-      tags:
-      - OAuth
-      summary: OAuth 2.0 authorization server metadata (RFC 8414)
-      security: []
-      responses:
-        '200':
-          description: Metadata document
-  /admin/oauth-clients:
-    get:
-      tags:
-      - OAuth
-      summary: List OAuth clients (root key only)
-      description: Never returns secrets or hashes.
-      security:
-      - bearerAuth: []
-      responses:
-        '200':
-          description: List of clients
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-    post:
-      tags:
-      - OAuth
-      summary: Create an OAuth client (root key only)
-      description: The client_secret is returned exactly once; only its SHA-256 hash is stored.
-      security:
-      - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-              - label
-              properties:
-                label:
-                  type: string
-                  example: thanzi-coach
-                role:
-                  type: string
-                  enum:
-                  - admin
-                  - reviewer
-                  default: admin
-                fhir_scopes:
-                  type: string
-                  description: Optional space-separated FHIR scopes, e.g. "system/Bundle.write system/*.read". Defaults come
-                    from the role.
-                  example: system/*.read
-      responses:
-        '200':
-          description: Client created (client_id and client_secret in response)
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-  /admin/oauth-clients/{id}:
-    delete:
-      tags:
-      - OAuth
-      summary: Revoke an OAuth client (root key only)
-      description: Blocks new tokens and denylists tokens already issued to this client.
-      security:
-      - bearerAuth: []
-      parameters:
-      - $ref: '#/components/parameters/PathId'
-      responses:
-        '200':
-          description: Client revoked
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
   /developer/keys:
     get:
       tags:
@@ -503,7 +365,7 @@ paths:
       summary: Create a consumer API key
       security: *id001
       description: Creates a key with the `consumer` role. The raw key is returned once; only its hash is stored. Up to 3
-        active keys per account, and the account email must be confirmed. A consumer key gets 3x each public route's rate
+        active keys per account, and the account email must be confirmed. A consumer key gets 3x each route's rate
         limit (tracked per key) and FHIR scopes `system/*.*` (never AuditEvent). It can never reach admin routes or write
         data.
       requestBody:
@@ -598,7 +460,6 @@ paths:
       tags:
       - Foods
       summary: List foods
-      security: []
       parameters:
       - $ref: '#/components/parameters/Search'
       - name: category
@@ -658,13 +519,12 @@ paths:
     get:
       tags:
       - Foods
-      summary: External food lookup cascade (public, rate-limited)
+      summary: External food lookup cascade (API key, rate-limited)
       description: 'Local cache → USDA FDC (name search) → Open Food Facts (barcode) → FatSecret barcode lookup (Premier-exclusive)
         → FatSecret (name search). First external hit is cached into external_foods_cache so subsequent lookups skip upstream
         calls.
 
         '
-      security: []
       parameters:
       - name: q
         in: query
@@ -686,12 +546,11 @@ paths:
     get:
       tags:
       - Foods
-      summary: Search-as-you-type suggestions (public, rate-limited)
+      summary: Search-as-you-type suggestions (API key, rate-limited)
       description: 'Wraps FatSecret''s Premier-exclusive foods.autocomplete.v2. Requires FATSECRET_CONSUMER_KEY/SECRET on
         a Premier or Premier Free plan - returns 503 if not configured on this deployment.
 
         '
-      security: []
       parameters:
       - name: q
         in: query
@@ -733,12 +592,11 @@ paths:
     get:
       tags:
       - Foods
-      summary: Food category list (public, rate-limited, cached 24h)
+      summary: Food category list (API key, rate-limited, cached 24h)
       description: 'Wraps FatSecret''s Premier-exclusive food_categories.get.v2 - near-static reference data. Requires FATSECRET_CONSUMER_KEY/SECRET
         on a Premier or Premier Free plan - returns 503 if not configured on this deployment.
 
         '
-      security: []
       responses:
         '200':
           description: Food categories
@@ -773,13 +631,12 @@ paths:
     get:
       tags:
       - Foods
-      summary: Typo-tolerant fuzzy search over foods (public, rate-limited)
+      summary: Typo-tolerant fuzzy search over foods (API key, rate-limited)
       description: 'Postgres pg_trgm word_similarity() over food_name, so a misspelled Malawian food name (e.g. "Chinagwa"
         for "Chinangwa") still resolves - unlike GET /foods?search=, which requires an exact substring. Runs between the exact-ilike
         local match and the external cache/API cascade inside /foods/lookup and everything built on it.
 
         '
-      security: []
       parameters:
       - name: q
         in: query
@@ -812,14 +669,13 @@ paths:
     get:
       tags:
       - Foods
-      summary: Nutritionally close substitutes for a food (public, rate-limited)
+      summary: Nutritionally close substitutes for a food (API key, rate-limited)
       description: 'Resolves the food (local match, falling back to the external lookup cascade), classifies it into a Malawi-relevant
         substitution group (e.g. protein/legumes are grouped together, cassava/potatoes with grains), and ranks other foods
         in that group by closeness on the group''s primary nutrient per 100g. Purely computational, no writes. Doesn''t account
         for cost, local availability, taste, or portion size.
 
         '
-      security: []
       parameters:
       - name: food_name
         in: query
@@ -847,14 +703,13 @@ paths:
     get:
       tags:
       - Foods
-      summary: Side-by-side nutrient comparison of 2-6 foods (public, rate-limited)
+      summary: Side-by-side nutrient comparison of 2-6 foods (API key, rate-limited)
       description: 'Resolves each comma-separated food name the same way /foods/substitutes resolves one, then returns each
         food''s per-100g macro/micronutrient panel plus, only where a sourced row exists in glycaemic_index_data, a measured
         glycaemic block - GI/GL is never estimated. Also returns nutrient_comparison, the same fields pivoted per-nutrient
         with the highest/lowest food flagged.
 
         '
-      security: []
       parameters:
       - name: foods
         in: query
@@ -874,11 +729,10 @@ paths:
     get:
       tags:
       - Foods
-      summary: Browse foods by category (public, rate-limited)
+      summary: Browse foods by category (API key, rate-limited)
       description: 'Plain category browse over the local Malawi food composition table; no query text needed. A thin wrapper
         over the typo-tolerant search with the category filter applied. Each row is tagged `_source: foods` and `_match_type:
         category`.'
-      security: []
       parameters:
       - name: category
         in: query
@@ -919,7 +773,6 @@ paths:
         missing_fields) are unchanged.
 
         '
-      security: []
       parameters:
       - $ref: '#/components/parameters/PathId'
       - name: serving
@@ -1373,7 +1226,6 @@ paths:
       tags:
       - Foods
       summary: Get a food by id
-      security: []
       parameters:
       - $ref: '#/components/parameters/PathId'
       responses:
@@ -1448,7 +1300,6 @@ paths:
         per specific preparation/variety and rarely lines up 1:1 with a foods row.
 
         '
-      security: []
       parameters:
       - $ref: '#/components/parameters/Search'
       - $ref: '#/components/parameters/Limit'
@@ -1515,7 +1366,6 @@ paths:
       tags:
       - Glycaemic Index
       summary: Get a glycaemic index entry by id
-      security: []
       parameters:
       - $ref: '#/components/parameters/PathId'
       responses:
@@ -1581,7 +1431,6 @@ paths:
       tags:
       - Exchange
       summary: List diabetes/renal exchange list entries
-      security: []
       parameters:
       - name: type
         in: query
@@ -1688,7 +1537,6 @@ paths:
       tags:
       - Renal
       summary: List renal foods
-      security: []
       parameters:
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Offset'
@@ -1791,7 +1639,6 @@ paths:
       tags:
       - Formulas
       summary: List enteral formulas
-      security: []
       parameters:
       - name: route
         in: query
@@ -1898,7 +1745,6 @@ paths:
       tags:
       - Drug Interactions
       summary: List drug-nutrient interaction entries
-      security: []
       parameters:
       - name: category
         in: query
@@ -1965,7 +1811,6 @@ paths:
         previously had in Oasis CNST.
 
         '
-      security: []
       parameters:
       - name: q
         in: query
@@ -1988,7 +1833,6 @@ paths:
       tags:
       - Drug Interactions
       summary: Get a drug-nutrient interaction entry by id
-      security: []
       parameters:
       - $ref: '#/components/parameters/PathId'
       responses:
@@ -2060,7 +1904,6 @@ paths:
         aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2138,7 +1981,6 @@ paths:
       tags:
       - BMI for age
       summary: List BMI-for-age reference rows (-3SD to +3SD cut-offs)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2185,7 +2027,6 @@ paths:
         SD points (null beyond -3 or +3). Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2276,7 +2117,6 @@ paths:
       tags:
       - HC velocity
       summary: List WHO 6-month head circumference increment rows (-3SD to +3SD, cm)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2324,7 +2164,6 @@ paths:
         Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2415,7 +2254,6 @@ paths:
       tags:
       - Length velocity
       summary: List WHO 6-month length increment rows (-3SD to +3SD, cm)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2463,7 +2301,6 @@ paths:
         Delta parameters (null if the shifted increment is not positive). Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2558,7 +2395,6 @@ paths:
       tags:
       - Weight velocity
       summary: List WHO 6-month weight increment rows (grams, with L/M/S/Delta)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2606,7 +2442,6 @@ paths:
         aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2688,7 +2523,6 @@ paths:
       tags:
       - MUAC for age
       summary: List WHO arm circumference-for-age rows (cm, with L/M/S)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2734,7 +2568,6 @@ paths:
         / 125 mm community screening cut-offs. Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: age_months
         in: query
@@ -2827,7 +2660,6 @@ paths:
         above +3SD. implausible is true when |z| > 6. Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2937,7 +2769,6 @@ paths:
       tags:
       - Length height for age
       summary: List WHO length/height-for-age rows (cm, with L/M/S)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -2984,7 +2815,6 @@ paths:
         when z < -6 or z > +5. Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3069,7 +2899,6 @@ paths:
       tags:
       - Weight for age
       summary: List WHO weight-for-age rows (kg, with L/M/S)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3117,7 +2946,6 @@ paths:
         only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3242,7 +3070,6 @@ paths:
       tags:
       - Weight for length height
       summary: List WHO weight-for-length/height rows (kg, with L/M/S)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3297,7 +3124,6 @@ paths:
         is true when |z| > 5. 5-19 years use /bmi-for-age. Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3415,7 +3241,6 @@ paths:
       tags:
       - BMI for age under 5
       summary: List WHO BMI-for-age rows, birth to 5 years (kg/m2, with L/M/S)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3462,7 +3287,6 @@ paths:
         not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3547,7 +3371,6 @@ paths:
       tags:
       - HC for age
       summary: List WHO head circumference-for-age rows (cm, with L/M/S)
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3595,7 +3418,6 @@ paths:
         oedema. Screening aid only, not a diagnosis.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3746,7 +3568,6 @@ paths:
         route for this resource. Screening aid only.
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -3842,7 +3663,6 @@ paths:
       - Fenton Preterm
       summary: Classify weight, length, and head circumference together at one timepoint
       description: At least one of weight/length/hc required. Never returns L/M/S.
-      security: []
       requestBody:
         required: true
         content:
@@ -3900,7 +3720,6 @@ paths:
       summary: Classify a series of same-metric measurements over time (trajectory + trend)
       description: Up to 50 points. Response is chart-ready (age/value/z/percentile per point) plus a descriptive trend block.
         Never returns L/M/S.
-      security: []
       requestBody:
         required: true
         content:
@@ -3965,7 +3784,6 @@ paths:
       summary: Growth velocity between consecutive same-metric measurements
       description: Same body shape as /growth, 2+ points required. Weight in g/kg/day (average-weight method); length/hc in
         cm/week.
-      security: []
       requestBody:
         required: true
         content:
@@ -4034,7 +3852,6 @@ paths:
         data points).
 
         '
-      security: []
       parameters:
       - name: sex
         in: query
@@ -4084,7 +3901,6 @@ paths:
       - Fenton Preterm
       summary: Static reference metadata (years, sexes, metrics, valid age ranges, citations, license)
       description: No L/M/S values or anything the curve could be reconstructed from.
-      security: []
       responses:
         '200':
           description: Metadata
@@ -4123,7 +3939,7 @@ paths:
         the facade exposes: `$evaluate-growth`, the Nutrition Care Process operations (`$screen`, `$assess-nutrition`, `$diagnose`,
         `$intervene`, `$monitor`, `Goal/$evaluate`, `$ncp-document`, `$care-context`, `$nutrition-assessment`), validation
         (`$validate`, `$validate-document`, `QuestionnaireResponse/$validate`) and `ConceptMap/$translate`. The statement
-        also reports whether this deployment is in OPEN or ENFORCE access mode (`FHIR_AUTH_MODE`).'
+        declares that every operation except the conformance reads needs an API key. This read needs no key.'
       security: []
       responses:
         '200':
@@ -4216,11 +4032,8 @@ paths:
         head circumference-for-age, MUAC-for-age, fixed MUAC cut-offs, acute-malnutrition signals), the same calculations
         as /growth/assess, returned as a Bundle of Observations with one Observation per indicator. Measurement types: weight
         (kg|g), length (cm|m), hc (cm|m), muac (cm|mm), bmi. Optional parameters measured (lying|standing) and muacScheme
-        (who_hiv_2008|cmam). Fenton with a single measurement returns a single Observation. Access: when the deployment runs
-        with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation needs a Bearer credential carrying the
-        scope `system/Observation.write`; in OPEN mode it is public. A missing credential returns 401, a missing scope 403
+        (who_hiv_2008|cmam). Fenton with a single measurement returns a single Observation. Access: this operation needs a Bearer credential carrying the scope `system/Observation.write`. A missing credential returns 401, a missing scope 403
         (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -4262,13 +4075,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4292,10 +4105,7 @@ paths:
         BMI, BMI-for-age z-score, pre-pregnancy BMI, and bilateral pitting edema (severe acute malnutrition on its own). Each
         indicator is reported separately because the guide gives no combining rule. Returns a Bundle with one screening Observation.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success is a Bundle; errors are OperationOutcomes.
-        See the API README, "NCP operations". Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default for
-        the hosted API) this operation needs a Bearer credential carrying the scope `system/Observation.write`; in OPEN mode
-        it is public. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
+        See the API README, "NCP operations". Access: this operation needs a Bearer credential carrying the scope `system/Observation.write`. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
       requestBody:
         required: true
         content:
@@ -4336,13 +4146,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4355,11 +4165,8 @@ paths:
       description: 'BMI and WHO class, % weight change with standard-interval significance, Mifflin-St Jeor BEE and clinician-factored
         energy/protein requirements, intake adequacy, GLIM criteria, and generic FH/AD/BD/PD/CH indicators, as Observations.
         Children are redirected (422) to $evaluate-growth. Stateless: nothing is stored. Body is a FHIR Parameters resource;
-        success is a Bundle; errors are OperationOutcomes. See the API README, "NCP operations". Access: when the deployment
-        runs with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation needs a Bearer credential carrying
-        the scope `system/Observation.write`; in OPEN mode it is public. A missing credential returns 401, a missing scope
+        success is a Bundle; errors are OperationOutcomes. See the API README, "NCP operations". Access: this operation needs a Bearer credential carrying the scope `system/Observation.write`. A missing credential returns 401, a missing scope
         403 (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -4400,13 +4207,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4425,10 +4232,7 @@ paths:
         adds ICD-10/SNOMED CT beside the NCP term. With `author` (and optional `source`, `asserter`, `encounter`) the Conditions
         get recorder/encounter and one Provenance per diagnosis. Stateless: nothing is stored. Body is a FHIR Parameters resource;
         success is a Bundle of Conditions (plus evidence Observations and Provenance); errors are OperationOutcomes listing
-        every problem. See the API README, "NCP operations". Access: when the deployment runs with FHIR_AUTH_MODE=enforce
-        (the default for the hosted API) this operation needs a Bearer credential carrying the scope `system/Condition.write`;
-        in OPEN mode it is public. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
+        every problem. See the API README, "NCP operations". Access: this operation needs a Bearer credential carrying the scope `system/Condition.write`. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
       requestBody:
         required: true
         content:
@@ -4469,13 +4273,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4492,10 +4296,8 @@ paths:
         are validated and every problem is reported together (400). Activities with `assignedTo` or `dueDate`, and every `followUp`
         and `referral`, also create a Task. With `author` the Bundle includes a Provenance. Stateless: nothing is stored.
         Body is a FHIR Parameters resource; success is a Bundle; errors are OperationOutcomes. See the API README, "NCP operations".
-        Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation needs
-        a Bearer credential carrying the scope `system/CarePlan.write`; in OPEN mode it is public. A missing credential returns
+        Access: this operation needs a Bearer credential carrying the scope `system/CarePlan.write`. A missing credential returns
         401, a missing scope 403 (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -4536,13 +4338,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4560,10 +4362,7 @@ paths:
         unchanged, not achieved or overdue, a plan-review Task is created and a draft successor CarePlan carries the plan
         forward; the original plan is never edited. With `author` the Bundle includes a Provenance. Units are never converted.
         Stateless: nothing is stored. Body is a FHIR Parameters resource; success is a Bundle; errors are OperationOutcomes.
-        See the API README, "NCP operations". Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default for
-        the hosted API) this operation needs a Bearer credential carrying the scope `system/CarePlan.write`; in OPEN mode
-        it is public. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
+        See the API README, "NCP operations". Access: this operation needs a Bearer credential carrying the scope `system/CarePlan.write`. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
       requestBody:
         required: true
         content:
@@ -4604,13 +4403,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4623,10 +4422,8 @@ paths:
       description: 'Compares current values to baseline/target and returns Goals with achievementStatus plus outcome Observations.
         Direction of change is not guessed without a baseline; units must match. Stateless: nothing is stored. Body is a FHIR
         Parameters resource; success is a Bundle; errors are OperationOutcomes. See the API README, "NCP operations". Access:
-        when the deployment runs with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation needs a Bearer
-        credential carrying the scope `system/Goal.write`; in OPEN mode it is public. A missing credential returns 401, a
+        this operation needs a Bearer credential carrying the scope `system/Goal.write`. A missing credential returns 401, a
         missing scope 403 (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -4667,13 +4464,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4693,10 +4490,7 @@ paths:
         problem is a 422 listing every error. Patient, Encounter and QuestionnaireResponse entries are carried as supporting
         entries; `subject` and `encounter` default to the Patient and Encounter entries of a supplied $nutrition-assessment
         Bundle. Stateless: nothing is stored. Body is a FHIR Parameters resource; success is a Bundle; errors are OperationOutcomes.
-        See the API README, "NCP operations". Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default for
-        the hosted API) this operation needs a Bearer credential carrying the scope `system/Bundle.write`; in OPEN mode it
-        is public. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
+        See the API README, "NCP operations". Access: this operation needs a Bearer credential carrying the scope `system/Bundle.write`. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
       requestBody:
         required: true
         content:
@@ -4738,13 +4532,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4761,10 +4555,8 @@ paths:
         verified. Pass the Bundle to $ncp-document as a `resource`: the author is resolved to the PractitionerRole, the facility
         becomes Composition.custodian and the CareTeam is linked from the CarePlan. Stateless: nothing is stored. Body is
         a FHIR Parameters resource; success is a collection Bundle; errors are OperationOutcomes. See the API README, "NCP
-        operations". Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation
-        needs a Bearer credential carrying the scope `system/Bundle.write`; in OPEN mode it is public. A missing credential
+        operations". Access: this operation needs a Bearer credential carrying the scope `system/Bundle.write`. A missing credential
         returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -4799,13 +4591,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4818,11 +4610,8 @@ paths:
       description: 'System-level $validate. Checks element names, required elements, cardinality, required code bindings,
         primitive formats, references, extensions, narrative and the main invariants for the resource types this facade emits,
         plus the minimum cardinality of any Chakudya profile in meta.profile. NOT the HL7 FHIR Validator and not an implementation-guide
-        check. Always 200 with an OperationOutcome. Needs system/*.read when FHIR_AUTH_MODE=enforce. Access: when the deployment
-        runs with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation needs a Bearer credential carrying
-        the scope `system/Resource.read`; in OPEN mode it is public. A missing credential returns 401, a missing scope 403
+        check. Always 200 with an OperationOutcome. Access: this operation needs a Bearer credential carrying the scope `system/Resource.read`. A missing credential returns 401, a missing scope 403
         (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -4851,13 +4640,13 @@ paths:
         '400':
           description: FHIR OperationOutcome - body is not Parameters or has no single resource
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -4870,11 +4659,10 @@ paths:
       - FHIR
       summary: Translate a Chakudya code (LOINC, HL7 practitioner-role, v3 ObservationInterpretation)
       description: 'Parameters `system`, `code`, optional `url` (ConceptMap id) and `targetSystem`. Returns Parameters with
-        `result` and one `match` per mapping. A code with no true mapping gives result=false; nothing is guessed. Always open:
-        it only reads published reference data.
+        `result` and one `match` per mapping. A code with no true mapping gives result=false; nothing is guessed. It is an operation, not a conformance
+        read, so it needs an API key (scope `system/ConceptMap.read` or a wildcard).
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -4934,9 +4722,9 @@ paths:
       - FHIR
       summary: Search stored audit events (admin)
       description: 'Requires the root key, the admin role, or a credential with an explicit system/AuditEvent.read scope,
-        in every FHIR_AUTH_MODE. Read-only and immutable through the API. Answers 501 unless FHIR_AUDIT_STORE=true (run sql/028).
+       . Read-only and immutable through the API. Answers 501 unless FHIR_AUDIT_STORE=true (run sql/028).
         Events never contain request bodies, query strings, tokens, full IPs or (by default) patient references. Always needs
-        a credential, in every access mode: the admin role (or root key) or an explicit `system/AuditEvent.read` scope. A
+        a credential: the admin role (or root key) or an explicit `system/AuditEvent.read` scope. A
         wildcard `system/*` scope never covers AuditEvent.'
       security:
       - bearerAuth: []
@@ -4959,7 +4747,7 @@ paths:
         in: query
         schema:
           type: string
-        description: Label of the API key or OAuth client
+        description: Label of the API key
       - name: _count
         in: query
         schema:
@@ -5037,10 +4825,8 @@ paths:
         ADIME sections, narrative, unique fullUrls, internal references, one patient, section placement and links between
         diagnosis, care plan, goals and follow-up. Returns 200 with an OperationOutcome of errors, warnings and, when valid,
         one information issue. Stateless: nothing is stored. Body is a FHIR Parameters resource with one `resource` parameter
-        (the Bundle). Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation
-        needs a Bearer credential carrying the scope `system/Bundle.read`; in OPEN mode it is public. A missing credential
+        (the Bundle). Access: this operation needs a Bearer credential carrying the scope `system/Bundle.read`. A missing credential
         returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -5075,13 +4861,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -5097,10 +4883,7 @@ paths:
         (urn:uuid fullUrls; every Observation points at the Patient and Encounter). Units are never guessed; plausibility,
         timestamps and missing data are checked and all problems are reported together. Computes BMI (+ WHO adult class, 18+)
         and, from the nutrition-screening form, the MUST score. Stateless: nothing is stored. Body is a FHIR Parameters resource.
-        See the API README, "Assessment foundation". Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default
-        for the hosted API) this operation needs a Bearer credential carrying the scope `system/Bundle.write`; in OPEN mode
-        it is public. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
+        See the API README, "Assessment foundation". Access: this operation needs a Bearer credential carrying the scope `system/Bundle.write`. A missing credential returns 401, a missing scope 403 (both as OperationOutcome).'
       requestBody:
         required: true
         content:
@@ -5135,13 +4918,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -5154,10 +4937,8 @@ paths:
       description: 'Body is a FHIR Parameters resource with one `resource` (the QuestionnaireResponse). Checks linkIds, answer
         types, units and ranges, answer options and required items for the built-in forms; other forms are checked structurally.
         Always 200 with an OperationOutcome when the input is well formed: look at issue severity. Nothing is built or stored.
-        Access: when the deployment runs with FHIR_AUTH_MODE=enforce (the default for the hosted API) this operation needs
-        a Bearer credential carrying the scope `system/QuestionnaireResponse.read`; in OPEN mode it is public. A missing credential
+        Access: this operation needs a Bearer credential carrying the scope `system/QuestionnaireResponse.read`. A missing credential
         returns 401, a missing scope 403 (both as OperationOutcome).'
-      security: []
       requestBody:
         required: true
         content:
@@ -5192,13 +4973,13 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
         '401':
-          description: Missing or invalid credential (enforce mode)
+          description: Missing or invalid credential
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FhirOperationOutcome'
         '403':
-          description: Credential lacks the required FHIR scope (enforce mode)
+          description: Credential lacks the required FHIR scope
           content:
             application/json:
               schema:
@@ -5370,7 +5151,6 @@ paths:
       tags:
       - Packaged
       summary: List packaged/branded foods
-      security: []
       parameters:
       - name: barcode
         in: query
@@ -5410,13 +5190,12 @@ paths:
     post:
       tags:
       - Packaged
-      summary: Submit a packaged food (public, rate-limited)
+      summary: Submit a packaged food (API key, rate-limited)
       description: 'Requires barcode + product_name. Auto-tagged status=pending. See the README for normalization (`per`/`serving_size`),
         duplicate detection (409 if an approved/pending row already has this barcode; overwritten in place if the existing
         row was rejected), and the macro/calorie cross-check (`needs_review`).
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -5469,13 +5248,12 @@ paths:
     post:
       tags:
       - Packaged
-      summary: Submit a packaged food via photo (public, rate-limited)
+      summary: Submit a packaged food via photo (API key, rate-limited)
       description: 'Sends 1-5 photos to a Groq vision model, combines what it reads across all of them, and inserts a pending
         row with source=ocr_ai. Returns 422 (status=needs_retry) without writing if no photo shows a legible nutrition label.
         Same duplicate-detection and macro/calorie-check behavior as /packaged/submit.
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -5635,8 +5413,7 @@ paths:
     get:
       tags:
       - Favorites
-      summary: List a user's favorites (public, rate-limited)
-      security: []
+      summary: List a user's favorites (API key, rate-limited)
       parameters:
       - $ref: '#/components/parameters/UserId'
       - $ref: '#/components/parameters/ResourceType'
@@ -5653,8 +5430,7 @@ paths:
     post:
       tags:
       - Favorites
-      summary: Save a favorite (public, rate-limited, idempotent)
-      security: []
+      summary: Save a favorite (API key, rate-limited, idempotent)
       requestBody:
         required: true
         content:
@@ -5671,9 +5447,8 @@ paths:
     delete:
       tags:
       - Favorites
-      summary: Remove a favorite (public, rate-limited)
+      summary: Remove a favorite (API key, rate-limited)
       description: No error if the favorite doesn't exist - `removed:false` in the response instead.
-      security: []
       requestBody:
         required: true
         content:
@@ -5691,8 +5466,7 @@ paths:
     get:
       tags:
       - History
-      summary: Recently viewed, most recent first (public, rate-limited)
-      security: []
+      summary: Recently viewed, most recent first (API key, rate-limited)
       parameters:
       - $ref: '#/components/parameters/UserId'
       - $ref: '#/components/parameters/ResourceType'
@@ -5708,12 +5482,11 @@ paths:
     post:
       tags:
       - History
-      summary: Log a view (public, rate-limited, opt-in)
+      summary: Log a view (API key, rate-limited, opt-in)
       description: 'Upserts on (user_id, resource_type, resource_id) - repeat views update viewed_at in place rather than
         creating duplicate rows. Nothing is tracked automatically; the client calls this explicitly.
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -5731,11 +5504,10 @@ paths:
     get:
       tags:
       - Food Log
-      summary: List nutrition diary entries (public, opt-in identity)
+      summary: List nutrition diary entries (API key, opt-in identity)
       description: 'Same client-supplied user_id model as favorites/history - no server-side account system.
 
         '
-      security: []
       parameters:
       - $ref: '#/components/parameters/UserId'
       - name: date
@@ -5755,7 +5527,6 @@ paths:
       tags:
       - Food Log
       summary: Log a food diary entry
-      security: []
       requestBody:
         required: true
         content:
@@ -5796,7 +5567,6 @@ paths:
       tags:
       - Food Log
       summary: Get a food log entry by id
-      security: []
       parameters:
       - $ref: '#/components/parameters/PathId'
       responses:
@@ -5809,7 +5579,6 @@ paths:
       - Food Log
       summary: Delete a food log entry
       description: Requires the same user_id the entry was logged under.
-      security: []
       parameters:
       - $ref: '#/components/parameters/PathId'
       - $ref: '#/components/parameters/UserId'
@@ -5829,7 +5598,6 @@ paths:
         with per-day totals, a per-meal breakdown, and the daily average.
 
         '
-      security: []
       parameters:
       - $ref: '#/components/parameters/UserId'
       - name: period
@@ -5855,14 +5623,13 @@ paths:
     post:
       tags:
       - Recipes
-      summary: Compute total and per-serving nutrition for a recipe (public, rate-limited)
+      summary: Compute total and per-serving nutrition for a recipe (API key, rate-limited)
       description: 'Resolves each ingredient to a food row (local table first, then the same local-to-external lookupFoodCascade
         used by /foods/lookup), converts quantity/unit to grams via each food''s own serving-size data where possible, then
         scales and sums nutrients across the recipe. Pure calculation, no persistence. Rate-limited like /rag/ask since an
         unresolved ingredient can fan out to an external lookup.
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -5902,7 +5669,7 @@ paths:
     post:
       tags:
       - Meals
-      summary: Analyze a meal's macro split, food groups, and (optionally) targets (public, rate-limited)
+      summary: Analyze a meal's macro split, food groups, and (optionally) targets (API key, rate-limited)
       description: 'Builds on the same ingredient resolution as /recipes/calculate but frames the result around one eaten
         meal: macronutrient % of calories (Atwater 4/4/9) compared against the standard adult IOM AMDR range, which core food
         groups are present/missing, and - only when `daily_targets` is supplied - how the meal compares to them. Never infers
@@ -5910,7 +5677,6 @@ paths:
         to also run clinical flags (e.g. "food_allergy" requires a matching `allergens` array).
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -5966,12 +5732,11 @@ paths:
     post:
       tags:
       - Ingredients
-      summary: Parse free-text ingredients into structured items (public, rate-limited)
+      summary: Parse free-text ingredients into structured items (API key, rate-limited)
       description: 'LLM-based extraction, e.g. "2 eggs, 1 cup rice, 100g chicken and 1/2 avocado" -> a structured ingredients
         array suitable for /recipes/calculate or /meals/analyze.
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -5996,7 +5761,6 @@ paths:
       tags:
       - DRI
       summary: List every DRI life-stage group
-      security: []
       responses:
         '200':
           $ref: '#/components/responses/MutationSuccess'
@@ -6010,7 +5774,6 @@ paths:
         if both are given. Omit `nutrient` to get every nutrient for the resolved life stage.
 
         '
-      security: []
       parameters:
       - name: life_stage
         in: query
@@ -6056,7 +5819,6 @@ paths:
         directly as `intake`.
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -6098,9 +5860,8 @@ paths:
     post:
       tags:
       - RAG
-      summary: Raw semantic retrieval (public, rate-limited)
+      summary: Raw semantic retrieval (API key, rate-limited)
       description: Returns matching rag_knowledge_base chunks without generating an answer.
-      security: []
       requestBody:
         required: true
         content:
@@ -6192,13 +5953,12 @@ paths:
     post:
       tags:
       - RAG
-      summary: RAG Search Orchestrator (public, rate-limited)
+      summary: RAG Search Orchestrator (API key, rate-limited)
       description: 'Full pipeline: intent detection (Groq) → fan-out search across semantic KB, Malawi FCT, packaged/OCR foods,
         exchange/renal/formula DBs, barcode lookup, and USDA/OFF/FatSecret fallback → rerank (Cohere) → grounded LLM answer
         with [n] citations. Whole answers are cached 5 minutes (skipped when session_id is passed).
 
         '
-      security: []
       requestBody:
         required: true
         content:
@@ -6420,7 +6180,8 @@ paths:
       description: 'Called by the database storage trigger when a file lands in the `rag-uploads` bucket. Authenticated with
         the `x-webhook-secret` header, not a bearer token. Files under `api/` (already have a job) and unsupported types are
         skipped with a 200. Folder picks the context: `clinical/`, `general/`, anything else is `both`.'
-      security: []
+      security:
+      - webhookSecret: []
       parameters:
       - name: x-webhook-secret
         in: header
@@ -6460,8 +6221,7 @@ paths:
     post:
       tags:
       - Memory
-      summary: Write a raw memory fact (public, rate-limited)
-      security: []
+      summary: Write a raw memory fact (API key, rate-limited)
       requestBody:
         required: true
         content:
@@ -6490,8 +6250,7 @@ paths:
     post:
       tags:
       - Memory
-      summary: Recall top-K relevant memory rows for a session (public, rate-limited, preferred)
-      security: []
+      summary: Recall top-K relevant memory rows for a session (API key, rate-limited, preferred)
       requestBody:
         required: true
         content:
@@ -6523,7 +6282,6 @@ paths:
 
         '
       deprecated: true
-      security: []
       parameters:
       - name: session_id
         in: query
@@ -6577,12 +6335,18 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: 'The root ADMIN_API_KEY, a per-consumer key minted via POST /admin/keys, or an OAuth 2.0 access token from
-        POST /oauth/token. For /fhir, when FHIR_AUTH_MODE=enforce every operation except conformance reads needs a credential
-        with the scope system/<ResourceType>.<read|write|*> (role defaults: admin system/*.*, reviewer system/*.read; narrow
-        with fhir_scopes on /admin/keys and /admin/oauth-clients). Only the root key can manage API keys and OAuth clients.
+      description: 'An API key: a consumer key from the developer console (POST /developer/keys), or an admin or reviewer key
+        minted via POST /admin/keys (the root ADMIN_API_KEY also works). Required on every route except GET /, GET /health
+        and the FHIR conformance reads. For /fhir, every operation needs a credential with the scope
+        system/<ResourceType>.<read|write|*> (role defaults: consumer and admin system/*.*, reviewer system/*.read; narrow
+        with fhir_scopes on /admin/keys). Admin routes refuse consumer keys. Only the root key can manage API keys.
 
         '
+    webhookSecret:
+      type: apiKey
+      in: header
+      name: x-webhook-secret
+      description: Shared secret (INGEST_WEBHOOK_SECRET) for the database storage trigger. Only POST /rag/webhook uses it.
     loginToken:
       type: http
       scheme: bearer

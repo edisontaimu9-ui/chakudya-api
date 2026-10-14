@@ -429,22 +429,18 @@ export function buildCapabilityStatement(base, opts = {}) {
  * Step 7: security, profiles, system-level operations and the governance
  * resources (AuditEvent, ConceptMap, conformance reads) on the CapabilityStatement.
  */
-function withGovernance(cap, base, { authMode } = {}) {
-  const enforce = authMode === "enforce";
+function withGovernance(cap, base) {
   const sd = (n) => `${base}/fhir/StructureDefinition/${n}`;
   const rest = cap.rest[0];
   rest.security = {
     cors: true,
-    service: [{ coding: [{ system: "http://terminology.hl7.org/CodeSystem/restful-security-service", code: "OAuth", display: "OAuth" }], text: "OAuth 2.0 client credentials, or an API key as a Bearer token" }],
+    service: [{ text: "API key sent as a Bearer token" }],
     description:
-      (enforce
-        ? "Authentication is REQUIRED for every operation except the conformance reads (metadata, CodeSystem, OperationDefinition, StructureDefinition, ConceptMap, Questionnaire, ConceptMap/$translate). "
-        : "This deployment runs in OPEN mode: operations do not require authentication (set FHIR_AUTH_MODE=enforce to require it). ") +
-      "Credentials: an OAuth 2.0 access token (client_credentials, POST /oauth/token) or an API key, sent as 'Authorization: Bearer'. " +
-      "Access is by scope: system/<ResourceType>.<read|write|*>; the admin role carries system/*.*, the reviewer role system/*.read. " +
+      "Authentication is REQUIRED for every operation except the conformance reads (metadata, CodeSystem, OperationDefinition, StructureDefinition, ConceptMap, Questionnaire). " +
+      "Credential: an API key (create one for free on the developer portal), sent as 'Authorization: Bearer <key>'. " +
+      "Access is by scope: system/<ResourceType>.<read|write|*>; consumer keys and the admin role carry system/*.*, the reviewer role system/*.read. " +
       "Reading AuditEvent always needs a credential with the admin role or an explicit system/AuditEvent.read scope. " +
       "Not SMART App Launch: there is no authorization-code flow, patient or encounter context, or launch.",
-    extension: [{ url: "http://fhir-registry.smarthealthit.org/StructureDefinition/oauth-uris", extension: [{ url: "token", valueUri: `${base}/oauth/token` }] }],
   };
   rest.operation = [
     { name: "validate", definition: `${base}/fhir/OperationDefinition/validate`, documentation: "Structural R4 check of one resource or Bundle (not the HL7 FHIR Validator). Returns an OperationOutcome." },
@@ -463,7 +459,7 @@ function withGovernance(cap, base, { authMode } = {}) {
       searchParam: [
         { name: "date", type: "date", documentation: "ge/le/gt/lt/eq prefix on AuditEvent.recorded, e.g. date=ge2026-10-01" },
         { name: "outcome", type: "token", documentation: "0 success, 4 minor failure (4xx), 8 serious failure (5xx)" },
-        { name: "agent-name", type: "string", documentation: "Label of the API key or OAuth client that made the request" },
+        { name: "agent-name", type: "string", documentation: "Label of the API key that made the request" },
       ],
     },
     {

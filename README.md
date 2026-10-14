@@ -154,7 +154,7 @@ npx wrangler deploy
 ### 6) Verify
 
 ```bash
-bash smoke-test.sh https://your-worker.workers.dev
+CNR_API_KEY=your_key bash smoke-test.sh https://your-worker.workers.dev
 ```
 
 Runs the full MISS→HIT / rate-limit / cascade verification pass in one command instead of testing each piece by hand. See "Smoke Test" below for details.
@@ -163,34 +163,43 @@ Runs the full MISS→HIT / rate-limit / cascade verification pass in one command
 
 ## Authentication Model
 
-`Authorization: Bearer <key>` is required for:
+Every operational route needs `Authorization: Bearer <API key>`. Authentication is always on
+(there is no switch to turn it off). A request without a valid key gets `401` with
+`code: "api_key_required"` and a `WWW-Authenticate: Bearer` header.
 
-- All write routes (`POST`, `PUT`, `PATCH`, `DELETE`) on:
-  - `/foods`
-  - `/exchange`
-  - `/renal`
-  - `/formulas`
-  - `/packaged/:id`
-- `GET /packaged/pending`, `POST /packaged/:id/approve`, `POST /packaged/:id/reject`
-- `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/:id` — **root key only**, see [API keys](#api-keys)
-- `POST /oauth/token` — OAuth 2.0 `client_credentials` token endpoint, see [OAuth 2.0](#oauth-20-machine-to-machine)
-- `GET /admin/oauth-clients`, `POST /admin/oauth-clients`, `DELETE /admin/oauth-clients/:id` — **root key only**
-- `POST /rag/ingest`
+**Works with no key** (the complete list):
+
+- `GET /`
+- `GET /health` (rate-limited)
+- FHIR conformance reads: `GET /fhir/metadata`, `/fhir/CodeSystem/{name}`,
+  `/fhir/OperationDefinition/{id}`, `/fhir/StructureDefinition/{name}`,
+  `/fhir/ConceptMap/{id}`, `/fhir/Questionnaire[/{id}]`
+
+**Carry their own credential instead of an API key** (a request without it is rejected):
+
+- `POST/GET/DELETE /developer/keys`: the caller's Supabase login access token, see [Developer portal](#developer-portal-and-consumer-keys-v1320)
+- `POST /rag/webhook`: the shared secret in the `x-webhook-secret` header (`INGEST_WEBHOOK_SECRET`)
+
+**Any valid API key** (a consumer key from the developer console, or a reviewer or admin key) is enough for
+everything else that reads data or computes, plus user-scoped data: all other `GET` routes,
+`GET /foods/lookup`, `POST /packaged/submit`, `POST /packaged/scan`, `POST /rag/retrieve`,
+`POST /rag/ask`, `/memory/*` (except consolidate), `/favorites`, `/history`, `/log`,
+`/recipes/calculate`, `/meals/analyze`, `/ingredients/parse`, `/dri/compare`, `POST /batch`, the FHIR
+operations (with the right FHIR scope) and the Fenton compute routes.
+
+**Admin key required** for privileged registry writes and privileged reads:
+
+- All write routes (`POST`, `PUT`, `PATCH`, `DELETE`) on `/foods`, `/exchange`, `/renal`, `/formulas`,
+  `/drug-interactions`, `/glycaemic-index`, the WHO and Fenton reference tables, `/packaged/:id`, and every
+  `POST /:resource/bulk`
+- `GET /packaged/pending`, `POST /packaged/:id/approve`, `POST /packaged/:id/reject` (a `reviewer` key also works here)
+- `POST /rag/ingest`, `/rag/upload`, `/rag/enqueue`, `GET /rag/jobs`, `DELETE /rag/source`
 - `POST /memory/consolidate` (also runs automatically via hourly cron, bypassing HTTP auth)
+- `GET /fhir/AuditEvent` (admin role or an explicit `system/AuditEvent.read` scope)
+- `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/:id`: **root key only**, see [API keys](#api-keys)
 
-The `<key>` can be either the root `ADMIN_API_KEY` or a per-consumer key
-minted via `POST /admin/keys` — see [API keys](#api-keys) for the
-difference.
-
-Public exceptions:
-
-- `GET /health` (public, rate-limited)
-- `POST /packaged/submit`, `POST /packaged/scan` (public, rate-limited)
-- `POST /rag/retrieve`, `POST /rag/ask` (public, rate-limited)
-- `POST /memory/write` (public, rate-limited)
-- `GET /memory/recall` (public, rate-limited)
-- `GET /foods/lookup` (public, rate-limited)
-- All other `GET` endpoints
+A consumer key is refused on every admin route. Bearer tokens are API keys only: OAuth 2.0 was
+removed in v1.34.0 (see the note at the end of the Developer portal section).
 
 ---
 
@@ -216,7 +225,7 @@ admin credential:
   managing other keys.
 - `reviewer` — can only reach the packaged review queue
   (`GET /packaged/pending`, `POST /packaged/:id/approve`,
-  `POST /packaged/:id/reject`) plus all public/`GET` routes. Blocked from
+  `POST /packaged/:id/reject`) plus every route any API key can use. Blocked from
   everything else admin-gated — editing foods, deleting packaged foods, bulk
   inserts, RAG ingest, memory consolidation, key management, etc. A
   reviewer key that leaks can't do much beyond what a reviewer is
@@ -307,10 +316,9 @@ Rules:
 - Keys have the `consumer` role. They fail every admin route (the role ranks below
   `reviewer`), so a consumer key can read and compute but never write data, manage
   keys or reach the packaged review queue.
-- On public routes a consumer key gets **3x** that route's rate limit, counted in its
+- On every non-admin route a consumer key gets **3x** that route's rate limit, counted in its
   own per-key bucket instead of the shared per-IP one. Batch sub-requests count too.
-- FHIR: consumer keys carry `system/*.*`, so every `/fhir` operation works in enforce
-  mode. A wildcard never covers `AuditEvent`, so audit reads stay admin-only.
+- FHIR: consumer keys carry `system/*.*`, so every `/fhir` operation works. A wildcard never covers `AuditEvent`, so audit reads stay admin-only.
 - Usage counts are approximate daily counters in KV (`usage:<key id>:<day>`, kept 8 days).
 - Only the SHA-256 hash of a key is stored, plus a short prefix for display.
 
@@ -325,99 +333,20 @@ Setup (once):
 
 ---
 
-## Key-required mode (`v1.33.0+`)
+## Getting a key
 
-Set `REQUIRE_API_KEY = "true"` (in `wrangler.toml` `[vars]`) and every route that used to be
-public needs a credential: a consumer key from the developer console, an admin key, or an OAuth
-2.0 access token. Anonymous calls get `401` with `code: "api_key_required"` and a
-`WWW-Authenticate: Bearer` header; the message says how to get a free key.
-
-Send the key as `Authorization: Bearer YOUR_API_KEY`.
-
-**Still open without a key:** `GET /`, `GET /health`, `POST /oauth/token` and
-`GET /.well-known/oauth-authorization-server`, `/developer/*` (it uses the caller's login token),
-`/fhir` (governed by `FHIR_AUTH_MODE`) and the RAG storage webhook (its own shared secret).
-
-**Behaviour:** consumer keys keep their per-key buckets at 3x each route's limit. `/batch` needs a
-key, and the key is passed on to every sub-request. Admin-only routes are unchanged. The flag is
-off by default, so deploying this version changes nothing until you turn it on.
-
-**Rolling it out safely**
-1. Give every app that calls the API a key first (consumer keys are capped at 3 per account;
-   server apps can use OAuth clients instead, see below).
-2. Check per-key usage in the developer console and confirm no anonymous traffic remains.
-3. Set `REQUIRE_API_KEY = "true"`, commit and push. Plain `[vars]` are reset to the file on each
-   deploy, so changing it in the dashboard would not last.
-4. To roll back, set it to `"false"` and push.
+Sign in on the docs site (Supabase Auth), confirm your email, then create a key on the account page
+(or `POST /developer/keys`). Send it as `Authorization: Bearer YOUR_API_KEY` on every route.
+`/batch` needs a key, and it is passed on to every sub-request. Server apps that need to write
+registry data use an admin key minted with `POST /admin/keys`.
 
 Browser apps cannot keep a key secret. Treat a key shipped in front-end code as public: give it
 its own label, never reuse it elsewhere, and revoke it if it is abused.
 
-## OAuth 2.0 (machine-to-machine)
-
-For services that call the API on their own behalf (MCP server, Thanzi Coach,
-apps) there's an OAuth 2.0 **client_credentials** flow, so a service holds a
-revocable client secret instead of a long-lived admin key. A client exchanges
-its credentials for a **1-hour bearer token**, then uses it exactly like an API
-key (`Authorization: Bearer <token>`) on any admin route, including `/batch`.
-Tokens carry the client's role (`admin` or `reviewer`), so role limits apply
-unchanged. Existing API keys keep working.
-
-**One-time setup**
-
-1. Run `sql/014_add_oauth_clients.sql` in the Supabase SQL editor.
-2. Add a Worker secret `OAUTH_SIGNING_SECRET` in the Cloudflare dashboard
-   (Workers & Pages → chakudya-api → Settings → Variables and Secrets).
-   Generate one with `openssl rand -hex 32`. Rotating it invalidates all
-   outstanding tokens (clients simply fetch a new one).
-
-**Create a client** (root key only; the secret is shown once):
-
-```bash
-curl -X POST https://your-worker-url/admin/oauth-clients \
-  -H "Authorization: Bearer <ADMIN_API_KEY>" -H "Content-Type: application/json" \
-  -d '{"label":"thanzi-coach","role":"admin"}'
-# -> client_id: cnr_client_..., client_secret: cnr_secret_...
-```
-
-**Get a token** (HTTP Basic, or `client_id`/`client_secret` form fields):
-
-```bash
-curl -X POST https://your-worker-url/oauth/token \
-  -u "$CLIENT_ID:$CLIENT_SECRET" -d "grant_type=client_credentials"
-# -> {"access_token":"eyJ...","token_type":"Bearer","expires_in":3600,"scope":"admin"}
-```
-
-Optional `scope=reviewer` requests a narrower token than the client's role;
-asking for more than the client's role returns `invalid_scope`.
-
-**Use it, caching until shortly before expiry:**
-
-```js
-let cached = { token: null, exp: 0 };
-async function getToken(env, base) {
-  if (cached.token && Date.now() < cached.exp - 60_000) return cached.token;
-  const res = await fetch(`${base}/oauth/token`, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${env.CNR_CLIENT_ID}:${env.CNR_CLIENT_SECRET}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-  });
-  if (!res.ok) throw new Error(`token request failed: ${res.status}`);
-  const { access_token, expires_in } = await res.json();
-  cached = { token: access_token, exp: Date.now() + expires_in * 1000 };
-  return access_token;
-}
-```
-
-**Revoke:** `DELETE /admin/oauth-clients/:id` (root key). New tokens stop
-immediately and already-issued tokens are rejected too (KV denylist; if
-`RATE_LIMIT_KV` isn't bound they live out their hour). `GET /admin/oauth-clients`
-lists clients without secrets. Discovery metadata (RFC 8414):
-`GET /.well-known/oauth-authorization-server`. The token endpoint is limited
-to 10 requests/min per IP.
+**OAuth 2.0 was removed (v1.34.0).** `POST /oauth/token`, `GET /.well-known/oauth-authorization-server`
+and `/admin/oauth-clients` no longer exist, and the `OAUTH_SIGNING_SECRET` secret is unused. A service that
+used a client id and secret should switch to an API key. Before dropping the old table, run step 1 of
+`sql/030_drop_oauth_clients.sql` to see whether any client was still using it.
 
 ---
 
@@ -431,7 +360,7 @@ to 10 requests/min per IP.
 - **Admin writes (general)**: `60/min` per admin token
 - **RAG ingest (`POST /rag/ingest`)**: `30/min` per admin token
 - **Developer keys (`/developer/keys`)**: `10/min` per IP to create, `30/min` to list or revoke
-- **Consumer keys**: 3x every public limit above, per key (see Developer portal)
+- **Consumer keys**: 3x every per-IP limit above, per key (see Developer portal)
 - **Batch (`POST /batch`)**: `10/min` per IP — on top of whatever limit each sub-request's own resource applies
 
 When exceeded:
@@ -505,9 +434,9 @@ curl -s -X POST "https://your-worker.workers.dev/rag/retrieve" \
 `smoke-test.sh` re-runs the full manual verification pass (KV binding, RAG cache, edge cache, rate limiting, memory recall cache + session isolation, foods lookup cascade) in one command instead of doing it by hand after every deploy or dashboard change:
 
 ```bash
-bash smoke-test.sh
+CNR_API_KEY=your_key bash smoke-test.sh
 # or against a different deployment:
-bash smoke-test.sh https://your-worker.workers.dev
+CNR_API_KEY=your_key bash smoke-test.sh https://your-worker.workers.dev
 ```
 
 Takes about 90 seconds (most of that is a deliberate 60s pause to let the rate-limit window reset before the script continues). Exits non-zero if anything fails, so it's safe to wire into a CI step later if useful.
@@ -532,7 +461,7 @@ column list per table lives here in the README and evolves on its own.
 
 ### Health
 
-- `GET /health` *(public, rate-limited)* — pings Supabase, Cohere, Groq,
+- `GET /health` *(no key needed, rate-limited)* — pings Supabase, Cohere, Groq,
   and Open Food Facts in parallel and reports per-service status plus an
   overall `healthy`/`degraded` verdict. Useful for quickly narrowing down
   which upstream is the cause when a route starts failing, instead of
@@ -572,7 +501,7 @@ respond).
 
 ### Batch
 
-- `POST /batch` *(public, rate-limited, max 20 sub-requests)* — runs several
+- `POST /batch` *(API key, rate-limited, max 20 sub-requests)* — runs several
   sub-requests in one HTTP call and returns all their results together.
   Built for clients (the MCP server, the SDK, or any caller) that would
   otherwise make several separate calls per user action — e.g. a few
@@ -772,13 +701,13 @@ GET /foods/45?with_servings=true
 - `offset` (default `0`)
 - `with_servings` → `true` to add `serving_sizes` (see above)
 
-**`GET /foods/autocomplete?q=...&max_results=`** *(public, rate-limited, cached 1h)* — search-as-you-type suggestions via FatSecret's Premier-exclusive `foods.autocomplete.v2`. `max_results` defaults to `4`, capped at `10` (FatSecret's own limit). Returns a plain array of strings:
+**`GET /foods/autocomplete?q=...&max_results=`** *(API key, rate-limited, cached 1h)* — search-as-you-type suggestions via FatSecret's Premier-exclusive `foods.autocomplete.v2`. `max_results` defaults to `4`, capped at `10` (FatSecret's own limit). Returns a plain array of strings:
 
 ```json
 { "status": "success", "data": ["chicken", "chicken breast", "chicken salad"] }
 ```
 
-**`GET /foods/categories`** *(public, rate-limited, cached 24h)* — the full FatSecret food category list (near-static reference data), via the Premier-exclusive `food_categories.get.v2`:
+**`GET /foods/categories`** *(API key, rate-limited, cached 24h)* — the full FatSecret food category list (near-static reference data), via the Premier-exclusive `food_categories.get.v2`:
 
 ```json
 { "status": "success", "data": [{ "id": "1", "name": "Beans & Legumes", "description": "..." }] }
@@ -786,7 +715,7 @@ GET /foods/45?with_servings=true
 
 Both of the above require `FATSECRET_CONSUMER_KEY`/`FATSECRET_CONSUMER_SECRET` on a **Premier or Premier Free** plan — a Basic/free-tier key returns FatSecret error 14 ("Missing scope"), which surfaces here as a `503` ("not configured on this deployment"). See [Required Environment Variables](#required-environment-variables--bindings).
 
-**`GET /foods/substitutes?food_name=chicken&limit=`** *(public, rate-limited, cached 1h)* — Malawi-specific substitution suggestions, entirely local (no FatSecret dependency). Resolves `food_name` the same way a `/meals/analyze` ingredient resolves (local `foods` match, falling back to the external lookup cascade), classifies it into a substitution group, then ranks candidates from `foods` by nutritional closeness on that group's primary nutrient.
+**`GET /foods/substitutes?food_name=chicken&limit=`** *(API key, rate-limited, cached 1h)* — Malawi-specific substitution suggestions, entirely local (no FatSecret dependency). Resolves `food_name` the same way a `/meals/analyze` ingredient resolves (local `foods` match, falling back to the external lookup cascade), classifies it into a substitution group, then ranks candidates from `foods` by nutritional closeness on that group's primary nutrient.
 
 The grouping deliberately overrides the plain category taxonomy where it matters for how people actually substitute: chicken/fish/eggs (category `Protein`) and beans/soya/groundnuts (category `Legumes`) are treated as one combined "Protein / body-building foods" group, ranked by protein per 100g; grains plus cassava/potatoes are one "Starches / staples" group, ranked by carbohydrate. Everything else falls back to its own plain category. `limit` defaults to `5`, capped at `15`.
 
@@ -814,7 +743,7 @@ The grouping deliberately overrides the plain category taxonomy where it matters
 
 Ranking is a single primary nutrient's closeness, not a full dietary-equivalence judgment — it doesn't know about cost, local availability, taste, or realistic portion size, and every candidate's full `comparison_vs_original` (kcal/protein/carbs/fat/iron/calcium) is included precisely so a clinician or cook can see *how* it differs, not just that it's "close".
 
-**`GET /foods/compare?foods=nsima,rice,potatoes`** *(public, rate-limited, cached 1h)* — Nutrient Comparison: lines up 2-6 foods side by side. Resolves each name the same way `/foods/substitutes` does (local match, falling back to the external lookup cascade), then returns per-100g energy, protein, carbohydrate, fiber, fat, and the full micronutrient panel for each — plus `nutrient_comparison`, the same fields pivoted per-nutrient with the highest/lowest food flagged, so "which has more iron" doesn't need re-deriving client-side.
+**`GET /foods/compare?foods=nsima,rice,potatoes`** *(API key, rate-limited, cached 1h)* — Nutrient Comparison: lines up 2-6 foods side by side. Resolves each name the same way `/foods/substitutes` does (local match, falling back to the external lookup cascade), then returns per-100g energy, protein, carbohydrate, fiber, fat, and the full micronutrient panel for each — plus `nutrient_comparison`, the same fields pivoted per-nutrient with the highest/lowest food flagged, so "which has more iron" doesn't need re-deriving client-side.
 
 Glycaemic considerations are included **only where a published, sourced value exists** — nothing is estimated or guessed. Each food gets either a `glycaemic.entries[]` (measured GI/GL with citation, from the `glycaemic_index_data` reference table — see below) or `glycaemic: null` plus a clearly-labelled `glycaemic_note` heuristic (fiber-to-carbohydrate ratio only, explicitly not presented as a GI value).
 
@@ -865,7 +794,7 @@ The bundled seed covers Malawi's three nsima processing variants (Mlotha et al. 
 
 WHO 2007 BMI-for-age reference for children and adolescents from 5y 1m to 19y 0m (61 to 228 completed months), as printed in the Malawi Ministry of Health guide *Eat Well to Live Well* (2021), Annex 2. Table: [`sql/012_add_bmi_for_age.sql`](sql/012_add_bmi_for_age.sql), 336 rows (168 girls, 168 boys), one per sex per age in months, each with the -3SD to +3SD BMI cut-offs. Values are transcribed from the guide, not estimated. Classification logic: [`src/bmiForAge.js`](src/bmiForAge.js).
 
-- `GET /bmi-for-age/classify` *(public, rate-limited, cached 1h)* — `sex` (`girls` or `boys`; `girl`/`boy`/`female`/`male`/`f`/`m` also accepted), `age_months` (whole number, years x 12 + months, so 7y 11m = 95), and either `bmi` or both `weight_kg` and `height_cm`. Returns `status`, the rounded `bmi`, and the `cutoffs` used.
+- `GET /bmi-for-age/classify` *(API key, rate-limited, cached 1h)* — `sex` (`girls` or `boys`; `girl`/`boy`/`female`/`male`/`f`/`m` also accepted), `age_months` (whole number, years x 12 + months, so 7y 11m = 95), and either `bmi` or both `weight_kg` and `height_cm`. Returns `status`, the rounded `bmi`, and the `cutoffs` used.
 - `GET /bmi-for-age` — the raw reference rows; optional `sex` and `age_months` filters, standard pagination.
 - `POST /bmi-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/bmi_for_age_seed.json`](scripts/bmi_for_age_seed.json). A unique `(sex, age_months)` constraint rejects a second seeding attempt instead of duplicating rows.
 
@@ -892,7 +821,7 @@ Cut-offs (strict inequalities, compared against the **unrounded** BMI, so a disp
 
 WHO Child Growth Standards 6-month head circumference **increments** (simplified field tables), birth to 24 months, -3 SD to +3 SD, for girls and boys. Table: [`sql/018_add_who_hc_velocity.sql`](sql/018_add_who_hc_velocity.sql), 38 rows (19 girls + 19 boys), one per sex per 6-month window (0-6, 1-7, ... 18-24 months). Values are transcribed from the printed tables, not estimated. Logic: [`src/hcVelocity.js`](src/hcVelocity.js). This is how fast the head grew over a window, **not** head circumference for age.
 
-- `GET /hc-velocity/classify` *(public, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first measurement; 3 means the 3-9 month window), and either `increment_cm` or both `hc_start_cm` and `hc_end_cm`. Optional `end_age_months` must equal start + 6. Returns `status`, `increment_cm`, `z_approx` (interpolated between the printed SDs, null beyond -3 or +3) and the `cutoffs` used.
+- `GET /hc-velocity/classify` *(API key, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first measurement; 3 means the 3-9 month window), and either `increment_cm` or both `hc_start_cm` and `hc_end_cm`. Optional `end_age_months` must equal start + 6. Returns `status`, `increment_cm`, `z_approx` (interpolated between the printed SDs, null beyond -3 or +3) and the `cutoffs` used.
 - `GET /hc-velocity` — the raw reference rows; optional `sex` and `start_age_months` filters, standard pagination.
 - `POST /hc-velocity/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/who_hc_velocity_seed.json`](scripts/who_hc_velocity_seed.json). A unique `(sex, interval_start_months)` constraint rejects a second seeding attempt.
 
@@ -908,7 +837,7 @@ Setup: run `sql/018_add_who_hc_velocity.sql` in the Supabase SQL editor, then `P
 
 WHO Child Growth Standards 6-month length **increments** (simplified field tables), birth to 24 months, -3 SD to +3 SD, for girls and boys. Table: [`sql/019_add_who_length_velocity.sql`](sql/019_add_who_length_velocity.sql), 38 rows (19 girls + 19 boys), one per sex per 6-month window (0-6, 1-7, ... 18-24 months). Values are transcribed from the printed tables, not estimated. Logic: [`src/lengthVelocity.js`](src/lengthVelocity.js) (classification shared with `src/hcVelocity.js`). This is how fast the child grew over a window, **not** length for age.
 
-- `GET /length-velocity/classify` *(public, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first measurement; 3 means the 3-9 month window), and either `increment_cm` or both `length_start_cm` and `length_end_cm`. Optional `end_age_months` must equal start + 6. Returns `status`, `increment_cm`, `z_approx` (interpolated between the printed SDs, null beyond -3 or +3) and the `cutoffs` used.
+- `GET /length-velocity/classify` *(API key, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first measurement; 3 means the 3-9 month window), and either `increment_cm` or both `length_start_cm` and `length_end_cm`. Optional `end_age_months` must equal start + 6. Returns `status`, `increment_cm`, `z_approx` (interpolated between the printed SDs, null beyond -3 or +3) and the `cutoffs` used.
 - `GET /length-velocity` — the raw reference rows; optional `sex` and `start_age_months` filters, standard pagination.
 - `POST /length-velocity/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/who_length_velocity_seed.json`](scripts/who_length_velocity_seed.json). A unique `(sex, interval_start_months)` constraint rejects a second seeding attempt.
 
@@ -926,7 +855,7 @@ WHO Child Growth Standards 6-month weight **increments in grams** (simplified fi
 
 **Where the numbers come from:** the -3 SD to +3 SD cut-offs for both sexes are transcribed from the printed WHO z-score tables. Each row also stores that table's L, M, S and Delta parameters, so the API returns an exact z-score and percentile (`z = (((x + Delta) / M)^L - 1) / (L*S)`) as well as the band. A unit test re-checks all 266 stored cut-offs against their own L, M, S and Delta within 1 g.
 
-- `GET /weight-velocity/classify` *(public, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first weighing; 3 means the 3-9 month window), and either `increment_g` (grams) or both `weight_start_kg` and `weight_end_kg` (kilograms). Optional `end_age_months` must equal start + 6. Returns `status`, `increment_g`, `z_score`, `percentile` and the `cutoffs` (grams) used. `z_score` and `percentile` are `null` when the Delta-shifted increment is not positive.
+- `GET /weight-velocity/classify` *(API key, rate-limited, cached 1h)* — `sex`, `start_age_months` (0-18, whole months at the first weighing; 3 means the 3-9 month window), and either `increment_g` (grams) or both `weight_start_kg` and `weight_end_kg` (kilograms). Optional `end_age_months` must equal start + 6. Returns `status`, `increment_g`, `z_score`, `percentile` and the `cutoffs` (grams) used. `z_score` and `percentile` are `null` when the Delta-shifted increment is not positive.
 - `GET /weight-velocity` — the raw reference rows including L, M, S and Delta; optional `sex` and `start_age_months` filters, standard pagination.
 - `POST /weight-velocity/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/who_weight_velocity_seed.json`](scripts/who_weight_velocity_seed.json). A unique `(sex, interval_start_months)` constraint rejects a second seeding attempt.
 
@@ -944,7 +873,7 @@ WHO Child Growth Standards **arm circumference-for-age** (cm), 3 to 60 months, g
 
 **Where the numbers come from:** the -3 SD to +3 SD cut-offs are transcribed from the WHO expanded z-score tables, and each row stores that table's L, M and S, so the API returns an exact z-score and percentile (`z = ((x / M)^L - 1) / (L*S)`; beyond +/-3 SD WHO's linear extension is used). A unit test re-checks every stored cut-off against its own L, M, S within 0.001 cm.
 
-- `GET /muac-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (3-60, whole months), and `muac_cm` or `muac_mm`. Returns `status`, `muac_cm`, `z_score`, `percentile` and the `cutoffs` (cm) used.
+- `GET /muac-for-age/classify` *(API key, rate-limited, cached 1h)* — `sex`, `age_months` (3-60, whole months), and `muac_cm` or `muac_mm`. Returns `status`, `muac_cm`, `z_score`, `percentile` and the `cutoffs` (cm) used.
 - `GET /muac-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
 - `POST /muac-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed files: [`scripts/muac_for_age_seed.json`](scripts/muac_for_age_seed.json) (months 3-35) and [`scripts/muac_for_age_seed_36_60.json`](scripts/muac_for_age_seed_36_60.json) (months 36-60, from WHO's monthly 3-5 year tables, cut-offs recomputed from the printed L, M, S); post each once. A unique `(sex, age_months)` constraint rejects re-seeding of months already present, so the table can be loaded in more than one file. Regenerate or extend the seed with `node scripts/build_muac_seed.mjs <girls.txt> <boys.txt>` (months missing from the input are skipped and listed).
 
@@ -968,7 +897,7 @@ Severe / moderate / normal classification of mid-upper arm circumference by age 
 | 10-14 years | < 16 cm | 16-18 cm | > 18 cm |
 | Adults (15 y+) | < 18 cm | 18-21 cm | > 21 cm |
 
-- `GET /muac/classify` *(public, rate-limited, cached 1h)* — `age_months` (6 or more, whole months), `muac_cm` or `muac_mm`, optional `scheme` (`who_hiv_2008` default, or `cmam`). Returns `age_group`, `status`, `muac_cm` and the `cutoffs_cm` used. Moderate includes both end values.
+- `GET /muac/classify` *(API key, rate-limited, cached 1h)* — `age_months` (6 or more, whole months), `muac_cm` or `muac_mm`, optional `scheme` (`who_hiv_2008` default, or `cmam`). Returns `age_group`, `status`, `muac_cm` and the `cutoffs_cm` used. Moderate includes both end values.
 
 **`scheme=cmam` (6-59 months only):** add `&scheme=cmam` for the WHO/UNICEF community screening cut-offs used by CMAM programmes: below 11.5 cm severe, 11.5 to below 12.5 cm moderate, 12.5 cm and above normal (note 12.5 itself is normal here, unlike the chart above where the upper end value is moderate). The default is `scheme=who_hiv_2008`, the chart above. The two differ for 6-59 months, so check which one your programme follows. For MUAC as a z-score for age see [`/muac-for-age`](#muac-for-age-muac-for-age).
 
@@ -982,7 +911,7 @@ WHO **length/height-for-age** (cm), birth to 19 years, girls and boys (the stunt
 
 **Where the numbers come from:** each row stores the table's L, M, S, and the -3 SD to +3 SD cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal). A unit test re-checks every row. L is 1 in these tables, so `z = (x - M) / (M*S)`. Rebuild the 0-5 year seed with `python3 scripts/build_lhfa_seed.py <girls_0_2.xlsx> <girls_2_5.xlsx> <boys_0_2.xlsx> <boys_2_5.xlsx>` and the 5-19 year seed with `python3 scripts/build_hfa_5_19_seed.py <girls.xlsx> <boys.xlsx>`. The 5-19 year cut-offs are the printed WHO 3-decimal values.
 
-- `GET /length-height-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-228), and `length_cm` or `height_cm` (or the `_mm` versions). Optional `measured=lying|standing`; the default is lying under 24 months and standing from 24. If the child was measured the other way, 0.7 cm is subtracted (lying value on a child 24 months or older) or added (standing value on a child under 24 months), and `position_adjustment` says so. Returns `status`, `reference`, `value_cm`, `z_score`, `percentile`, `implausible` and the `cutoffs` (cm).
+- `GET /length-height-for-age/classify` *(API key, rate-limited, cached 1h)* — `sex`, `age_months` (0-228), and `length_cm` or `height_cm` (or the `_mm` versions). Optional `measured=lying|standing`; the default is lying under 24 months and standing from 24. If the child was measured the other way, 0.7 cm is subtracted (lying value on a child 24 months or older) or added (standing value on a child under 24 months), and `position_adjustment` says so. Returns `status`, `reference`, `value_cm`, `z_score`, `percentile`, `implausible` and the `cutoffs` (cm).
 - `GET /length-height-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
 - `POST /length-height-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed files: [`scripts/length_height_for_age_seed.json`](scripts/length_height_for_age_seed.json) (0-60 months) and [`scripts/height_for_age_5_19_seed.json`](scripts/height_for_age_5_19_seed.json) (61-228 months; run `sql/023` first). A unique `(sex, age_months, measured)` constraint rejects re-seeding.
 
@@ -1000,7 +929,7 @@ WHO **weight-for-age** (kg), birth to 10 years, girls and boys (the underweight 
 
 **Where the numbers come from:** each row stores the table's L, M, S. The 0-60 month cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal); the 61-120 month cut-offs are WHO's printed 3-decimal values. A unit test re-checks every row. `z = ((x/M)^L - 1) / (L*S)`, and beyond +/-3 SD WHO's linear extension is used. Rebuild the seed with `python3 scripts/build_wfa_seed.py <girls_0_5.xlsx> <boys_0_5.xlsx> <girls_5_10.xlsx> <boys_5_10.xlsx>`.
 
-- `GET /weight-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-120), and `weight_kg` or `weight_g`. Returns `status`, `weight_kg`, `z_score`, `percentile`, `implausible` and the `cutoffs` (kg) used.
+- `GET /weight-for-age/classify` *(API key, rate-limited, cached 1h)* — `sex`, `age_months` (0-120), and `weight_kg` or `weight_g`. Returns `status`, `weight_kg`, `z_score`, `percentile`, `implausible` and the `cutoffs` (kg) used.
 - `GET /weight-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
 - `POST /weight-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/weight_for_age_seed.json`](scripts/weight_for_age_seed.json). A unique `(sex, age_months)` constraint rejects re-seeding.
 
@@ -1018,7 +947,7 @@ WHO Child Growth Standards **weight-for-length** (birth to 2 years, lying down, 
 
 **How it works:** the child's **age** picks the table (lying under 24 months, standing from 24), and the length/height, rounded to the nearest 0.1 cm, picks the row. If the child was measured the other way for their age, 0.7 cm is subtracted (lying value on a child 24 months or older) or added (standing value on a child under 24 months), and `position_adjustment` says so (same convention as `/length-height-for-age`). Each row stores the table's L, M, S and WHO's printed 3-decimal -3 SD to +3 SD cut-offs; a unit test re-checks all 2404 rows. `z = ((x/M)^L - 1) / (L*S)`, with WHO's linear extension beyond +/-3 SD. Rebuild the seed with `python3 scripts/build_wflh_seed.py <wfl_girls.xlsx> <wfh_girls.xlsx> <wfl_boys.xlsx> <wfh_boys.xlsx>`.
 
-- `GET /weight-for-length-height/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), `weight_kg` or `weight_g`, and `length_cm` or `height_cm` (or the `_mm` versions); optional `measured=lying|standing`. Returns `status`, `reference`, `weight_kg`, `z_score`, `percentile`, `implausible`, the `cutoffs` (kg) and the length/height actually used. A length/height outside the table (under 45 or over 110 cm lying; under 65 or over 120 cm standing) returns 422.
+- `GET /weight-for-length-height/classify` *(API key, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), `weight_kg` or `weight_g`, and `length_cm` or `height_cm` (or the `_mm` versions); optional `measured=lying|standing`. Returns `status`, `reference`, `weight_kg`, `z_score`, `percentile`, `implausible`, the `cutoffs` (kg) and the length/height actually used. A length/height outside the table (under 45 or over 110 cm lying; under 65 or over 120 cm standing) returns 422.
 - `GET /weight-for-length-height` — raw reference rows; optional `sex`, `measured` and `length_height_cm` filters, standard pagination.
 - `POST /weight-for-length-height/bulk` *(admin)* — see [Bulk insert](#bulk-insert); five seed parts of at most 500 rows: `scripts/weight_for_length_height_seed_1.json` to `_5.json`. A unique `(sex, measured, length_height_cm)` constraint rejects re-seeding.
 
@@ -1036,7 +965,7 @@ WHO Child Growth Standards **BMI-for-age** (kg/m2), birth to 5 years, girls and 
 
 **How it works:** the child's **age** picks the table (lying under 24 months, standing from 24). Pass `weight_kg` (or `weight_g`) with `length_cm` or `height_cm` and the API computes BMI, or pass `bmi` directly. If the child was measured the other way for their age, 0.7 cm is subtracted (lying value, 24 months or older) or added (standing value, under 24 months) **before** BMI is computed, and `position_adjustment` says so (as in WHO Anthro; a BMI passed directly cannot be adjusted). Each row stores the table's L, M, S; the cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal) and a unit test re-checks every row. Rebuild the seed with `python3 scripts/build_bmi_under5_seed.py <girls_0_2.xlsx> <girls_2_5.xlsx> <boys_0_2.xlsx> <boys_2_5.xlsx>`.
 
-- `GET /bmi-for-age-under-5/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), and either `bmi`, or `weight_kg`/`weight_g` with `length_cm`/`height_cm` (or `_mm`); optional `measured=lying|standing`. Returns `status`, `reference`, `bmi`, `z_score`, `percentile`, `implausible` and the `cutoffs` (kg/m2).
+- `GET /bmi-for-age-under-5/classify` *(API key, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), and either `bmi`, or `weight_kg`/`weight_g` with `length_cm`/`height_cm` (or `_mm`); optional `measured=lying|standing`. Returns `status`, `reference`, `bmi`, `z_score`, `percentile`, `implausible` and the `cutoffs` (kg/m2).
 - `GET /bmi-for-age-under-5` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
 - `POST /bmi-for-age-under-5/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/bmi_for_age_under5_seed.json`](scripts/bmi_for_age_under5_seed.json). A unique `(sex, age_months, measured)` constraint rejects re-seeding.
 
@@ -1054,7 +983,7 @@ WHO Child Growth Standards **head circumference-for-age** (cm), birth to 5 years
 
 **Where the numbers come from:** each row stores the table's L, M, S (L is 1, so `z = (x - M) / (M*S)`), and the -3 SD to +3 SD cut-offs are recomputed from them to 3 decimals (the printed ones are rounded to 1 decimal). A unit test re-checks every row. Head circumference is not weight-based, so there is no extension beyond +/-3 SD. Rebuild the seed with `python3 scripts/build_hcfa_seed.py <girls_0_5.xlsx> <boys_0_5.xlsx>`.
 
-- `GET /hc-for-age/classify` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), and `hc_cm` or `hc_mm`. Returns `status`, `hc_cm`, `z_score`, `percentile`, `implausible` and the `cutoffs` (cm).
+- `GET /hc-for-age/classify` *(API key, rate-limited, cached 1h)* — `sex`, `age_months` (0-60), and `hc_cm` or `hc_mm`. Returns `status`, `hc_cm`, `z_score`, `percentile`, `implausible` and the `cutoffs` (cm).
 - `GET /hc-for-age` — raw reference rows including L, M, S; optional `sex` and `age_months` filters, standard pagination.
 - `POST /hc-for-age/bulk` *(admin)* — see [Bulk insert](#bulk-insert); seed file: [`scripts/hc_for_age_seed.json`](scripts/hc_for_age_seed.json). A unique `(sex, age_months)` constraint rejects re-seeding.
 
@@ -1070,7 +999,7 @@ Setup: run `sql/027_add_who_hc_for_age.sql` in the Supabase SQL editor, then `PO
 
 One call, every applicable WHO indicator for the measurements you give. It only orchestrates the single-indicator modules ([`src/growthAssess.js`](src/growthAssess.js)), so each number is identical to what that indicator's own endpoint returns. Needs no new table: it reads the tables from sql/012 and sql/021 to sql/027.
 
-- `GET /growth/assess` *(public, rate-limited, cached 1h)* — `sex`, `age_months` (0-228) and **at least one** measurement: `weight_kg`/`weight_g`, `length_cm`/`height_cm` (or `_mm`), `hc_cm`/`hc_mm`, `muac_cm`/`muac_mm`. Optional `measured=lying|standing` (default lying under 24 months, standing from 24; a mismatch converts by 0.7 cm and is reported) and `muac_scheme=who_hiv_2008|cmam` (for the fixed MUAC result; default `cmam` for 6-59 months so it agrees with `acute_malnutrition_signals`, `who_hiv_2008` for older children).
+- `GET /growth/assess` *(API key, rate-limited, cached 1h)* — `sex`, `age_months` (0-228) and **at least one** measurement: `weight_kg`/`weight_g`, `length_cm`/`height_cm` (or `_mm`), `hc_cm`/`hc_mm`, `muac_cm`/`muac_mm`. Optional `measured=lying|standing` (default lying under 24 months, standing from 24; a mismatch converts by 0.7 cm and is reported) and `muac_scheme=who_hiv_2008|cmam` (for the fixed MUAC result; default `cmam` for 6-59 months so it agrees with `acute_malnutrition_signals`, `who_hiv_2008` for older children).
 
 | Indicator in the response | Needs | Ages |
 |---|---|---|
@@ -1097,12 +1026,12 @@ Weight, length, and head-circumference z-scores/percentiles for preterm infants,
 - There is **no `GET /fenton-preterm` list route** — every read path (`classify`, `profile`, `growth`, `velocity`, `chart`, `references`) only ever returns a computed result (a z-score/percentile/status, a rendered image, or static metadata), never a raw L/M/S row.
 - Don't add one, and don't add a mode to any of the above that echoes L/M/S or the raw curve as JSON — `chart`'s SVG rendering is the one sanctioned way to expose the curve shape, as an image, not data. If this needs to change, that's a conversation with Edison about the data-sharing agreement, not a routine API change.
 
-- `GET /fenton-preterm/classify` *(public, rate-limited, cached 1h)* — `sex` (`boys`/`girls`, or `boy`/`girl`/`male`/`female`/`m`/`f`), `metric` (`weight`/`length`/`hc`), `gest_age_weeks` (22-50), `day` (0-6, day of the gestational week, default 0), `value` (grams for weight, cm for length/hc), and optional `reference_year` (`2013` or `2025`, default `2025`). Returns `z`, `percentile`, and `status`.
-- `POST /fenton-preterm/profile` *(public, rate-limited)* — classify weight + length + HC together at one timepoint. Body: `{sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?}` — at least one of `weight`/`length`/`hc` required, any combination is fine. Returns one `{value, z, percentile, status}` per metric provided.
-- `POST /fenton-preterm/growth` *(public, rate-limited)* — classify a series of same-metric measurements over time and return the trajectory, chart-ready. Body: `{sex, metric, reference_year?, measurements: [{gest_age_weeks, day?, value}, ...]}` (up to 50 points, any order — sorted by age server-side). Returns each point's `{gest_age_weeks, day, value, z, percentile, status}` plus a `trend` block (`first_z`/`last_z`/`min_z`/`max_z`/`z_change_overall`, and `notable_drops`: consecutive-point gaps where z fell ≥0.67 — roughly one major percentile band. Descriptive only, not a clinical threshold.).
-- `POST /fenton-preterm/velocity` *(public, rate-limited)* — same body shape as `/growth`, 2+ points. Returns velocity for each consecutive pair: weight in **g/kg/day** (average-weight method: Δweight / average-weight-kg / days — the long-standing NICU convention), length/HC in **cm/week**.
-- `GET /fenton-preterm/chart` *(public, rate-limited, cached 1h)* — `sex`, `metric`, optional `reference_year`, and optional `points` (e.g. `points=28w0d:900,30w0d:1200,32w0d:1500` — day suffix optional, defaults `0`) to overlay an infant's own trajectory. Returns a self-contained **SVG image** (`Content-Type: image/svg+xml`) with the P3/P10/P50/P90/P97 reference curves and, if given, the overlay points/line. **This is the only endpoint that touches the full reference curve, and it never returns curve data as JSON — only rendered vector graphics** (mirrors Dr. Fenton's own public tool, which outputs jpg/pdf images rather than data points). See [`src/fentonChart.js`](src/fentonChart.js).
-- `GET /fenton-preterm/references` *(public, rate-limited, cached 1h)* — static metadata: both years' citations/DOIs, sexes, metrics, the **exact** valid age range per (year, metric) — verified against the seeded data, not approximated — and the license summary. No L/M/S values.
+- `GET /fenton-preterm/classify` *(API key, rate-limited, cached 1h)* — `sex` (`boys`/`girls`, or `boy`/`girl`/`male`/`female`/`m`/`f`), `metric` (`weight`/`length`/`hc`), `gest_age_weeks` (22-50), `day` (0-6, day of the gestational week, default 0), `value` (grams for weight, cm for length/hc), and optional `reference_year` (`2013` or `2025`, default `2025`). Returns `z`, `percentile`, and `status`.
+- `POST /fenton-preterm/profile` *(API key, rate-limited)* — classify weight + length + HC together at one timepoint. Body: `{sex, reference_year?, gest_age_weeks, day?, weight?, length?, hc?}` — at least one of `weight`/`length`/`hc` required, any combination is fine. Returns one `{value, z, percentile, status}` per metric provided.
+- `POST /fenton-preterm/growth` *(API key, rate-limited)* — classify a series of same-metric measurements over time and return the trajectory, chart-ready. Body: `{sex, metric, reference_year?, measurements: [{gest_age_weeks, day?, value}, ...]}` (up to 50 points, any order — sorted by age server-side). Returns each point's `{gest_age_weeks, day, value, z, percentile, status}` plus a `trend` block (`first_z`/`last_z`/`min_z`/`max_z`/`z_change_overall`, and `notable_drops`: consecutive-point gaps where z fell ≥0.67 — roughly one major percentile band. Descriptive only, not a clinical threshold.).
+- `POST /fenton-preterm/velocity` *(API key, rate-limited)* — same body shape as `/growth`, 2+ points. Returns velocity for each consecutive pair: weight in **g/kg/day** (average-weight method: Δweight / average-weight-kg / days — the long-standing NICU convention), length/HC in **cm/week**.
+- `GET /fenton-preterm/chart` *(API key, rate-limited, cached 1h)* — `sex`, `metric`, optional `reference_year`, and optional `points` (e.g. `points=28w0d:900,30w0d:1200,32w0d:1500` — day suffix optional, defaults `0`) to overlay an infant's own trajectory. Returns a self-contained **SVG image** (`Content-Type: image/svg+xml`) with the P3/P10/P50/P90/P97 reference curves and, if given, the overlay points/line. **This is the only endpoint that touches the full reference curve, and it never returns curve data as JSON — only rendered vector graphics** (mirrors Dr. Fenton's own public tool, which outputs jpg/pdf images rather than data points). See [`src/fentonChart.js`](src/fentonChart.js).
+- `GET /fenton-preterm/references` *(API key, rate-limited, cached 1h)* — static metadata: both years' citations/DOIs, sexes, metrics, the **exact** valid age range per (year, metric) — verified against the seeded data, not approximated — and the license summary. No L/M/S values.
 - `POST /fenton-preterm/bulk` *(admin)* — see [Bulk insert](#bulk-insert); 5 seed files (500 rows each except the last, 284): [`scripts/fenton_preterm_seed_1.json`](scripts/fenton_preterm_seed_1.json) through `_5.json`. Run all 5 — the unique `(reference_year, sex, metric, time_days)` constraint rejects a repeat seed instead of duplicating rows.
 
 ```
@@ -1178,8 +1107,8 @@ Length and head-circumference reference data start partway through the 22-50 wee
 
 Phase 1 (below) is a stateless FHIR R4 translation layer over the classify endpoints above. **Phase 2 adds the whole Nutrition Care Process** — see [NCP operations](#ncp-operations-fhir-phase-2). Groundwork for future EHR/HIE integration. **Not a FHIR server with storage** (Chakudya has never persisted patient records, and this doesn't change that — a real EHR is expected to store the returned `Observation` itself), and **not yet registered with any OpenHIM/HIE instance** — that's a separate, later step once there's a real instance to register with. See [`src/fhir.js`](src/fhir.js) for the full scope note.
 
-- `GET /fhir/metadata` *(public, rate-limited)* — FHIR `CapabilityStatement`.
-- `POST /fhir/Observation/$evaluate-growth` *(public, rate-limited)* — body is a FHIR `Parameters` resource:
+- `GET /fhir/metadata` *(no key needed, rate-limited)* — FHIR `CapabilityStatement`.
+- `POST /fhir/Observation/$evaluate-growth` *(API key, rate-limited)* — body is a FHIR `Parameters` resource:
   ```json
   {
     "resourceType": "Parameters",
@@ -1244,11 +1173,11 @@ The Academy of Nutrition and Dietetics Nutrition Care Process, end to end, as st
 | 3. Intervention | `POST /fhir/CarePlan/$intervene` | `CarePlan` + `Goal`s + `NutritionOrder`s (oral diet / supplement / enteral formula) + `ServiceRequest`s (education / counseling / coordination of care) |
 | 4. Monitoring & evaluation | `POST /fhir/Goal/$evaluate` | `Goal` with `achievementStatus` (achieved / improving / no-change / worsening / sustaining / not-achieved / in-progress) + outcome `Observation` |
 | 4. Monitoring & evaluation (follow-up visit) | `POST /fhir/CarePlan/$monitor` | follow-up `Observation`s / `QuestionnaireResponse`s linked to patient, encounter and plan, change from baseline, updated `Goal`s, plan-review `Task`s and a draft successor `CarePlan` |
-| Terminology | `GET /fhir/CodeSystem/ncp-diagnosis` | the NI/NC/NB diagnostic terms as a FHIR `CodeSystem` (public, from Supabase) |
+| Terminology | `GET /fhir/CodeSystem/ncp-diagnosis` | the NI/NC/NB diagnostic terms as a FHIR `CodeSystem` (no key needed, from Supabase) |
 | Conformance | `GET /fhir/CodeSystem/{name}`, `/fhir/OperationDefinition/{id}`, `/fhir/StructureDefinition/{name}` | static definitions behind every URL the facade emits |
 | 5. Documentation | `POST /fhir/Bundle/$ncp-document` | one complete ADIME `Composition` **document Bundle** assembled from the Bundles above, identified and validated (structure, references, links) |
 | 6. Professional and institutional context | `POST /fhir/Bundle/$care-context` | linked `Organization`, `Practitioner`, `PractitionerRole` and `CareTeam` resources (author, role, facility, multidisciplinary team) |
-| 7. Interoperability and governance | `POST /fhir/$validate`, `POST /fhir/ConceptMap/$translate`, `GET /fhir/AuditEvent`, `GET /fhir/ConceptMap/{id}` | R4 structural check, terminology mappings, audit trail; scopes + `FHIR_AUTH_MODE`; profiles and Provenance on the document |
+| 7. Interoperability and governance | `POST /fhir/$validate`, `POST /fhir/ConceptMap/$translate`, `GET /fhir/AuditEvent`, `GET /fhir/ConceptMap/{id}` | R4 structural check, terminology mappings, audit trail; scopes; profiles and Provenance on the document |
 | Documentation (check) | `POST /fhir/Bundle/$validate-document` | `OperationOutcome` with errors and warnings for any document Bundle |
 
 **What Chakudya computes vs. what the clinician supplies.** Chakudya computes the deterministic parts (BMI, % weight change, MUST score, Mifflin-St Jeor BEE, GLIM criteria logic, goal progress). It does **not** choose the nutrition diagnosis, goals or orders — the PES statement, targets, diet prescription etc. are inputs it validates and shapes into FHIR. Energy/protein requirements are only produced when you pass `energyFactor` / `proteinGPerKg`; the factor is your clinical call, not a default. Everything carries the screening-aid disclaimer.
@@ -1365,20 +1294,13 @@ curl -s -X POST "$BASE/fhir/Observation/\$assess-nutrition" -H 'content-type: ap
 
 Source: [`src/fhirGovernance.js`](src/fhirGovernance.js) (pure functions), wiring in `src/index.js`, tests in `test/fhirGovernance.test.js`, migration `sql/028_add_fhir_governance.sql`.
 
-**Authentication and access control.** Credentials are the ones that already exist: the root key, a per-consumer API key, or an OAuth 2.0 access token (`POST /oauth/token`, client_credentials), sent as `Authorization: Bearer`.
+**Authentication and access control.** Credentials are API keys (the root key, an admin or reviewer key, or a consumer key from the developer console), sent as `Authorization: Bearer`. Access control is always on; there is no open mode and no environment switch. Every operation needs a credential **with the scope**. Open without a key: `GET /fhir/metadata`, `CodeSystem`, `OperationDefinition`, `StructureDefinition`, `ConceptMap` and `Questionnaire` reads only. `POST /fhir/ConceptMap/$translate` is an operation, so it needs a key (a `read` scope).
 
-| `FHIR_AUTH_MODE` | Behaviour |
-|---|---|
-| unset / `open` (default, unchanged) | Clinical operations stay public, as before. A valid token is still recognised, so the audit trail can name the caller. |
-| `enforce` | Every operation needs a credential **with the scope**. Always open: `GET /fhir/metadata`, `CodeSystem`, `OperationDefinition`, `StructureDefinition`, `ConceptMap`, `Questionnaire` and `POST /fhir/ConceptMap/$translate`. |
-
-*Use `enforce` in production.* `open` exists so existing integrations keep working until they hold credentials; it is not a safe setting for real patient data.
-
-Scopes are `system/<ResourceType|*>.<read|write|*>`. An operation that produces clinical content needs `write` on its resource type (`Condition/$diagnose` needs `system/Condition.write`, `Bundle/$ncp-document` needs `system/Bundle.write`); checking and translating (`$validate`, `Bundle/$validate-document`, `QuestionnaireResponse/$validate`) need `read`. With no explicit scopes, the role decides: `admin` and the root key carry `system/*.*`, `reviewer` carries `system/*.read` (so a reviewer key can validate but not generate). To narrow a credential, give it `fhir_scopes` when you create it: `POST /admin/keys` or `POST /admin/oauth-clients` with `{"label": "...", "role": "reviewer", "fhir_scopes": "system/Condition.write system/CarePlan.write"}` (run `sql/028` first). Failures: **401** (`issue.code: login`, with `WWW-Authenticate: Bearer`) with no or a bad credential; **403** (`forbidden`) when the scope is missing. `AuditEvent` is never covered by a wildcard type scope.
+Scopes are `system/<ResourceType|*>.<read|write|*>`. An operation that produces clinical content needs `write` on its resource type (`Condition/$diagnose` needs `system/Condition.write`, `Bundle/$ncp-document` needs `system/Bundle.write`); checking and translating (`$validate`, `Bundle/$validate-document`, `QuestionnaireResponse/$validate`) need `read`. With no explicit scopes, the role decides: `admin` and the root key carry `system/*.*`, `reviewer` carries `system/*.read` (so a reviewer key can validate but not generate). To narrow a credential, give it `fhir_scopes` when you create it: `POST /admin/keys` with `{"label": "...", "role": "reviewer", "fhir_scopes": "system/Condition.write system/CarePlan.write"}` (run `sql/028` first). Failures: **401** (`issue.code: login`, with `WWW-Authenticate: Bearer`) with no or a bad credential; **403** (`forbidden`) when the scope is missing. `AuditEvent` is never covered by a wildcard type scope.
 
 **OperationOutcome everywhere.** Every error under `/fhir` (including auth failures, rate limits, 404 and 405) is an `OperationOutcome` with a proper `issue.code`, served as `application/fhir+json`. POST responses and AuditEvent reads carry `Cache-Control: no-store`; all carry `X-Content-Type-Options: nosniff` and `X-Request-Id`.
 
-**Audit.** Every non-conformance request under `/fhir`, and every failure, produces one `AuditEvent` (profile `ncp-audit-event`): `type` rest, subtype operation/read/search-type, action `E`/`R`, `recorded`, `outcome` (`0` success, `4` 4xx, `8` 5xx), the agent (API-key or OAuth-client label, or `anonymous`), the route (`POST /fhir/Condition/$diagnose`), the source and the request id as `AuditEvent.id` (= `X-Request-Id`). **Never recorded:** the request or response body, the query string, the token, the full IP (IPv4 is truncated to `a.b.c.0`, IPv6 to its first three groups) and, unless the operator opts in, the patient.
+**Audit.** Every non-conformance request under `/fhir`, and every failure, produces one `AuditEvent` (profile `ncp-audit-event`): `type` rest, subtype operation/read/search-type, action `E`/`R`, `recorded`, `outcome` (`0` success, `4` 4xx, `8` 5xx), the agent (API-key label, or `anonymous` for a refused request), the route (`POST /fhir/Condition/$diagnose`), the source and the request id as `AuditEvent.id` (= `X-Request-Id`). **Never recorded:** the request or response body, the query string, the token, the full IP (IPv4 is truncated to `a.b.c.0`, IPv6 to its first three groups) and, unless the operator opts in, the patient.
 
 | Variable | Effect |
 |---|---|
@@ -1394,13 +1316,13 @@ Scopes are `system/<ResourceType|*>.<read|write|*>`. An operation that produces 
 
 **Terminology mappings.** `GET /fhir/ConceptMap/{id}`: `assessment-item-to-loinc`, `growth-metric-to-loinc`, `ncp-care-role-to-practitioner-role`, `growth-status-to-interpretation`. `POST /fhir/ConceptMap/$translate` (`system`, `code`, optional `url`, `targetSystem`) returns `result` and one `match` per mapping. A code with no true mapping is an explicit negative (`result=false`, or `unmatched` in the map), never a guess. For instance `dietitian` has no HL7 `practitioner-role` equivalent, and only `physician`, `nurse` and `pharmacist` are mapped. The growth-status map is `relatedto`, not `equivalent`.
 
-**R4 validation.** `POST /fhir/$validate` (one `resource` parameter; any resource or Bundle) returns an `OperationOutcome`; `$validate-document` and `$ncp-document` run the same check on every resource in the Bundle (an R4 error stops `$ncp-document` with a 422). It checks element names (unknown ones are warnings), required elements, array/single cardinality, required code bindings, primitive formats (instant, dateTime, date, code, uri, id), references, extensions, narrative XHTML, empty arrays/objects/nulls, and the main invariants (cmp-1, cmp-2, bdl-7/9/10/11, obs-6, gol-1, cpl-3, org-1) for 19 resource types, plus the minimum cardinality of any Chakudya profile named in `meta.profile`. **It is not the HL7 FHIR Validator.** It loads no StructureDefinitions and does not check terminology beyond required bindings. It does not validate against any implementation guide: this facade claims R4 base conformance and its own five profiles only, not IPS, SMART App Launch (OAuth here is client_credentials only), US Core or any national IG. Run the HL7 validator in your pipeline for those. While building this step the checker found and fixed three real defects in earlier steps: empty `entity`/`activity` arrays and Step 5 sections marked empty with no text.
+**R4 validation.** `POST /fhir/$validate` (one `resource` parameter; any resource or Bundle) returns an `OperationOutcome`; `$validate-document` and `$ncp-document` run the same check on every resource in the Bundle (an R4 error stops `$ncp-document` with a 422). It checks element names (unknown ones are warnings), required elements, array/single cardinality, required code bindings, primitive formats (instant, dateTime, date, code, uri, id), references, extensions, narrative XHTML, empty arrays/objects/nulls, and the main invariants (cmp-1, cmp-2, bdl-7/9/10/11, obs-6, gol-1, cpl-3, org-1) for 19 resource types, plus the minimum cardinality of any Chakudya profile named in `meta.profile`. **It is not the HL7 FHIR Validator.** It loads no StructureDefinitions and does not check terminology beyond required bindings. It does not validate against any implementation guide: this facade claims R4 base conformance and its own five profiles only, not IPS, SMART App Launch (there is no OAuth here), US Core or any national IG. Run the HL7 validator in your pipeline for those. While building this step the checker found and fixed three real defects in earlier steps: empty `entity`/`activity` arrays and Step 5 sections marked empty with no text.
 
-**CapabilityStatement.** `rest.security` (OAuth service, token URL, scope model, the current mode), system-level `validate`, `supportedProfile`s, and the `AuditEvent`, `ConceptMap`, `Composition`, `Provenance`, `CareTeam`, `StructureDefinition`, `CodeSystem`, `OperationDefinition` and `Questionnaire` resources.
+**CapabilityStatement.** `rest.security` (API key as a Bearer token, the scope model, the requirement that every operation except conformance reads needs a key), system-level `validate`, `supportedProfile`s, and the `AuditEvent`, `ConceptMap`, `Composition`, `Provenance`, `CareTeam`, `StructureDefinition`, `CodeSystem`, `OperationDefinition` and `Questionnaire` resources.
 
 ### Recipes
 
-**`POST /recipes/calculate`** *(public, rate-limited)* — give it a list of ingredients, get back the recipe's total and per-serving nutrition. Builds directly on Serving-Size Intelligence above.
+**`POST /recipes/calculate`** *(API key, rate-limited)* — give it a list of ingredients, get back the recipe's total and per-serving nutrition. Builds directly on Serving-Size Intelligence above.
 
 ```json
 {
@@ -1418,7 +1340,7 @@ Scopes are `system/<ResourceType|*>.<read|write|*>`. An operation that produces 
 - `servings` (top-level, optional, default `1`) — the recipe yield, used to compute `nutrients_per_serving`.
 - Response includes `total_nutrients`, `nutrients_per_serving`, `total_grams`, `grams_per_serving`, a per-ingredient `ingredients[]` breakdown (with `grams_basis` explaining how each quantity was converted), and `unresolved_ingredients[]` for anything that couldn't be matched or converted — one bad ingredient never fails the whole request.
 
-**`POST /meals/analyze`** *(public, rate-limited)* — same ingredient resolution as `/recipes/calculate` (built on the same shared `resolveIngredientsList()`), but framed around a single eaten meal rather than a recipe yield — no `servings`, since a meal is eaten once.
+**`POST /meals/analyze`** *(API key, rate-limited)* — same ingredient resolution as `/recipes/calculate` (built on the same shared `resolveIngredientsList()`), but framed around a single eaten meal rather than a recipe yield — no `servings`, since a meal is eaten once.
 
 ```json
 {
@@ -1449,7 +1371,7 @@ Adds, on top of the recipe response shape:
 { "ingredients": [{ "food_name": "groundnut flour porridge", "quantity": 1, "unit": "cup" }], "conditions": ["pregnancy", "food_allergy"], "age": 26, "allergens": ["peanut"] }
 ```
 
-**`POST /ingredients/parse`** *(public, rate-limited)* — turns free text into the `ingredients[]` shape `/recipes/calculate` and `/meals/analyze` accept above, so a caller can paste a plain sentence instead of hand-building JSON.
+**`POST /ingredients/parse`** *(API key, rate-limited)* — turns free text into the `ingredients[]` shape `/recipes/calculate` and `/meals/analyze` accept above, so a caller can paste a plain sentence instead of hand-building JSON.
 
 ```json
 { "text": "2 eggs, 1 cup rice, 100g chicken and ½ avocado" }
@@ -1543,7 +1465,7 @@ a per-patient interaction checker.
 
 - `GET /drug-interactions`
 - `GET /drug-interactions/:id`
-- `GET /drug-interactions/search?q=warfarin` *(public, rate-limited)* — keyword scan across `drug`/`aliases`/`category`/`subcategory`/`tags`/`effects`/`implications` (same whole-row-scan approach `/rag/ask` already uses for `exchange_lists`/`renal_foods`/`enteral_formulas`, since none of these have a single documented column to `ilike` on). `q` can be a drug name, brand name, drug class, or a nutrient/food keyword (e.g. `"grapefruit"`, `"vitamin B12"`); `drug` is also accepted as the param name. Returns rows with a `match_score` (count of matched keywords), sorted descending.
+- `GET /drug-interactions/search?q=warfarin` *(API key, rate-limited)* — keyword scan across `drug`/`aliases`/`category`/`subcategory`/`tags`/`effects`/`implications` (same whole-row-scan approach `/rag/ask` already uses for `exchange_lists`/`renal_foods`/`enteral_formulas`, since none of these have a single documented column to `ilike` on). `q` can be a drug name, brand name, drug class, or a nutrient/food keyword (e.g. `"grapefruit"`, `"vitamin B12"`); `drug` is also accepted as the param name. Returns rows with a `match_score` (count of matched keywords), sorted descending.
 - `POST /drug-interactions` *(admin)*
 - `POST /drug-interactions/bulk` *(admin)*
 - `PUT /drug-interactions/:id` *(admin)*
@@ -1558,8 +1480,8 @@ Row shape: `{ external_id, drug, aliases[], category, subcategory, effects[], im
 
 - `GET /packaged`
 - `GET /packaged/pending` *(admin)* — review queue
-- `POST /packaged/submit` *(public, rate-limited)*
-- `POST /packaged/scan` *(public, rate-limited)*
+- `POST /packaged/submit` *(API key, rate-limited)*
+- `POST /packaged/scan` *(API key, rate-limited)*
 - `POST /packaged/:id/approve` *(admin)*
 - `POST /packaged/:id/reject` *(admin)*
 - `PUT /packaged/:id` *(admin)*
@@ -1704,7 +1626,7 @@ alter table packaged_foods add column if not exists ocr_raw jsonb;
 No user-account system exists in this API — same model as the memory
 system's `session_id`: the client generates and keeps its own identifier
 (a device id, an app-level user id, whatever) and passes it as `user_id`
-on every call. These endpoints are public and rate-limited, not
+on every call. These endpoints need an API key and are rate-limited, not
 admin-gated, since there's no server-side account to authenticate against.
 
 Rows are **not** hydrated with the underlying food data — just the
@@ -1762,7 +1684,7 @@ create index if not exists view_history_user_id_idx on view_history(user_id, vie
 
 ### Food Log (nutrition diary)
 
-Same public, self-declared-identity model as Favorites & History above —
+Same self-declared-identity model (API key required, but no per-user accounts) as Favorites & History above —
 no server-side account system, `user_id` is whatever the client supplies.
 
 **`GET /log?user_id=...&date=YYYY-MM-DD`** *(date optional)* — diary
@@ -1821,7 +1743,7 @@ create index if not exists food_log_entries_user_date_idx on food_log_entries(us
 
 ### RAG
 
-- `POST /rag/retrieve` *(public, rate-limited)*
+- `POST /rag/retrieve` *(API key, rate-limited)*
 - `POST /rag/ingest` *(admin)*
 
 `POST /rag/retrieve` body:
@@ -1845,7 +1767,7 @@ create index if not exists food_log_entries_user_date_idx on food_log_entries(us
 }
 ```
 
-`POST /rag/ask` *(public, rate-limited — 15 req/min per IP)* — RAG Search Orchestrator
+`POST /rag/ask` *(API key, rate-limited — 15 req/min per IP)* — RAG Search Orchestrator
 
 Runs the full pipeline: **Intent Detection** (Groq `llama-3.1-8b-instant`, with a
 keyword-based heuristic fallback) → **Search Orchestrator** (fans out, in
@@ -1904,8 +1826,8 @@ Per-session clinical scratchpad for Oasis AI. Scoped by `session_id` (the
 app's own `SESSION_ID`, regenerated per page load) — this is intentionally
 session-scoped working memory, not a long-term cross-visit profile.
 
-- `POST /memory/write` *(public, rate-limited)*
-- `POST /memory/recall` *(public, rate-limited — preferred)* / `GET /memory/recall` *(deprecated, same params as query string)*
+- `POST /memory/write` *(API key, rate-limited)*
+- `POST /memory/recall` *(API key, rate-limited — preferred)* / `GET /memory/recall` *(deprecated, same params as query string)*
 - `POST /memory/consolidate` *(admin — also run automatically, hourly, by a cron trigger)*
 
 **Setup required** (not automatic — run once):
@@ -2052,7 +1974,7 @@ curl -X POST "https://chakudya-api.<your-subdomain>.workers.dev/foods" \
   -d '{"food_name":"Matemba","category":"fish"}'
 ```
 
-### Community packaged submission (public)
+### Community packaged submission (API key)
 
 ```bash
 curl -X POST "https://chakudya-api.<your-subdomain>.workers.dev/packaged/submit" \
@@ -2060,7 +1982,7 @@ curl -X POST "https://chakudya-api.<your-subdomain>.workers.dev/packaged/submit"
   -d '{"barcode":"6001234567890","product_name":"ONGA Mchuzi Mix"}'
 ```
 
-### RAG retrieval (public)
+### RAG retrieval (API key)
 
 ```bash
 curl -X POST "https://chakudya-api.<your-subdomain>.workers.dev/rag/retrieve" \

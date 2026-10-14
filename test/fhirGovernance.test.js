@@ -62,42 +62,45 @@ test("routes are classified: conformance public, validation read, clinical opera
   assert.equal(classifyFhirRoute("GET", "metadata").kind, "public");
   assert.equal(classifyFhirRoute("GET", "StructureDefinition", "x").kind, "public");
   assert.equal(classifyFhirRoute("GET", "ConceptMap", "x").kind, "public");
-  assert.equal(classifyFhirRoute("POST", "ConceptMap", "$translate").kind, "public");
+  assert.equal(classifyFhirRoute("POST", "ConceptMap", "$translate").kind, "read", "an operation, not a conformance read");
+  assert.notEqual(classifyFhirRoute("POST", "metadata").kind, "public", "only GET is a conformance read");
   assert.equal(classifyFhirRoute("GET", "AuditEvent").kind, "audit");
   assert.equal(classifyFhirRoute("POST", "Bundle", "$validate-document").kind, "read");
   assert.equal(classifyFhirRoute("POST", "$validate").kind, "read");
   assert.deepEqual(classifyFhirRoute("POST", "Condition", "$diagnose"), { kind: "write", type: "Condition" });
 });
 
-test("access: open mode keeps operations public; enforce needs a credential and the scope", () => {
+test("access: clinical operations always need a credential and the scope (there is no open mode)", () => {
   const d = (o) => decideAccess({ method: "POST", param: "Condition", action: "$diagnose", ...o });
-  assert.equal(d({ mode: "open", identity: null }).allow, true);
-  assert.equal(d({ mode: undefined, identity: null }).allow, true);
-  const none = d({ mode: "enforce", identity: null });
-  assert.deepEqual([none.allow, none.status, none.code], [false, 401, "login"]);
-  assert.equal(d({ mode: "enforce", identity: { valid: false } }).status, 401);
-  assert.equal(d({ mode: "enforce", identity: { valid: true, isRoot: true } }).allow, true);
-  assert.equal(d({ mode: "enforce", identity: { valid: true, role: "admin", fhirScopes: [] } }).allow, true);
-  const reviewer = d({ mode: "enforce", identity: { valid: true, role: "reviewer", fhirScopes: [] } });
+  for (const mode of [undefined, "open", "enforce"]) {
+    const none = d({ mode, identity: null });
+    assert.deepEqual([none.allow, none.status, none.code], [false, 401, "login"], `mode ${mode}`);
+  }
+  assert.equal(d({ identity: { valid: false } }).status, 401);
+  assert.equal(d({ identity: { valid: true, isRoot: true } }).allow, true);
+  assert.equal(d({ identity: { valid: true, role: "admin", fhirScopes: [] } }).allow, true);
+  assert.equal(d({ identity: { valid: true, role: "consumer", fhirScopes: [] } }).allow, true);
+  const reviewer = d({ identity: { valid: true, role: "reviewer", fhirScopes: [] } });
   assert.deepEqual([reviewer.allow, reviewer.status, reviewer.code], [false, 403, "forbidden"]);
   const scoped = { valid: true, role: "reviewer", fhirScopes: parseScopes("system/Condition.write") };
-  assert.equal(d({ mode: "enforce", identity: scoped }).allow, true);
-  assert.equal(decideAccess({ mode: "enforce", method: "POST", param: "CarePlan", action: "$intervene", identity: scoped }).allow, false);
+  assert.equal(d({ identity: scoped }).allow, true);
+  assert.equal(decideAccess({ method: "POST", param: "CarePlan", action: "$intervene", identity: scoped }).allow, false);
   const rev = { valid: true, role: "reviewer", fhirScopes: [] };
-  assert.equal(decideAccess({ mode: "enforce", method: "POST", param: "Bundle", action: "$validate-document", identity: rev }).allow, true);
-  for (const [m, p, a] of [["GET", "metadata"], ["GET", "CodeSystem", "x"], ["POST", "ConceptMap", "$translate"], ["GET", "Questionnaire"]]) {
-    assert.equal(decideAccess({ mode: "enforce", method: m, param: p, action: a, identity: null }).allow, true, `${m} ${p}`);
+  assert.equal(decideAccess({ method: "POST", param: "Bundle", action: "$validate-document", identity: rev }).allow, true);
+  assert.equal(decideAccess({ method: "POST", param: "ConceptMap", action: "$translate", identity: null }).allow, false, "$translate is an operation and needs a key");
+  for (const [m, p, a] of [["GET", "metadata"], ["GET", "CodeSystem", "x"], ["GET", "Questionnaire"]]) {
+    assert.equal(decideAccess({ method: m, param: p, action: a, identity: null }).allow, true, `${m} ${p}`);
   }
 });
 
-test("AuditEvent reads need admin or an explicit AuditEvent scope, in every mode", () => {
-  const g = (identity, mode) => decideAccess({ mode, method: "GET", param: "AuditEvent", identity });
-  assert.equal(g(null, "open").status, 401);
-  assert.equal(g({ valid: true, role: "reviewer", fhirScopes: [] }, "open").status, 403);
-  assert.equal(g({ valid: true, role: "reviewer", fhirScopes: parseScopes("system/*.read") }, "open").status, 403);
-  assert.equal(g({ valid: true, role: "reviewer", fhirScopes: parseScopes("system/AuditEvent.read") }, "open").allow, true);
-  assert.equal(g({ valid: true, role: "admin", fhirScopes: [] }, "open").allow, true);
-  assert.equal(g({ valid: true, isRoot: true }, "enforce").allow, true);
+test("AuditEvent reads need admin or an explicit AuditEvent scope", () => {
+  const g = (identity) => decideAccess({ method: "GET", param: "AuditEvent", identity });
+  assert.equal(g(null).status, 401);
+  assert.equal(g({ valid: true, role: "reviewer", fhirScopes: [] }).status, 403);
+  assert.equal(g({ valid: true, role: "reviewer", fhirScopes: parseScopes("system/*.read") }).status, 403);
+  assert.equal(g({ valid: true, role: "reviewer", fhirScopes: parseScopes("system/AuditEvent.read") }).allow, true);
+  assert.equal(g({ valid: true, role: "admin", fhirScopes: [] }).allow, true);
+  assert.equal(g({ valid: true, isRoot: true }).allow, true);
 });
 
 // ─── errors ───────────────────────────────────────────────────────────────
@@ -276,12 +279,12 @@ test("empty ADIME sections carry text (R4 cmp-1)", () => {
 });
 
 test("conformance: CapabilityStatement declares security, profiles, AuditEvent and the new operations", () => {
-  const cap = buildCapabilityStatement(BASE, { authMode: "enforce" });
+  const cap = buildCapabilityStatement(BASE);
   const rest = cap.rest[0];
-  assert.equal(rest.security.service[0].coding[0].code, "OAuth");
-  assert.equal(rest.security.extension[0].extension[0].valueUri, `${BASE}/oauth/token`);
   assert.match(rest.security.description, /REQUIRED/);
-  assert.match(buildCapabilityStatement(BASE).rest[0].security.description, /OPEN mode/);
+  assert.match(rest.security.description, /API key/);
+  assert.doesNotMatch(JSON.stringify(rest.security), /oauth|OPEN mode/i, "no OAuth token URL and no open mode");
+  assert.equal(rest.security.extension, undefined);
   assert.ok(rest.operation.some((o) => o.name === "validate"));
   const types = rest.resource.map((r) => r.type);
   for (const t of ["AuditEvent", "ConceptMap", "Composition", "Provenance", "CareTeam"]) assert.ok(types.includes(t), t);
@@ -342,7 +345,7 @@ test("Worker (enforce): no token 401 as OperationOutcome; scopes decide; conform
     const meta = await h.call("/fhir/metadata");
     assert.equal(meta.status, 200);
     assert.match(meta.headers.get("Content-Type"), /application\/fhir\+json/);
-    assert.equal(meta.json.rest[0].security.service[0].coding[0].code, "OAuth");
+    assert.doesNotMatch(JSON.stringify(meta.json.rest[0].security), /oauth/i);
     assert.equal((await h.call("/fhir/StructureDefinition/adime-composition")).json.type, "Composition");
     assert.equal((await h.call("/fhir/ConceptMap/assessment-item-to-loinc")).json.resourceType, "ConceptMap");
     assert.equal((await h.call("/fhir/StructureDefinition/nope")).status, 404);
@@ -368,25 +371,34 @@ test("Worker (enforce): no token 401 as OperationOutcome; scopes decide; conform
 
     const ro = await h.call("/fhir/$validate", { method: "POST", token: "key-reviewer", body: P([R({ resourceType: "OperationOutcome", issue: [{ severity: "error", code: "x" }] })]) });
     assert.equal(ro.status, 200);
-    const tr = await h.call("/fhir/ConceptMap/$translate", { method: "POST", body: P([S("system", `${BASE}/fhir/CodeSystem/assessment-item`), S("code", "weight")]) });
+    const trBody = P([S("system", `${BASE}/fhir/CodeSystem/assessment-item`), S("code", "weight")]);
+    assert.equal((await h.call("/fhir/ConceptMap/$translate", { method: "POST", body: trBody })).status, 401, "$translate needs a key");
+    const tr = await h.call("/fhir/ConceptMap/$translate", { method: "POST", body: trBody, token: "key-reviewer" });
     assert.equal(tr.json.parameter[0].valueBoolean, true);
   } finally { h.done(); }
 });
 
-test("Worker (open mode, the default): operations stay public as before", async () => {
-  const h = await harness();
-  try {
-    const r = await h.call("/fhir/Condition/$diagnose", { method: "POST", body: DX() });
-    assert.equal(r.status, 200);
-    const meta = await h.call("/fhir/metadata");
-    assert.match(meta.json.rest[0].security.description, /OPEN mode/);
-  } finally { h.done(); }
+test("Worker: with FHIR_AUTH_MODE unset or set to open, operations are still refused without a key", async () => {
+  for (const extra of [{}, { FHIR_AUTH_MODE: "open" }]) {
+    const h = await harness(extra);
+    try {
+      const r = await h.call("/fhir/Condition/$diagnose", { method: "POST", body: DX() });
+      assert.equal(r.status, 401);
+      assert.equal(r.json.resourceType, "OperationOutcome");
+      const meta = await h.call("/fhir/metadata");
+      assert.equal(meta.status, 200);
+      assert.doesNotMatch(meta.json.rest[0].security.description, /OPEN mode/);
+    } finally { h.done(); }
+  }
 });
 
 test("Worker: every failure under /fhir is an OperationOutcome", async () => {
   const h = await harness();
   try {
-    const nf = await h.call("/fhir/nothing");
+    const anon = await h.call("/fhir/nothing");
+    assert.equal(anon.status, 401, "unknown FHIR paths need a key too, so they leak nothing");
+    assert.equal(anon.json.resourceType, "OperationOutcome");
+    const nf = await h.call("/fhir/nothing", { token: "root-key" });
     assert.equal(nf.status, 404);
     assert.equal(nf.json.resourceType, "OperationOutcome");
     assert.equal(nf.json.issue[0].code, "not-found");
@@ -394,9 +406,9 @@ test("Worker: every failure under /fhir is an OperationOutcome", async () => {
     assert.equal(m.json.resourceType, "OperationOutcome");
     assert.ok([401, 405].includes(m.status), String(m.status));
     assert.match(m.headers.get("Content-Type"), /fhir\+json/);
-    const bad = await h.call("/fhir/Condition/$diagnose", { method: "POST", body: { resourceType: "Bundle" } });
+    const bad = await h.call("/fhir/Condition/$diagnose", { method: "POST", body: { resourceType: "Bundle" }, token: "root-key" });
     assert.equal(bad.json.resourceType, "OperationOutcome");
-    for (const r of [nf, m, bad]) assert.deepEqual(checkR4(r.json).errors, []);
+    for (const r of [anon, nf, m, bad]) assert.deepEqual(checkR4(r.json).errors, []);
   } finally { h.done(); }
 });
 
@@ -423,11 +435,11 @@ test("Worker: audit log lines carry who/what/outcome and never the body, the pat
 
 test("Worker: the patient reference is recorded only when the operator opts in", async () => {
   const off = await harness();
-  try { await off.call("/fhir/Condition/$diagnose", { method: "POST", body: DX() }); assert.equal(JSON.stringify(off.audits()).includes("Patient/777"), false); } finally { off.done(); }
+  try { await off.call("/fhir/Condition/$diagnose", { method: "POST", body: DX(), token: "key-scoped" }); assert.equal(JSON.stringify(off.audits()).includes("Patient/777"), false); } finally { off.done(); }
   const on = await harness({ FHIR_AUDIT_INCLUDE_PATIENT: "true" });
-  try { await on.call("/fhir/Condition/$diagnose", { method: "POST", body: DX() }); assert.equal(on.audits()[0].audit_event.entity[1].what.reference, "Patient/777"); } finally { on.done(); }
+  try { await on.call("/fhir/Condition/$diagnose", { method: "POST", body: DX(), token: "key-scoped" }); assert.equal(on.audits()[0].audit_event.entity[1].what.reference, "Patient/777"); } finally { on.done(); }
   const quiet = await harness({ FHIR_AUDIT_LOG: "off" });
-  try { await quiet.call("/fhir/Condition/$diagnose", { method: "POST", body: DX() }); assert.equal(quiet.audits().length, 0); } finally { quiet.done(); }
+  try { await quiet.call("/fhir/Condition/$diagnose", { method: "POST", body: DX(), token: "key-scoped" }); assert.equal(quiet.audits().length, 0); } finally { quiet.done(); }
 });
 
 test("Worker: with FHIR_AUDIT_STORE the event is stored; reading it needs admin or the AuditEvent scope", async () => {

@@ -73,7 +73,7 @@ const CONFORMANCE_TYPES = new Set(["CodeSystem", "OperationDefinition", "Structu
 
 /**
  * Classifies a /fhir request. kind:
- *   public  conformance and terminology reads, always open (SMART needs /metadata open)
+ *   public  conformance reads (GET only), always open (SMART needs /metadata open)
  *   audit   GET AuditEvent: always needs a credential
  *   read    an operation that only checks or translates
  *   write   an operation that produces clinical content
@@ -82,7 +82,6 @@ export function classifyFhirRoute(method, param, action) {
   if (method === "GET" && param === "metadata") return { kind: "public", type: "CapabilityStatement" };
   if (method === "GET" && CONFORMANCE_TYPES.has(param)) return { kind: "public", type: param };
   if (param === "AuditEvent") return method === "GET" ? { kind: "audit", type: "AuditEvent" } : { kind: "other", type: "AuditEvent" }; // read-only: other methods reach the router and get a 405
-  if (method === "POST" && param === "ConceptMap" && action === "$translate") return { kind: "public", type: "ConceptMap" };
   if (method === "POST") {
     const type = param?.startsWith("$") ? "Resource" : param;
     return { kind: READ_OPERATIONS.has(`${param}/${action}`) ? "read" : "write", type };
@@ -93,11 +92,13 @@ export function classifyFhirRoute(method, param, action) {
 /**
  * Allow/deny decision. identity = null (anonymous) or
  *   { valid, label, isRoot, role, fhirScopes }.
- * mode "enforce": clinical operations need a credential with the scope.
- * mode anything else ("open", the default): clinical operations are public as before.
- * AuditEvent reads need a credential in every mode.
+ * Clinical operations always need a credential with the scope; there is no open mode.
+ * (A leftover `mode` argument is ignored, so an old caller cannot loosen the gate.)
+ * AuditEvent reads need a credential with the admin role or an explicit scope.
+ * Routes of kind "other" (unknown paths, other methods) are not decided here: the
+ * Worker's API-key gate still demands a valid key for them.
  */
-export function decideAccess({ mode, method, param, action, identity }) {
+export function decideAccess({ method, param, action, identity }) {
   const route = classifyFhirRoute(method, param, action);
   const allow = { allow: true, route };
   if (route.kind === "public" || route.kind === "other") return allow;
@@ -112,7 +113,6 @@ export function decideAccess({ mode, method, param, action, identity }) {
     return deny(403, "forbidden", "Reading AuditEvents needs the admin role or an explicit system/AuditEvent.read scope.");
   }
 
-  if (mode !== "enforce") return allow;
   if (!authed) return deny(401, "login", "This FHIR facade requires authentication (Authorization: Bearer <token>).");
   const scopes = identity.fhirScopes?.length ? identity.fhirScopes : scopesForRole(identity.role, identity.isRoot);
   const level = route.kind === "write" ? "write" : "read";
@@ -175,7 +175,7 @@ export function buildAuditEvent({ base, requestId, now, method, path, status, ac
     agent: [
       {
         type: { coding: [{ system: PARTICIPATION, code: actor ? "dataauthenticator" : "humanuser", display: actor ? "data authenticator" : "human user" }] },
-        ...(actor ? { who: { identifier: { value: String(actor.label ?? actor.oauthClientId ?? "unknown").slice(0, 120) } }, name: String(actor.label ?? "unknown").slice(0, 120) } : { name: "anonymous" }),
+        ...(actor ? { who: { identifier: { value: String(actor.label ?? "unknown").slice(0, 120) } }, name: String(actor.label ?? "unknown").slice(0, 120) } : { name: "anonymous" }),
         requestor: true,
         ...(addr ? { network: { address: addr, type: "2" } } : {}),
       },

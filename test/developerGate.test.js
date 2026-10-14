@@ -34,7 +34,7 @@ before(() => {
 after(() => { globalThis.fetch = realFetch; });
 
 const kvStore = new Map();
-const env = { SUPABASE_URL: "https://x.supabase.co", SUPABASE_KEY: "svc", ADMIN_API_KEY: "root-secret", FHIR_AUTH_MODE: "enforce",
+const env = { SUPABASE_URL: "https://x.supabase.co", SUPABASE_KEY: "svc", ADMIN_API_KEY: "root-secret",
   RATE_LIMIT_KV: { get: async (k) => kvStore.get(k) ?? null, put: async (k, v) => { kvStore.set(k, v); } } };
 const pending = [];
 const ctx = { waitUntil: (p) => pending.push(p) };
@@ -63,7 +63,7 @@ describe("developer keys", () => {
     assert.equal((await call("DELETE", `/developer/keys/${id}`, "tok-two")).status, 404);
   });
   test("consumer key is refused on admin routes", async () => {
-    for (const [m, p] of [["GET", "/admin/keys"], ["POST", "/foods"], ["POST", "/rag/ingest"], ["GET", "/packaged/pending"], ["POST", "/admin/oauth-clients"]]) {
+    for (const [m, p] of [["GET", "/admin/keys"], ["POST", "/foods"], ["POST", "/rag/ingest"], ["GET", "/packaged/pending"], ["DELETE", "/foods/1"]]) {
       assert.equal((await call(m, p, key, {})).status, 401, `${m} ${p}`);
     }
   });
@@ -85,7 +85,7 @@ describe("developer keys", () => {
     assert.equal((await call("GET", "/fhir/metadata", key)).status, 429);
     assert.equal((await call("GET", "/fhir/metadata", null)).status, 200); // anonymous unaffected
   });
-  test("FHIR enforce mode: consumer allowed on clinical ops, never AuditEvent", async () => {
+  test("FHIR (always enforced): consumer allowed on clinical ops, never AuditEvent", async () => {
     const ok = await call("POST", "/fhir/Condition/$diagnose", key, { resourceType: "Parameters", parameter: [] });
     assert.ok(![401, 403].includes(ok.status), `status ${ok.status}`);
     assert.equal((await call("POST", "/fhir/Condition/$diagnose", null, {})).status, 401);

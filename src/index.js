@@ -3,7 +3,25 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.32.0
+ * Version: 1.34.0
+ *
+ * v1.34.0 changes (authentication review):
+ *  - Every operational route now needs a valid API key. The REQUIRE_API_KEY and
+ *    FHIR_AUTH_MODE switches are gone: enforcement is always on, so a missing or
+ *    mistyped variable can no longer open the API. The only routes that work with no
+ *    credential are GET /, GET /health and the FHIR conformance reads (isOpenRoute).
+ *    Two routes carry a different credential that their own handler verifies:
+ *    /developer/keys (Supabase login token) and POST /rag/webhook (shared secret).
+ *  - Developer accounts use Supabase Auth and consumer keys are managed through
+ *    /developer/keys (unchanged). Privileged registry writes still need an admin key
+ *    (routePolicy: every non-GET route that is not explicitly a user or compute route).
+ *  - Removed OAuth 2.0 client_credentials: POST /oauth/token, GET
+ *    /.well-known/oauth-authorization-server and /admin/oauth-clients, plus src/oauth.js
+ *    and the OAUTH_SIGNING_SECRET secret. Bearer tokens are API keys only now.
+ *    sql/030_drop_oauth_clients.sql drops the table once you have checked nothing uses it.
+ *  - POST /fhir/ConceptMap/$translate is an operation, not a read, so it now needs a key.
+ *  - The root key comparison is constant time. isAdmin() is renamed resolveCredential()
+ *    because it resolves any valid key, not only admin ones.
  *
  * v1.32.0 changes:
  *  - Developer portal: people sign up on the docs site (Supabase Auth) and
@@ -589,28 +607,17 @@ import { monitoringOperationFor } from "./fhirMonitoring.js";
 import { documentOperationFor } from "./fhirDocument.js";
 import { contextOperationFor } from "./fhirContext.js";
 import {
-  governanceOperationFor, decideAccess, parseScopes, operationOutcomeFor, legacyErrorMessage, buildAuditEvent, auditRow,
+  governanceOperationFor, decideAccess, classifyFhirRoute, parseScopes, operationOutcomeFor, legacyErrorMessage, buildAuditEvent, auditRow,
   auditSubject, auditSearchBundle, profileResource, conceptMapResource, FHIR_JSON,
 } from "./fhirGovernance.js";
 import { assessmentOperationFor, questionnaireResource, questionnaireSearchBundle } from "./fhirAssessment.js";
 import { capSearchTerms } from "./searchTerms.js";
-import {
-  OAUTH_TOKEN_TTL_SECONDS,
-  signJwt,
-  verifyJwt,
-  looksLikeJwt,
-  generateClientCredentials,
-  timingSafeEqual,
-  parseClientCredentials,
-  resolveScope,
-  buildAccessTokenClaims,
-} from "./oauth.js";
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.33.0";
+const CNR_VERSION = "1.34.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -663,8 +670,8 @@ function unauthorized(message = "Valid API key required for this action") {
 }
 
 /**
- * 401 for a route that is normally public when REQUIRE_API_KEY="true". Tells the caller
- * exactly how to get a key and how to send it.
+ * 401 for a request with no valid API key. Tells the caller exactly how to get a key
+ * and how to send it.
  */
 function keyRequired(env) {
   const docs = (env && env.DOCS_URL) || "https://edisontaimu9-ui.github.io/Chakudya-docs";
@@ -680,21 +687,31 @@ function keyRequired(env) {
 }
 
 /**
- * Routes that stay open even when REQUIRE_API_KEY="true":
- *  - health and conformance reads, so uptime monitors and FHIR clients can discover the service
- *  - the OAuth token endpoint and its metadata (the client secret IS the credential)
- *  - /developer/* (authenticated by the caller's login token, not an API key)
- *  - the RAG storage webhook (authenticated by its shared secret)
- *  - /fhir, which has its own access gate (FHIR_AUTH_MODE)
+ * The explicit allowlist of routes that work with no credential at all. Anything not
+ * matched here needs a valid API key (consumer, reviewer or admin), and routePolicy()
+ * can additionally demand the admin role. Keep this in sync with README.md, openapi.yaml
+ * (the operations with `security: []`) and handleRoot().
+ *
+ *  - GET /        (answered in router() before the gate)
+ *  - GET /health
+ *  - GET /fhir/metadata and the other FHIR conformance reads (see classifyFhirRoute)
  */
-function isKeyExempt(resource, method, param) {
-  if (!resource) return true;
+function isOpenRoute(resource, method, param) {
   if (resource === "health" && method === "GET") return true;
-  if (resource === "oauth" && param === "token") return true;
-  if (resource === ".well-known") return true;
-  if (resource === "developer") return true;
-  if (resource === "fhir") return true;
-  if (resource === "rag" && param === "webhook") return true;
+  if (resource === "fhir" && method === "GET") return classifyFhirRoute(method, param).kind === "public";
+  return false;
+}
+
+/**
+ * Routes that skip the API-key check because they carry a different credential that
+ * their handler verifies itself and fails closed on. They are not public: a request
+ * without that credential is rejected with 401.
+ *  - /developer/keys: the caller's Supabase login access token (handleDeveloperKeys)
+ *  - POST /rag/webhook: the shared secret in x-webhook-secret (handleRagWebhook)
+ */
+function usesOwnCredential(resource, method, param) {
+  if (resource === "developer" && param === "keys") return true;
+  if (resource === "rag" && param === "webhook" && method === "POST") return true;
   return false;
 }
 
@@ -720,7 +737,9 @@ function serverErr(e, requestId) {
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
 /**
- * Role hierarchy for per-consumer API keys (see /admin/keys and isAdmin()).
+ * Role hierarchy for per-consumer API keys (see /admin/keys and resolveCredential()).
+ * The developer-portal role "consumer" is not listed here on purpose: it ranks 0, so it
+ * is refused on every admin route.
  * "reviewer" is a subset of "admin" — can only reach routes that
  * explicitly opt in via routePolicy's requiredRole: "reviewer" (currently
  * just the packaged review queue: GET /packaged/pending, POST
@@ -730,6 +749,17 @@ function serverErr(e, requestId) {
  */
 const ROLE_RANK = { reviewer: 1, admin: 2 };
 const VALID_ROLES = Object.keys(ROLE_RANK);
+
+/** Constant-time string compare, so the root key check leaks nothing through timing. */
+function timingSafeEqual(a, b) {
+  const enc = new TextEncoder();
+  const x = enc.encode(String(a));
+  const y = enc.encode(String(b));
+  let diff = x.length ^ y.length;
+  const len = Math.max(x.length, y.length);
+  for (let i = 0; i < len; i++) diff |= (x[i] || 0) ^ (y[i] || 0);
+  return diff === 0;
+}
 
 function getBearerToken(request) {
   const auth = request.headers.get("Authorization") || "";
@@ -742,9 +772,10 @@ function getBearerToken(request) {
 // are hoisted, so the call below is safe regardless of file order.
 
 /**
- * Resolves the bearer token on a request to an admin identity.
+ * Resolves the bearer token on a request to a credential identity (any valid API key,
+ * not only admin ones; the role says what it may do).
  *
- * Two kinds of valid admin credential:
+ * Two kinds of valid credential:
  *  - The "root" key — env.ADMIN_API_KEY, matched directly (legacy behavior,
  *    always works even if the api_keys table doesn't exist yet or is
  *    empty). Only the root key can manage other keys (POST/GET/DELETE
@@ -759,13 +790,14 @@ function getBearerToken(request) {
  * Returns { valid: false } or { valid: true, label, isRoot, keyId, role }.
  * `label` is what gets used as the default reviewed_by/actor identity on
  * writes that record one (see handlePackagedApprove/Reject). `role` is
- * either "admin" (full access, the default — same as before roles
- * existed) or "reviewer" (packaged-review + reads only, see routePolicy's
- * requiredRole checks and the role gate in router()). Falls back to
+ * "admin" (full access, the default — same as before roles
+ * existed), "reviewer" (packaged-review + reads only, see routePolicy's
+ * requiredRole checks and the role gate in authAndRateGate()) or "consumer"
+ * (developer-portal key: every non-admin route, never an admin one). Falls back to
  * "admin" if the row predates the `role` column (safe default — an
  * existing key's access doesn't silently shrink when this feature ships).
  */
-async function isAdmin(request, env, db, ctx) {
+async function resolveCredential(request, env, db, ctx) {
   const token = getBearerToken(request);
   if (!token) return { valid: false };
 
@@ -775,13 +807,8 @@ async function isAdmin(request, env, db, ctx) {
     return { valid: false };
   }
 
-  if (token === env.ADMIN_API_KEY) {
+  if (timingSafeEqual(token, env.ADMIN_API_KEY)) {
     return { valid: true, label: "root", isRoot: true, keyId: null, role: "admin" };
-  }
-
-  // OAuth 2.0 access token (JWT) minted by POST /oauth/token.
-  if (looksLikeJwt(token)) {
-    return await verifyOAuthToken(token, request, env);
   }
 
   if (!db) return { valid: false };
@@ -810,17 +837,18 @@ const FHIR_REQUEST_CONTEXT = new WeakMap();
 
 /**
  * Resolves the caller (if a Bearer token is present) and applies decideAccess().
- * FHIR_AUTH_MODE=enforce makes clinical operations require a credential with
- * the right scope; anything else keeps them open. AuditEvent reads always need
- * a credential. Returns { response } to stop the request, or {}.
+ * Clinical operations always require a credential with the right scope (there
+ * is no open mode). Conformance reads are the only open FHIR routes. AuditEvent
+ * reads need the admin role or an explicit scope. Returns { response } to stop
+ * the request, or {}.
  */
 async function fhirAccessGate(request, env, db, ctx, method, param, action) {
   let identity = null;
   if (getBearerToken(request)) {
-    const a = await isAdmin(request, env, db, ctx);
+    const a = await resolveCredential(request, env, db, ctx);
     identity = a.valid ? { ...a, fhirScopes: a.fhirScopes ?? [] } : { valid: false };
   }
-  const decision = decideAccess({ mode: env.FHIR_AUTH_MODE, method, param, action, identity });
+  const decision = decideAccess({ method, param, action, identity });
   FHIR_REQUEST_CONTEXT.set(request, { identity: identity?.valid ? identity : null, route: decision.route, denied: decision.allow ? null : decision.message });
   if (decision.allow) return {};
   const headers = decision.status === 401 ? { "WWW-Authenticate": 'Bearer realm="chakudya-fhir"' } : {};
@@ -1027,9 +1055,15 @@ const MEMORY_RECALL_CACHE_TTL_SECONDS = 120; // 2 min — a session's facts can 
 
 /**
  * Central policy: how each route is protected.
- * - auth: "public" | "admin"
+ * - auth: "key"    any valid API key (consumer, reviewer or admin)
+ *         "admin"  an admin credential (and requiredRole, default "admin")
+ *         "login"  /developer/keys: a Supabase login token, checked by its handler
+ *         "secret" POST /rag/webhook: a shared secret, checked by its handler
  * - rate: { limit, windowSeconds, scope: "ip" | "admin" }
- * Tune these numbers as real usage patterns emerge.
+ * Whether a route needs no credential at all is NOT decided here but by the explicit
+ * allowlist isOpenRoute(); every other route is refused without a key in
+ * authAndRateGate(). In the comments below, "public" means "no admin role needed",
+ * not "no key needed". Tune the numbers as real usage patterns emerge.
  */
 function routePolicy(resource, method, param, action) {
   const isWrite = method !== "GET";
@@ -1069,9 +1103,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
-  const isAdminKeys = resource === "admin" && (param === "keys" || param === "oauth-clients");
-  const isOAuthToken = resource === "oauth" && param === "token" && method === "POST";
-  const isOAuthMetadata = resource === ".well-known" && param === "oauth-authorization-server" && method === "GET";
+  const isAdminKeys = resource === "admin" && param === "keys";
   const isBulkInsert =
     ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm"].includes(resource) &&
     param === "bulk" &&
@@ -1087,19 +1119,11 @@ function routePolicy(resource, method, param, action) {
     resource === "drug-interactions" && param === "search" && method === "GET";
   const isBatch = resource === "batch" && method === "POST";
 
-  // Developer portal key management — public in the rate-limit sense; the handler
-  // verifies the caller's Supabase login token itself. Key creation capped tighter.
+  // Developer portal key management. Not an API-key route: the handler verifies the
+  // caller's Supabase login token itself (see usesOwnCredential). Key creation is
+  // capped tighter.
   if (resource === "developer") {
-    return { auth: "public", rate: { limit: method === "POST" ? 10 : 30, windowSeconds: 60, scope: "ip" } };
-  }
-
-  // OAuth token endpoint — public (the client secret IS the credential),
-  // tightly capped per IP to blunt secret-guessing.
-  if (isOAuthToken) {
-    return { auth: "public", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
-  }
-  if (isOAuthMetadata) {
-    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    return { auth: "login", rate: { limit: method === "POST" ? 10 : 30, windowSeconds: 60, scope: "ip" } };
   }
 
   // Batch — fans out into up to BATCH_MAX_REQUESTS sub-requests, each of
@@ -1108,7 +1132,7 @@ function routePolicy(resource, method, param, action) {
   // fan-out) one IP can trigger per minute — the per-item costs are already
   // covered by each sub-request's own policy in routeSingle().
   if (isBatch) {
-    return { auth: "public", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
   }
 
   // Favorites/history — no admin gate (same public, self-declared-identity
@@ -1117,8 +1141,8 @@ function routePolicy(resource, method, param, action) {
   // than reads.
   if (isFavorites || isHistory) {
     return isWrite
-      ? { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
-      : { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+      ? { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
+      : { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
   // Food log (nutrition diary) — same public, self-declared-identity model
@@ -1126,14 +1150,14 @@ function routePolicy(resource, method, param, action) {
   // tighter than reads; /log/summary is a read.
   if (isLog) {
     return isWrite
-      ? { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
-      : { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+      ? { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
+      : { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
   // API key management — admin-gated regardless of method (including GET,
-  // which would otherwise fall through to the public-reads default below).
+  // which would otherwise fall through to the plain-reads default below).
   // Root-only enforcement (as opposed to any admin key) happens in
-  // router(), since routePolicy() only resolves auth *level*, not identity.
+  // authAndRateGate(), since routePolicy() only resolves auth *level*, not identity.
   if (isAdminKeys) {
     return { auth: "admin", rate: { limit: 30, windowSeconds: 60, scope: "admin" } };
   }
@@ -1147,20 +1171,20 @@ function routePolicy(resource, method, param, action) {
   // Health check — public, moderate cap. Each hit fans out 2-3 upstream
   // pings, so it shouldn't be as generously limited as a plain local read.
   if (isHealth) {
-    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
   }
 
   // Foods lookup can trigger external API calls (USDA/OFF/FatSecret) — public
   // but capped to protect those quotas, separate from plain local reads.
   if (isFoodsLookup) {
-    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
   }
 
   // Fuzzy search — a single indexed Postgres RPC call (pg_trgm + levenshtein),
   // no external API cost, so it gets the same generous headroom as autocomplete.
   // by-category is the same cost profile (one local RPC call), same limit.
   if (isFoodsSearch || isFoodsByCategory) {
-    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
 
   // Autocomplete — a type-ahead UX fires one request per keystroke pause,
@@ -1169,18 +1193,18 @@ function routePolicy(resource, method, param, action) {
   // v1.27.0; only falls through to a FatSecret Premier call when local
   // coverage is thin, so the same limit as plain local reads is fine now.
   if (isFoodsAutocomplete) {
-    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
 
   // Categories — near-static reference data, heavily cached at the edge
   // (see cachePolicy), so the rate limit mostly just protects cache misses.
   if (isFoodsCategories) {
-    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
 
   // Community submissions: public, but tightly rate-limited to deter spam.
   if (isPackagedSubmit) {
-    return { auth: "public", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
   }
 
   // Fenton preterm classify/profile/growth/velocity are all pure
@@ -1193,30 +1217,30 @@ function routePolicy(resource, method, param, action) {
   // per request (no external API cost) — public, a bit tighter than a single
   // classify call.
   if (resource === "growth" && param === "assess" && method === "GET") {
-    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
   if (isFentonCompute) {
-    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   if (isFentonChart) {
-    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
   if (isFentonReferences) {
-    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // FHIR facade — same public/cheap-computation tier as the classify
   // endpoints it wraps (no new backend cost, just a reshape).
   if (isFhirMetadata) {
-    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   if (isFhirEvaluateGrowth || isFhirNcpOperation || isFhirNcpCodeSystem || isFhirQuestionnaire || isFhirAudit) {
-    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
   // Photo scan costs a Groq vision call per request — public but capped
   // harder than the manual submit form to control cost/abuse.
   if (isPackagedScan) {
-    return { auth: "public", rate: { limit: 5, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 5, windowSeconds: 60, scope: "ip" } };
   }
 
   // Admin review queue — exposes unapproved community/OCR submissions,
@@ -1237,7 +1261,7 @@ function routePolicy(resource, method, param, action) {
 
   // RAG retrieve costs a Cohere call per request — public but capped harder than plain reads.
   if (isRagRetrieve) {
-    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
   }
 
   // RAG ingest writes to the knowledge base AND costs a Cohere call — admin only.
@@ -1253,7 +1277,7 @@ function routePolicy(resource, method, param, action) {
   // Supabase storage trigger -> auto-ingest. Authenticated inside the handler
   // by the x-webhook-secret header (the admin key never lives in the database).
   if (isRagWebhook) {
-    return { auth: "public", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    return { auth: "secret", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
   if (isRagJobs) {
     return { auth: "admin", rate: { limit: 60, windowSeconds: 60, scope: "admin" } };
@@ -1272,17 +1296,17 @@ function routePolicy(resource, method, param, action) {
   // request — public but capped harder than plain /rag/retrieve since it's
   // the most expensive route in the API.
   if (isRagAsk) {
-    return { auth: "public", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
   }
 
   // Memory write/recall each cost a Cohere embed call — public (the Oasis
   // client calls these directly during a chat, no admin key available
   // there) but capped like RAG retrieve/ingest.
   if (isMemoryWrite) {
-    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
   if (isMemoryRecall) {
-    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
 
   // Consolidation runs an LLM summarization call and rewrites memory rows —
@@ -1297,20 +1321,20 @@ function routePolicy(resource, method, param, action) {
   // real cap rather than the generous plain-read default. Same cost class
   // as /rag/ask.
   if (isRecipesCalculate || isMealsAnalyze) {
-    return { auth: "public", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 15, windowSeconds: 60, scope: "ip" } };
   }
 
   // Ingredient text parsing — costs a Groq call per request (same cost
   // class as recipes/meals above), no persistence.
   if (isIngredientsParse) {
-    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
   }
 
   // DRI lookup/compare — pure in-memory computation, no DB or LLM call at
   // all, so it gets the generous plain-read allowance even for the POST
   // /dri/compare endpoint.
   if (isDri) {
-    return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
   // Drug-interaction keyword search — same cost class as the exchange/renal
@@ -1318,21 +1342,21 @@ function routePolicy(resource, method, param, action) {
   // capped by scan_limit), so it gets its own moderate cap rather than the
   // generous plain-read default.
   if (isDrugInteractionsSearch) {
-    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
 
   // Food substitutes — fans out one ilike query per keyword in the matched
   // substitution group (multiKeywordFoodSearch), same cost class as the
   // scans above.
   if (isFoodSubstitutes) {
-    return { auth: "public", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
   }
 
   // Nutrient comparison — resolves 2-6 foods per request, each potentially
   // falling back to the external lookup cascade, plus a small reference-
   // table read. Same cost class as substitutes.
   if (isFoodsCompare) {
-    return { auth: "public", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+    return { auth: "key", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
   }
 
   // All other writes (foods/exchange/renal/formulas/drug-interactions/packaged CRUD): admin only.
@@ -1341,7 +1365,7 @@ function routePolicy(resource, method, param, action) {
   }
 
   // Plain reads: public, generous but bounded.
-  return { auth: "public", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
 }
 
 // ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
@@ -3318,7 +3342,7 @@ async function handleFentonChart(request, url, db) {
 // only; no WHO 0-59-month coverage yet; no OpenHIM registration yet).
 
 async function handleFhirMetadata(url, env = {}) {
-  return json(buildCapabilityStatement(url.origin, { authMode: env.FHIR_AUTH_MODE }));
+  return json(buildCapabilityStatement(url.origin));
 }
 
 async function handleFhirEvaluateGrowth(request, db, url) {
@@ -7333,14 +7357,18 @@ async function handleHealth(request, env) {
 // GET /
 function handleRoot(env) {
   return success({
-    api_key_required: env.REQUIRE_API_KEY === "true",
+    api_key_required: true,
     name: "Chakudya Nutrition Registry (CNR)",
     tagline: "Malawi's Intelligent Food & Nutrition Knowledge Platform",
     version: CNR_VERSION,
     maintainer: "Edison Taimu",
-    auth: env.REQUIRE_API_KEY === "true"
-      ? "Every route needs 'Authorization: Bearer <API key>' (a free consumer key from the developer console, an admin key or an OAuth token). Open without a key: GET /health, GET /, POST /oauth/token and its metadata, /developer/*, /fhir conformance reads. Write operations on registry data additionally need an admin key."
-      : "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /rag/ask, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
+    auth:
+      "Every operational route needs 'Authorization: Bearer <API key>': a free consumer key from the developer console, or an admin/reviewer key. Works without a key: GET /, GET /health and the FHIR conformance reads (GET /fhir/metadata, /fhir/CodeSystem/{name}, /fhir/OperationDefinition/{id}, /fhir/StructureDefinition/{name}, /fhir/ConceptMap/{id}, /fhir/Questionnaire). /developer/keys takes your Supabase login token instead of an API key, and POST /rag/webhook takes a shared secret. Registry writes (foods, exchange, renal, formulas, drug-interactions, glycaemic-index and the WHO/Fenton reference tables, packaged CRUD and review, RAG ingest/upload/delete, bulk inserts, key management) additionally need an admin key; the packaged review queue also accepts a reviewer key. POST /packaged/submit, /packaged/scan, /rag/retrieve, /rag/ask, /memory/write, /memory/recall and the other compute and user-data routes need a consumer key (or any admin key), not an admin one.",
+    open_endpoints: [
+      "GET /",
+      "GET /health",
+      "GET /fhir/metadata and the other FHIR conformance reads (CodeSystem, OperationDefinition, StructureDefinition, ConceptMap, Questionnaire)",
+    ],
     // Rate limiting and the RAG/memory query cache both fail OPEN (silently)
     // if RATE_LIMIT_KV isn't bound — meaning the API keeps working but with
     // no rate limiting and no caching, and nothing else would tell you that.
@@ -7349,13 +7377,13 @@ function handleRoot(env) {
     kv_bound: !!env?.RATE_LIMIT_KV,
     endpoints: {
       health: [
-        "GET  /health           (public, rate-limited) → pings Supabase/Cohere/Groq/Open Food Facts in parallel, reports per-service status + overall healthy/degraded",
+        "GET  /health           (no key needed, rate-limited) → pings Supabase/Cohere/Groq/Open Food Facts in parallel, reports per-service status + overall healthy/degraded",
       ],
       developer_keys: [
         "POST   /developer/keys       (login token) → body {label}; creates a consumer key (max 3 active per account, email must be confirmed); returns the raw key ONCE",
         "GET    /developer/keys       (login token) → your active keys with last-used time and usage counts",
         "DELETE /developer/keys/:id   (login token) → revoke one of your keys",
-        "Send your Supabase login access token as 'Authorization: Bearer <token>' on these three routes only. Consumer keys then go on every other route the same way and get 3x the public rate limit.",
+        "Send your Supabase login access token as 'Authorization: Bearer <token>' on these three routes only. Consumer keys then go on every other route the same way and get 3x the standard rate limit.",
       ],
       admin_keys: [
         "GET    /admin/keys       (root key only) → list keys (never returns the raw key or its hash)",
@@ -7366,14 +7394,14 @@ function handleRoot(env) {
         "GET  /foods?search=...&category=...  → list/search results are trimmed to identity + amount (measure/weight_g) + energy + macros + micros (see FOODS_SEARCH_FIELDS); GET /foods/:id still returns the full row incl. mfct_code/moisture_g/etc.",
         "GET  /foods?with_servings=true",
         "GET  /foods/:id?with_servings=true     → add ?with_servings=true for a serving_sizes[] array (household measures, e.g. \"1 cup\", each with nutrients pre-scaled from the 100g basis)",
-        "GET  /foods/lookup?q=...|barcode=...&with_servings=true&tier=wider   (public, rate-limited) → CNR's wider data tier: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. ?tier=wider skips the local/fuzzy steps and forces USDA/OFF/FatSecret directly — for when the local Malawi FCT entry is a different preparation than what was actually asked for (e.g. 'rice, cooked' vs. the local 'Rice, soaked' entry). All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
-        "GET  /foods/search?q=&max_results=&min_similarity=&category=&brand=&ingredient=  (public, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql + sql/009_add_advanced_food_search.sql), expanded through food_synonyms (Chichewa<->English + local-name aliases — a search for 'chinangwa' also searches 'cassava'). category= filters/narrows the q search (or, with no q, browses that category). brand= and ingredient= search packaged_foods.brand/.ingredients_text instead (brand search, search-by-ingredient) and merge into the same results array. Every result is tagged _source ('foods'|'packaged_foods') and _match_type ('fuzzy'|'synonym'|'category'|'brand'|'ingredient'). No external API calls, never caches an external result — purely local. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
-        "GET  /foods/by-category?category=...&max_results=  (public, rate-limited) → plain category browse over public.foods, no query text needed",
-        "GET  /foods/autocomplete?q=...&max_results=  (public, rate-limited) → local-first as-you-type suggestions: Malawi FCT + packaged foods (brand/product) substring match, backfilled with fuzzy search for typo tolerance ('nsim' -> Nsima, Nsima ya chimanga, Nsima ya kondowole, ...), then food_synonyms expansion, then FatSecret Premier suggestions last for anything with no local coverage (skipped, not fatal, if FatSecret isn't configured)",
-        "GET  /foods/categories                 (public, rate-limited, cached 24h) → FatSecret Premier food category list",
-        "GET  /foods/substitutes?food_name=chicken&limit=  (public, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
-        "GET  /foods/compare?foods=nsima,rice,potatoes  (public, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
-        "GET  /foods/:id/label?serving=  (public, rate-limited, cached 1h) → Codex-oriented nutrition label for one food. References CXS 1-1985 (General Standard for the Labelling of Pre-packaged Foods, `labelling_standard`) and CXG 2-1985 (Guidelines on Nutrition Labelling, `nutrition_labelling_guideline`) separately. Legacy flat fields (serving_size, calories, total_fat_g, saturated_fat_g, carbohydrates_g, fiber_g, sugars_g, protein_g, sodium_mg, vitamins_minerals, standard) are unchanged; adds energy_kcal/energy_kj, a structured nutrition_declaration and vitamins_minerals_detail (each field paired with status: available/not_available/estimated — a genuine 0 is never shown as missing, and 'estimated' only appears where the source FCT's data_quality_flags itself flags that value as assumed), per_100g_reference (the raw 100g basis a scaled serving was derived from), and a calculation block (serving_weight_source: measured/estimated, value_basis: direct_from_database/calculated_from_per_100g_reference). Defaults to the most specific serving Serving-Size Intelligence has (chipande/mtanda, cup, tablespoon, handful, piece, etc. — see SERVING_SIZE_KEYWORDS); ?serving= picks another by label text (e.g. ?serving=100g) — an unrecognized ?serving= falls back to the default rather than erroring, flagged via requested_serving.matched=false. missing_fields flags any mandatory value this food doesn't have data for. Invalid (non-numeric) food IDs and non-positive serving weights return 400/422 with a clear message. POST /recipes/calculate returns the same nutrition_label shape for a whole recipe (its own per-serving totals — no single food row, so no per_100g_reference or quality-flag-based 'estimated' status there)",
+        "GET  /foods/lookup?q=...|barcode=...&with_servings=true&tier=wider   (API key, rate-limited) → CNR's wider data tier: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. ?tier=wider skips the local/fuzzy steps and forces USDA/OFF/FatSecret directly — for when the local Malawi FCT entry is a different preparation than what was actually asked for (e.g. 'rice, cooked' vs. the local 'Rice, soaked' entry). All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
+        "GET  /foods/search?q=&max_results=&min_similarity=&category=&brand=&ingredient=  (API key, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql + sql/009_add_advanced_food_search.sql), expanded through food_synonyms (Chichewa<->English + local-name aliases — a search for 'chinangwa' also searches 'cassava'). category= filters/narrows the q search (or, with no q, browses that category). brand= and ingredient= search packaged_foods.brand/.ingredients_text instead (brand search, search-by-ingredient) and merge into the same results array. Every result is tagged _source ('foods'|'packaged_foods') and _match_type ('fuzzy'|'synonym'|'category'|'brand'|'ingredient'). No external API calls, never caches an external result — purely local. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
+        "GET  /foods/by-category?category=...&max_results=  (API key, rate-limited) → plain category browse over public.foods, no query text needed",
+        "GET  /foods/autocomplete?q=...&max_results=  (API key, rate-limited) → local-first as-you-type suggestions: Malawi FCT + packaged foods (brand/product) substring match, backfilled with fuzzy search for typo tolerance ('nsim' -> Nsima, Nsima ya chimanga, Nsima ya kondowole, ...), then food_synonyms expansion, then FatSecret Premier suggestions last for anything with no local coverage (skipped, not fatal, if FatSecret isn't configured)",
+        "GET  /foods/categories                 (API key, rate-limited, cached 24h) → FatSecret Premier food category list",
+        "GET  /foods/substitutes?food_name=chicken&limit=  (API key, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
+        "GET  /foods/compare?foods=nsima,rice,potatoes  (API key, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
+        "GET  /foods/:id/label?serving=  (API key, rate-limited, cached 1h) → Codex-oriented nutrition label for one food. References CXS 1-1985 (General Standard for the Labelling of Pre-packaged Foods, `labelling_standard`) and CXG 2-1985 (Guidelines on Nutrition Labelling, `nutrition_labelling_guideline`) separately. Legacy flat fields (serving_size, calories, total_fat_g, saturated_fat_g, carbohydrates_g, fiber_g, sugars_g, protein_g, sodium_mg, vitamins_minerals, standard) are unchanged; adds energy_kcal/energy_kj, a structured nutrition_declaration and vitamins_minerals_detail (each field paired with status: available/not_available/estimated — a genuine 0 is never shown as missing, and 'estimated' only appears where the source FCT's data_quality_flags itself flags that value as assumed), per_100g_reference (the raw 100g basis a scaled serving was derived from), and a calculation block (serving_weight_source: measured/estimated, value_basis: direct_from_database/calculated_from_per_100g_reference). Defaults to the most specific serving Serving-Size Intelligence has (chipande/mtanda, cup, tablespoon, handful, piece, etc. — see SERVING_SIZE_KEYWORDS); ?serving= picks another by label text (e.g. ?serving=100g) — an unrecognized ?serving= falls back to the default rather than erroring, flagged via requested_serving.matched=false. missing_fields flags any mandatory value this food doesn't have data for. Invalid (non-numeric) food IDs and non-positive serving weights return 400/422 with a clear message. POST /recipes/calculate returns the same nutrition_label shape for a whole recipe (its own per-serving totals — no single food row, so no per_100g_reference or quality-flag-based 'estimated' status there)",
         "POST /foods            (admin)",
         "POST /foods/bulk       (admin) → body {items:[...]}, max 500, batch insert in one request",
         "PUT  /foods/:id        (admin)",
@@ -7456,11 +7484,11 @@ function handleRoot(env) {
         "POST /fenton-preterm/bulk     (admin) → body {items:[...]}, 2284 rows across 5 files; seed files: scripts/fenton_preterm_seed_1.json .. _5.json",
       ],
       fhir: [
-        "GET  /fhir/metadata → FHIR R4 CapabilityStatement",
+        "GET  /fhir/metadata (no key needed) → FHIR R4 CapabilityStatement",
         "POST /fhir/Observation/$evaluate-growth → body: FHIR Parameters {sex, gestationalAgeWeeks+day OR birthDate, measurement:[{type: weight|length|hc|muac|bmi, value}, ...], measured?, muacScheme?, referenceYear?, effectiveDateTime?} → Observation or Bundle of Observations (birthDate: every WHO indicator, birth to 19 years)",
         "POST /fhir/Bundle/$nutrition-assessment → NCP step 1 foundation: Patient + Encounter + anthropometry/biochemical/clinical/dietary/NFPE Observations + QuestionnaireResponses → one linked, validated Bundle",
         "POST /fhir/QuestionnaireResponse/$validate → check a QuestionnaireResponse against a built-in form",
-        "GET  /fhir/Questionnaire, /fhir/Questionnaire/{nutrition-screening|nfpe|diet-history} → the built-in assessment forms",
+        "GET  /fhir/Questionnaire, /fhir/Questionnaire/{nutrition-screening|nfpe|diet-history} (no key needed) → the built-in assessment forms",
         "POST /fhir/Observation/$screen → NCP screening (MUST, adults)",
         "POST /fhir/Observation/$assess-nutrition → NCP assessment: BMI, % weight change, energy/protein needs + intake, GLIM, FH/AD/BD/PD/CH indicators",
         "POST /fhir/Condition/$diagnose → NCP diagnosis: PES statements → Condition",
@@ -7470,8 +7498,9 @@ function handleRoot(env) {
         "POST /fhir/Bundle/$ncp-document → complete ADIME note: Composition + document Bundle, identified and validated (structure, references, links)",
         "POST /fhir/Bundle/$care-context → NCP step 6: Organization, Practitioner, PractitionerRole and CareTeam resources (who did the work, their role, the facility, the multidisciplinary team)",
         "POST /fhir/Bundle/$validate-document → check any document Bundle; returns an OperationOutcome",
-        "GET  /fhir/CodeSystem/ncp-diagnosis → NCP nutrition diagnostic terminology (2006 ed., NI/NC/NB; stored in Supabase table ncp_diagnosis_terms)",
-        "GET  /fhir/CodeSystem/{name}, /fhir/OperationDefinition/{id}, /fhir/StructureDefinition/{name} → conformance resources for every canonical URL the facade emits (see /fhir/metadata)",
+        "GET  /fhir/CodeSystem/ncp-diagnosis (no key needed) → NCP nutrition diagnostic terminology (2006 ed., NI/NC/NB; stored in Supabase table ncp_diagnosis_terms)",
+        "GET  /fhir/CodeSystem/{name}, /fhir/OperationDefinition/{id}, /fhir/StructureDefinition/{name}, /fhir/ConceptMap/{id} (no key needed) → conformance resources for every canonical URL the facade emits (see /fhir/metadata)",
+        "Every other /fhir operation (all the POST operations above, ConceptMap/$translate and $validate included) needs 'Authorization: Bearer <API key>' with the right FHIR scope; consumer keys carry system/*.*. GET /fhir/AuditEvent needs the admin role.",
         "Stateless facade, no storage. $evaluate-growth wraps fenton-preterm and the WHO indicators (length/height, weight, weight-for-length/height, BMI, head circumference, MUAC) from birth to 19 years. Not yet registered with any OpenHIM/HIE instance. See src/fhir.js and src/fhirNcp.js.",
       ],
       exchange_lists: [
@@ -7501,8 +7530,8 @@ function handleRoot(env) {
       packaged_foods: [
         "GET  /packaged",
         "GET  /packaged/pending          (admin) → review queue (filters: source, limit, offset)",
-        "POST /packaged/submit           (public, rate-limited — community contribution, status=pending)",
-        "POST /packaged/scan             (public, rate-limited — photo of nutrition label -> OCR/AI -> status=pending)",
+        "POST /packaged/submit           (API key, rate-limited — community contribution, status=pending)",
+        "POST /packaged/scan             (API key, rate-limited — photo of nutrition label -> OCR/AI -> status=pending)",
         "POST /packaged/:id/approve      (admin) → status=approved (optional body = field corrections)",
         "POST /packaged/:id/reject       (admin) → status=rejected (body requires 'reason')",
         "PUT  /packaged/:id              (admin)",
@@ -7510,59 +7539,59 @@ function handleRoot(env) {
         "DELETE /packaged/:id            (admin)",
       ],
       rag: [
-        "POST /rag/retrieve     (public, rate-limited) → semantic search (query, context, top_k)",
+        "POST /rag/retrieve     (API key, rate-limited) → semantic search (query, context, top_k)",
         "POST /rag/ingest       (admin) → add document chunk (content, source, context)",
         "POST /rag/upload       (admin, multipart: file, source, context, replace) → auto-ingest PDF/DOCX/TXT/MD/CSV/HTML via queue",
         "POST /rag/enqueue      (admin) → {path, source} for a file already in the rag-uploads bucket, or {job_id} to retry",
         "GET  /rag/jobs[/:id]   (admin) → ingestion job status",
         "DELETE /rag/source?source=... (admin) → bulk-delete all chunks for one document (use before re-ingesting a fixed document, since ingest never overwrites)",
-        "POST /rag/ask          (public, rate-limited) → RAG Search Orchestrator: intent detection -> fan-out search (semantic + Malawi FCT + packaged/OCR foods + exchange/renal/formula DBs + barcode + USDA/OFF/FatSecret fallback) -> rerank -> grounded LLM answer with citations (query, context, top_k, session_id)",
+        "POST /rag/ask          (API key, rate-limited) → RAG Search Orchestrator: intent detection -> fan-out search (semantic + Malawi FCT + packaged/OCR foods + exchange/renal/formula DBs + barcode + USDA/OFF/FatSecret fallback) -> rerank -> grounded LLM answer with citations (query, context, top_k, session_id)",
       ],
       memory: [
-        "POST /memory/write        (public, rate-limited) → capture a session fact (session_id, content)",
-        "POST /memory/recall       (public, rate-limited) → top-K relevant memory for a session (session_id, query, top_k) — preferred; GET with the same params still works but is deprecated since it puts clinical text in the URL/logs",
+        "POST /memory/write        (API key, rate-limited) → capture a session fact (session_id, content)",
+        "POST /memory/recall       (API key, rate-limited) → top-K relevant memory for a session (session_id, query, top_k) — preferred; GET with the same params still works but is deprecated since it puts clinical text in the URL/logs",
         "POST /memory/consolidate  (admin) → summarize a session's facts (session_id) — also run hourly by cron",
       ],
       favorites: [
-        "GET    /favorites?user_id=...&resource_type=...   (public, rate-limited)",
-        "POST   /favorites   (public, rate-limited) → body {user_id, resource_type, resource_id}, idempotent",
-        "DELETE /favorites   (public, rate-limited) → body {user_id, resource_type, resource_id}",
+        "GET    /favorites?user_id=...&resource_type=...   (API key, rate-limited)",
+        "POST   /favorites   (API key, rate-limited) → body {user_id, resource_type, resource_id}, idempotent",
+        "DELETE /favorites   (API key, rate-limited) → body {user_id, resource_type, resource_id}",
       ],
       history: [
-        "GET  /history?user_id=...&resource_type=...   (public, rate-limited) → recently viewed, viewed_at desc",
-        "POST /history   (public, rate-limited) → body {user_id, resource_type, resource_id}, upserts viewed_at",
+        "GET  /history?user_id=...&resource_type=...   (API key, rate-limited) → recently viewed, viewed_at desc",
+        "POST /history   (API key, rate-limited) → body {user_id, resource_type, resource_id}, upserts viewed_at",
       ],
       food_log: [
-        "GET    /log?user_id=...&date=YYYY-MM-DD   (public, rate-limited) → diary entries, newest first; date filter optional",
-        "GET    /log/:id                           (public, rate-limited) → single entry",
-        "POST   /log        (public, rate-limited) → body {user_id, meal_type: breakfast|lunch|snack|dinner, calories, food_name?, entry_date?}",
-        "DELETE /log/:id?user_id=...                (public, rate-limited) → delete one entry (scoped to user_id)",
-        "GET    /log/summary?user_id=...&period=daily|weekly&date=YYYY-MM-DD   (public, rate-limited) → kcal totals + by_meal breakdown; weekly adds by_date[] and average_daily_calories",
+        "GET    /log?user_id=...&date=YYYY-MM-DD   (API key, rate-limited) → diary entries, newest first; date filter optional",
+        "GET    /log/:id                           (API key, rate-limited) → single entry",
+        "POST   /log        (API key, rate-limited) → body {user_id, meal_type: breakfast|lunch|snack|dinner, calories, food_name?, entry_date?}",
+        "DELETE /log/:id?user_id=...                (API key, rate-limited) → delete one entry (scoped to user_id)",
+        "GET    /log/summary?user_id=...&period=daily|weekly&date=YYYY-MM-DD   (API key, rate-limited) → kcal totals + by_meal breakdown; weekly adds by_date[] and average_daily_calories",
       ],
       recipes: [
-        "POST /recipes/calculate   (public, rate-limited) → body {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]}; resolves each ingredient (local foods, falling back to the same local→external cascade as /foods/lookup), converts quantity/unit to grams (see Serving-Size Intelligence), and returns total_nutrients + nutrients_per_serving + a per-ingredient breakdown + any unresolved_ingredients",
+        "POST /recipes/calculate   (API key, rate-limited) → body {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]}; resolves each ingredient (local foods, falling back to the same local→external cascade as /foods/lookup), converts quantity/unit to grams (see Serving-Size Intelligence), and returns total_nutrients + nutrients_per_serving + a per-ingredient breakdown + any unresolved_ingredients",
       ],
       meals: [
-        "POST /meals/analyze   (public, rate-limited) → body {meal_type?, ingredients:[{food_id?|food_name, quantity, unit?}], daily_targets?:{kcal,protein_g,carbs_g,fat_g}}; same ingredient resolution as /recipes/calculate, no servings — returns total_nutrients, macronutrient_breakdown (kcal + % from protein/carbs/fat, Atwater 4/4/9, compared against the standard adult AMDR range), food_groups_present/food_groups_missing (from the core Grains/Legumes/Protein/Vegetables/Fruits/Dairy set), and — only if daily_targets was supplied — daily_target_comparison; purely descriptive, never invents a personalized target itself",
+        "POST /meals/analyze   (API key, rate-limited) → body {meal_type?, ingredients:[{food_id?|food_name, quantity, unit?}], daily_targets?:{kcal,protein_g,carbs_g,fat_g}}; same ingredient resolution as /recipes/calculate, no servings — returns total_nutrients, macronutrient_breakdown (kcal + % from protein/carbs/fat, Atwater 4/4/9, compared against the standard adult AMDR range), food_groups_present/food_groups_missing (from the core Grains/Legumes/Protein/Vegetables/Fruits/Dairy set), and — only if daily_targets was supplied — daily_target_comparison; purely descriptive, never invents a personalized target itself",
       ],
       ingredients: [
-        "POST /ingredients/parse   (public, rate-limited) → body {text}; parses free text like \"2 eggs, 1 cup rice, 100g chicken and ½ avocado\" into ingredients:[{food_name, quantity, unit}] — the exact shape /recipes/calculate and /meals/analyze accept. Groq LLM parse, falls back to a local regex parser if GROQ_API_KEY isn't configured or the LLM call fails. A bare count with no stated unit (\"2 eggs\") comes back as unit:\"serving\", not grams.",
+        "POST /ingredients/parse   (API key, rate-limited) → body {text}; parses free text like \"2 eggs, 1 cup rice, 100g chicken and ½ avocado\" into ingredients:[{food_name, quantity, unit}] — the exact shape /recipes/calculate and /meals/analyze accept. Groq LLM parse, falls back to a local regex parser if GROQ_API_KEY isn't configured or the LLM call fails. A bare count with no stated unit (\"2 eggs\") comes back as unit:\"serving\", not grams.",
       ],
       drug_interactions: [
-        "GET  /drug-interactions?category=&severity=&limit=&offset=/cursor=   (public, rate-limited) → paginated list of drug-nutrient interaction entries",
-        "GET  /drug-interactions/:id   (public, rate-limited) → single entry",
-        "GET  /drug-interactions/search?q=warfarin   (public, rate-limited) → keyword scan across drug/aliases/category/subcategory/tags/effects/implications (same approach as /rag/ask's exchange/renal/formula lookups) — 'drug' also accepted as the param name",
+        "GET  /drug-interactions?category=&severity=&limit=&offset=/cursor=   (API key, rate-limited) → paginated list of drug-nutrient interaction entries",
+        "GET  /drug-interactions/:id   (API key, rate-limited) → single entry",
+        "GET  /drug-interactions/search?q=warfarin   (API key, rate-limited) → keyword scan across drug/aliases/category/subcategory/tags/effects/implications (same approach as /rag/ask's exchange/renal/formula lookups) — 'drug' also accepted as the param name",
         "POST /drug-interactions   (admin) → body: {drug, aliases?, category?, subcategory?, effects?, implications?, severity?, tags?}",
         "POST /drug-interactions/bulk   (admin) → body {items:[...]}, up to 500 rows",
         "PUT/PATCH/DELETE /drug-interactions/:id   (admin)",
       ],
       dri: [
-        "GET  /dri/life-stages   (public, rate-limited) → every DRI life-stage group (code, label, sex, age range)",
-        "GET  /dri?nutrient=&life_stage=   OR   ?nutrient=&age=&sex=&life_stage_type=   (public, rate-limited) → EAR/RDA/AI/UL for one nutrient (or every nutrient if 'nutrient' is omitted) at the resolved life stage, plus that life stage's AMDR and sodium CDRR when returning the full set",
-        "POST /dri/compare   (public, rate-limited) → body {age|life_stage, sex?, life_stage_type?, intake:{nutrient_key: amount}}; compares intake (same field names as /recipes/calculate or /meals/analyze's total_nutrients) against RDA/AI, flags UL if exceeded — only nutrients CNR's foods table actually tracks are comparable, see 'trackable' on GET /dri",
+        "GET  /dri/life-stages   (API key, rate-limited) → every DRI life-stage group (code, label, sex, age range)",
+        "GET  /dri?nutrient=&life_stage=   OR   ?nutrient=&age=&sex=&life_stage_type=   (API key, rate-limited) → EAR/RDA/AI/UL for one nutrient (or every nutrient if 'nutrient' is omitted) at the resolved life stage, plus that life stage's AMDR and sodium CDRR when returning the full set",
+        "POST /dri/compare   (API key, rate-limited) → body {age|life_stage, sex?, life_stage_type?, intake:{nutrient_key: amount}}; compares intake (same field names as /recipes/calculate or /meals/analyze's total_nutrients) against RDA/AI, flags UL if exceeded — only nutrients CNR's foods table actually tracks are comparable, see 'trackable' on GET /dri",
       ],
       batch: [
-        `POST /batch   (public, rate-limited, max ${BATCH_MAX_REQUESTS} sub-requests) → body {requests:[{id?, method, path, body?}, ...]}; runs each sub-request through the same auth/rate-limit/cache pipeline as calling it directly (forwards Authorization/apikey/CF-Connecting-IP from the batch call), in parallel, and returns {status:'success', data:[{id, status, body}, ...], meta:{total, succeeded, failed, duration_ms}} with one entry per sub-request in the original order — one failed sub-request doesn't fail the others. Nested /batch sub-requests are rejected.`,
+        `POST /batch   (API key, rate-limited, max ${BATCH_MAX_REQUESTS} sub-requests) → body {requests:[{id?, method, path, body?}, ...]}; runs each sub-request through the same auth/rate-limit/cache pipeline as calling it directly (forwards Authorization/apikey/CF-Connecting-IP from the batch call), in parallel, and returns {status:'success', data:[{id, status, body}, ...], meta:{total, succeeded, failed, duration_ms}} with one entry per sub-request in the original order — one failed sub-request doesn't fail the others. Nested /batch sub-requests are rejected.`,
       ],
     },
   });
@@ -8555,209 +8584,6 @@ async function handleDeveloperKeys(request, db, env, idParam) {
   return err("Method not allowed", 405);
 }
 
-// ─── OAUTH 2.0 (client_credentials) ──────────────────────────────────────────
-//
-// Machine-to-machine auth for the MCP server, Thanzi Coach and other apps:
-// instead of shipping a long-lived admin key everywhere, a client holds a
-// client_id/client_secret, exchanges it at POST /oauth/token for a 1-hour
-// JWT, and sends that as `Authorization: Bearer <jwt>` — same header as API
-// keys, so every existing admin route (and /batch) accepts it unchanged.
-//
-// Requires sql/014_add_oauth_clients.sql and env.OAUTH_SIGNING_SECRET
-// (>= 32 random chars, e.g. `openssl rand -hex 32`). Existing API keys are
-// untouched. Clients are managed root-only via /admin/oauth-clients.
-//
-// Revocation: DELETE /admin/oauth-clients/:id stops new tokens immediately
-// and writes a KV denylist entry (oauth_revoked:<client_id>) so tokens
-// already issued are rejected too. If RATE_LIMIT_KV isn't bound the denylist
-// check fails open, so an already-issued token then lives out its hour.
-
-const OAUTH_NO_STORE = { "Cache-Control": "no-store", Pragma: "no-cache" };
-
-function oauthError(error, description, status = 400, extraHeaders = {}) {
-  return json({ error, error_description: description }, status, { ...OAUTH_NO_STORE, ...extraHeaders });
-}
-
-function oauthIssuer(request) {
-  return new URL(request.url).origin;
-}
-
-/** Resolves a verified OAuth JWT to the same identity shape isAdmin() returns. */
-async function verifyOAuthToken(token, request, env) {
-  const claims = await verifyJwt(token, env.OAUTH_SIGNING_SECRET, { issuer: oauthIssuer(request) });
-  if (!claims) return { valid: false };
-
-  if (env.RATE_LIMIT_KV) {
-    const revokedAt = await env.RATE_LIMIT_KV.get(`oauth_revoked:${claims.sub}`);
-    if (revokedAt && claims.iat <= parseInt(revokedAt, 10)) return { valid: false };
-  }
-
-  return {
-    valid: true,
-    label: claims.label || claims.sub,
-    isRoot: false,
-    keyId: null,
-    role: claims.role,
-    oauthClientId: claims.sub,
-    fhirScopes: parseScopes(claims.fhir_scopes) ?? [],
-  };
-}
-
-/** POST /oauth/token — client_credentials grant (RFC 6749 §4.4). */
-async function handleOAuthToken(request, db, env) {
-  if (!env.OAUTH_SIGNING_SECRET || env.OAUTH_SIGNING_SECRET.length < 32) {
-    return oauthError("server_error", "OAuth is not configured on this server", 503);
-  }
-
-  // Body: application/x-www-form-urlencoded (standard) or JSON.
-  let params;
-  const ctype = request.headers.get("Content-Type") || "";
-  if (ctype.includes("application/json")) {
-    params = (await parseBody(request)) || {};
-  } else {
-    params = new URLSearchParams(await request.text().catch(() => ""));
-  }
-  const get = (k) => (params instanceof URLSearchParams ? params.get(k) : params[k]);
-
-  if (get("grant_type") !== "client_credentials") {
-    return oauthError("unsupported_grant_type", "Only grant_type=client_credentials is supported");
-  }
-
-  const authHeader = request.headers.get("Authorization");
-  const creds = parseClientCredentials(authHeader, params);
-  const challenge = /^Basic/i.test(authHeader || "") ? { "WWW-Authenticate": 'Basic realm="chakudya-api"' } : {};
-  if (!creds) {
-    return oauthError("invalid_client", "Client authentication required (HTTP Basic or client_id/client_secret)", 401, challenge);
-  }
-
-  const { ok, body } = await db.select("oauth_clients", {
-    filters: { client_id: `eq.${creds.clientId}`, revoked_at: "is.null" },
-    limit: 1,
-  });
-  const row = ok && Array.isArray(body) ? body[0] : null;
-
-  // Always hash + compare (even for an unknown client) so response timing
-  // doesn't reveal whether a client_id exists.
-  const presentedHash = await sha256Hex(creds.clientSecret);
-  const secretOk = timingSafeEqual(presentedHash, row?.secret_hash || "0".repeat(64));
-  if (!row || !secretOk) {
-    return oauthError("invalid_client", "Invalid client credentials", 401, challenge);
-  }
-
-  const scope = resolveScope(row.role, get("scope"));
-  if (scope.error) return oauthError(scope.error, scope.description);
-
-  const claims = buildAccessTokenClaims({
-    clientId: row.client_id,
-    label: row.label,
-    role: scope.role,
-    issuer: oauthIssuer(request),
-    fhirScopes: row.fhir_scopes || undefined,
-  });
-  const accessToken = await signJwt(claims, env.OAUTH_SIGNING_SECRET);
-
-  // Fire-and-forget last_used_at bump (never blocks or fails the request).
-  db.update("oauth_clients", row.id, { last_used_at: new Date().toISOString() }, "PATCH").catch(() => {});
-
-  return json(
-    { access_token: accessToken, token_type: "Bearer", expires_in: OAUTH_TOKEN_TTL_SECONDS, scope: scope.role },
-    200,
-    OAUTH_NO_STORE
-  );
-}
-
-/** GET /.well-known/oauth-authorization-server — RFC 8414 metadata. */
-function handleOAuthMetadata(request) {
-  const issuer = oauthIssuer(request);
-  return json(
-    {
-      issuer,
-      token_endpoint: `${issuer}/oauth/token`,
-      grant_types_supported: ["client_credentials"],
-      token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
-      scopes_supported: ["admin", "reviewer"],
-      response_types_supported: [],
-    },
-    200,
-    { "Cache-Control": "public, max-age=3600" }
-  );
-}
-
-/**
- * /admin/oauth-clients (root key only — enforced in authAndRateGate).
- *  POST   { label, role? } -> creates a client; client_secret shown ONCE
- *  GET    -> lists clients (never returns secret or hash)
- *  DELETE /admin/oauth-clients/:id -> revokes (soft) + denylists issued tokens
- */
-async function handleAdminOAuthClients(request, db, env, id) {
-  const method = request.method;
-
-  if (method === "GET") {
-    const { ok, status, body } = await db.select("oauth_clients", {
-      filters: {},
-      order: "created_at.desc",
-      limit: 200,
-    });
-    if (!ok) return err(body?.message || "Query failed", status);
-    return success((Array.isArray(body) ? body : []).map(({ secret_hash, ...rest }) => rest));
-  }
-
-  if (method === "POST") {
-    const payload = await parseBody(request);
-    const label = (payload?.label || "").trim();
-    if (!label) return err("'label' is required (e.g. the integration name, like \"thanzi-coach\")");
-
-    const role = payload?.role ? String(payload.role).trim() : "admin";
-    if (!VALID_ROLES.includes(role)) {
-      return err(`'role' must be one of: ${VALID_ROLES.join(", ")} (got "${role}")`);
-    }
-
-    const { clientId, clientSecret } = generateClientCredentials();
-    const fs = readFhirScopesField(payload);
-    if (fs.error) return err(fs.error);
-    const { ok, status, body } = await db.insert("oauth_clients", {
-      client_id: clientId,
-      secret_hash: await sha256Hex(clientSecret),
-      label,
-      role,
-      ...(fs.value ? { fhir_scopes: fs.value } : {}),
-    });
-    if (!ok) return err(body?.message || "Client creation failed", status);
-
-    const { secret_hash: _h, ...safeRow } = body || {};
-    return success(safeRow, {
-      message: "OAuth client created — save the client_secret now, it will not be shown again",
-      client_id: clientId,
-      client_secret: clientSecret,
-    });
-  }
-
-  if (method === "DELETE") {
-    if (!id) return err("Client id required, e.g. DELETE /admin/oauth-clients/3");
-    const { ok, status, body } = await db.update(
-      "oauth_clients",
-      id,
-      { revoked_at: new Date().toISOString() },
-      "PATCH"
-    );
-    if (!ok) return err(body?.message || "Revoke failed", status);
-    if (!body) return notFound("OAuth client");
-
-    // Invalidate tokens already issued to this client (see header comment).
-    if (env.RATE_LIMIT_KV && body.client_id) {
-      await env.RATE_LIMIT_KV.put(
-        `oauth_revoked:${body.client_id}`,
-        String(Math.floor(Date.now() / 1000)),
-        { expirationTtl: OAUTH_TOKEN_TTL_SECONDS + 300 }
-      );
-    }
-    const { secret_hash: _h, ...safeRow } = body;
-    return success(safeRow, { message: `OAuth client ${id} revoked` });
-  }
-
-  return err("Method not allowed", 405);
-}
-
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
 
 /**
@@ -8825,28 +8651,11 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "keys") {
         return await handleAdminKeys(request, db, action || null);
       }
-      if (param === "oauth-clients") {
-        return await handleAdminOAuthClients(request, db, env, action || null);
-      }
       return notFound();
     }
 
     case "developer": {
       if (param === "keys") return await handleDeveloperKeys(request, db, env, action || null);
-      return notFound();
-    }
-
-    case "oauth": {
-      if (param === "token") {
-        return await handleOAuthToken(request, db, env);
-      }
-      return notFound();
-    }
-
-    case ".well-known": {
-      if (param === "oauth-authorization-server") {
-        return handleOAuthMetadata(request);
-      }
       return notFound();
     }
 
@@ -9200,7 +9009,7 @@ async function purgeResourceCache(origin, resource, param, ctx) {
 async function authAndRateGate(request, env, ctx, db, resource, method, param, action) {
   const policy = routePolicy(resource, method, param, action);
 
-  // FHIR governance: scopes, FHIR_AUTH_MODE, AuditEvent protection (src/fhirGovernance.js).
+  // FHIR governance: scopes, AuditEvent protection (src/fhirGovernance.js). Always on.
   if (resource === "fhir") {
     const fg = await fhirAccessGate(request, env, db, ctx, method, param, action);
     if (fg.response) return fg;
@@ -9208,13 +9017,13 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
 
   let admin = null;
   if (policy.auth === "admin") {
-    admin = await isAdmin(request, env, db, ctx);
+    admin = await resolveCredential(request, env, db, ctx);
     if (!admin.valid) return { response: unauthorized() };
 
     // Managing other API keys is root-only — a per-consumer key can't
     // mint or revoke keys, so a single leaked non-root key can't escalate.
-    if (resource === "admin" && (param === "keys" || param === "oauth-clients") && !admin.isRoot) {
-      return { response: unauthorized("Only the root admin key can manage API keys and OAuth clients") };
+    if (resource === "admin" && param === "keys" && !admin.isRoot) {
+      return { response: unauthorized("Only the root admin key can manage API keys") };
     }
 
     // Scoped roles — "reviewer" keys can only reach routes that opted into
@@ -9223,7 +9032,8 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
     // of role, same as it bypasses the key-management check above.
     // Unknown/corrupt role values rank as 0 (fail closed — denied by
     // default) rather than comparing against `undefined`, which JS would
-    // silently treat as passing (undefined < N is always false).
+    // silently treat as passing (undefined < N is always false). A developer
+    // "consumer" key ranks 0, so it is refused here.
     const requiredRole = policy.requiredRole || "admin";
     const currentRank = ROLE_RANK[admin.role] || 0;
     if (!admin.isRoot && currentRank < ROLE_RANK[requiredRole]) {
@@ -9233,19 +9043,19 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
     }
   }
 
-  // Developer-portal consumer keys: a valid consumer key on a public route gets
-  // its own per-key bucket at 3x the route's limit instead of the shared per-IP one.
+  // Every other route needs a valid API key unless it is on the explicit allowlist
+  // (isOpenRoute) or authenticates with its own credential (usesOwnCredential).
+  // A valid consumer key also gets its own per-key bucket at 3x the route's limit
+  // instead of the shared per-IP one. On an open route a key is only looked up if
+  // the caller sent one, so GET /health stays cheap for anonymous monitors.
   let consumer = null;
-  let caller = null;
-  if (policy.auth !== "admin" && resource !== "developer" && getBearerToken(request)) {
-    caller = await isAdmin(request, env, db, ctx);
-    if (caller.valid && caller.role === CONSUMER_ROLE && caller.keyId != null) consumer = caller;
-  }
-
-  // Key-required mode: routes that used to be public now need any valid credential
-  // (consumer key, admin key or OAuth token). Off unless REQUIRE_API_KEY is "true".
-  if (policy.auth !== "admin" && env.REQUIRE_API_KEY === "true" && !isKeyExempt(resource, method, param)) {
-    if (!caller || !caller.valid) return { response: keyRequired(env) };
+  if (policy.auth !== "admin" && !usesOwnCredential(resource, method, param)) {
+    const open = isOpenRoute(resource, method, param);
+    if (!open || getBearerToken(request)) {
+      const caller = await resolveCredential(request, env, db, ctx);
+      if (!open && !caller.valid) return { response: keyRequired(env) };
+      if (caller.valid && caller.role === CONSUMER_ROLE && caller.keyId != null) consumer = caller;
+    }
   }
 
   const rateBucketKey = consumer

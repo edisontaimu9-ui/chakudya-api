@@ -25,6 +25,11 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 #   npx wrangler secret put USDA_FDC_API_KEY
 #   npx wrangler secret put GROQ_API_KEY
 #   npx wrangler secret put GROQ_VISION_MODEL   (optional override)
+#   npx wrangler secret put INGEST_WEBHOOK_SECRET (shared secret for POST /rag/webhook)
+#
+# SUPABASE_URL / SUPABASE_KEY also power developer sign-in (Supabase Auth) and the
+# api_keys table behind /developer/keys. OAUTH_SIGNING_SECRET is no longer used:
+# OAuth 2.0 was removed in v1.34.0, so you can delete that secret from the dashboard.
 #
 # FatSecret uses OAuth 1.0 (2-legged, HMAC-SHA1), signed natively in
 # index.js via Web Crypto — no token exchange, no IP whitelist required.
@@ -43,8 +48,8 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 # consolidation summaries — defaults to "llama-3.3-70b-versatile" (the same
 # one oasisAI.js already uses client-side).
 #
-# FHIR governance (optional, all default to the previous behaviour):
-#   FHIR_AUTH_MODE=enforce             require a credential + scope on /fhir operations
+# FHIR governance (optional). Access control is always on (an API key plus the right
+# scope for every /fhir operation except the conformance reads); there is no open mode.
 #   FHIR_AUDIT_LOG=off                 stop writing audit lines to the Worker logs
 #   FHIR_AUDIT_STORE=true              also store AuditEvents in fhir_audit_events (sql/028)
 #   FHIR_AUDIT_INCLUDE_PATIENT=true    include the patient reference in audit events
@@ -56,13 +61,8 @@ account_id = "2d878c3281833694bc40ceecd6cf889f"
 
 [vars]
 # ENVIRONMENT = "production"
-# Key-required mode. "true" makes every route that used to be public demand a valid API key
-# (consumer key, admin key or OAuth token). Exempt: /health, /oauth/token, the OAuth metadata,
-# /developer/*, /fhir (own gate) and the RAG storage webhook. Flip to "true" only after every
-# app that calls the API sends a key. Plain [vars] are reset to this file on each deploy, so
-# change it here and push, not in the dashboard.
-REQUIRE_API_KEY = "true"
-FHIR_AUTH_MODE = "enforce"
+# Authentication is not configurable: every route needs a valid API key except GET /,
+# GET /health and the FHIR conformance reads. Do not add a switch for it here.
 FHIR_AUDIT_STORE = "true"
 
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
