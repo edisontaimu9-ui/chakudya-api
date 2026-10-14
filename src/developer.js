@@ -65,6 +65,19 @@ export async function readUsage(env, keyId, now = new Date()) {
 }
 
 /**
+ * Per-day counts for the last `n` UTC days, OLDEST first (so a chart reads left to right):
+ * [{ day: "2026-10-08", count: 12 }, ...]. Same KV keys and read cost as readUsage().
+ */
+export async function readUsageDaily(env, keyId, n = 7, now = new Date()) {
+  const days = recentDays(n, now).reverse();
+  if (!env.RATE_LIMIT_KV) return days.map((day) => ({ day, count: 0 }));
+  return Promise.all(days.map(async (day) => ({
+    day,
+    count: parseInt((await env.RATE_LIMIT_KV.get(usageKvKey(keyId, day))) || "0", 10) || 0,
+  })));
+}
+
+/**
  * Validates a Supabase Auth access token by asking Supabase who it belongs to.
  * Works with either signing scheme (no JWT secret needed). Returns
  * { ok: true, user: { id, email, emailConfirmed } } or { ok: false, error, status }.

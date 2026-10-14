@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  consumerRateLimit, validateLabel, keyPrefix, utcDay, recentDays, usageKvKey, bumpUsage, readUsage,
+  consumerRateLimit, validateLabel, keyPrefix, utcDay, recentDays, usageKvKey, bumpUsage, readUsage, readUsageDaily,
   verifySupabaseUser, buildConsumerKeyRow, publicKeyView, CONSUMER_FHIR_SCOPES, MAX_KEYS_PER_USER,
 } from "../src/developer.js";
 import { scopesForRole, scopeAllows, parseScopes } from "../src/fhirGovernance.js";
@@ -36,6 +36,22 @@ describe("usage counters", () => {
     await bumpUsage(env, 7, now); await bumpUsage(env, 7, now);
     env.RATE_LIMIT_KV.m.set("usage:7:2026-10-10", "5");
     assert.deepEqual(await readUsage(env, 7, now), { today: 2, last_7_days: 7 });
+  });
+  test("daily breakdown is oldest first and matches the totals", async () => {
+    const env = { RATE_LIMIT_KV: kv() };
+    await bumpUsage(env, 7, now); await bumpUsage(env, 7, now);
+    env.RATE_LIMIT_KV.m.set("usage:7:2026-10-10", "5");
+    const d = await readUsageDaily(env, 7, 7, now);
+    assert.equal(d.length, 7);
+    assert.equal(d[0].day, "2026-10-06");
+    assert.deepEqual(d[6], { day: "2026-10-12", count: 2 });
+    assert.deepEqual(d[4], { day: "2026-10-10", count: 5 });
+    assert.equal(d.reduce((n, x) => n + x.count, 0), (await readUsage(env, 7, now)).last_7_days);
+  });
+  test("daily breakdown without KV is zeros", async () => {
+    const d = await readUsageDaily({}, 1, 7, now);
+    assert.equal(d.length, 7);
+    assert.ok(d.every((x) => x.count === 0));
   });
   test("no KV is a no-op", async () => {
     await bumpUsage({}, 1);

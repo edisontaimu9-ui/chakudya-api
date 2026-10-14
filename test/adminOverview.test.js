@@ -41,3 +41,26 @@ test("overview rejects non-GET", async () => {
   const res = await handleAdminOverview(new Request("https://x/admin/overview", { method: "POST" }), fakeDb(), {}, helpers);
   assert.equal(res.status, 405);
 });
+
+test("overview includes a 7-day usage trend, total and per key", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const yest = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const m = new Map([[`usage:1:${today}`, "4"], [`usage:1:${yest}`, "6"], [`usage:2:${today}`, "99"]]);
+  const env = { RATE_LIMIT_KV: { get: async (k) => m.get(k) ?? null } };
+  const res = await handleAdminOverview(new Request("https://x/admin/overview"), fakeDb(), env, helpers);
+  const k = res.data.api_keys;
+  assert.equal(k.usage_daily.length, 7);
+  assert.equal(k.usage_daily[6].day, today);
+  assert.equal(k.usage_daily[6].count, 4); // key 2 is revoked, so its calls are not counted
+  assert.equal(k.usage_daily[5].count, 6);
+  assert.equal(k.usage_today, 4);
+  assert.equal(k.usage_last_7_days, 10);
+  assert.deepEqual(k.top[0].daily, [0, 0, 0, 0, 0, 6, 4]);
+  assert.equal(k.top[0].last_7_days, 10);
+});
+
+test("overview trend is seven zero days when there is no usage data", async () => {
+  const res = await handleAdminOverview(new Request("https://x/admin/overview"), fakeDb(), {}, helpers);
+  assert.equal(res.data.api_keys.usage_daily.length, 7);
+  assert.ok(res.data.api_keys.usage_daily.every((d) => d.count === 0));
+});
