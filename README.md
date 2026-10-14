@@ -325,6 +325,34 @@ Setup (once):
 
 ---
 
+## Key-required mode (`v1.33.0+`)
+
+Set `REQUIRE_API_KEY = "true"` (in `wrangler.toml` `[vars]`) and every route that used to be
+public needs a credential: a consumer key from the developer console, an admin key, or an OAuth
+2.0 access token. Anonymous calls get `401` with `code: "api_key_required"` and a
+`WWW-Authenticate: Bearer` header; the message says how to get a free key.
+
+Send the key as `Authorization: Bearer YOUR_API_KEY`.
+
+**Still open without a key:** `GET /`, `GET /health`, `POST /oauth/token` and
+`GET /.well-known/oauth-authorization-server`, `/developer/*` (it uses the caller's login token),
+`/fhir` (governed by `FHIR_AUTH_MODE`) and the RAG storage webhook (its own shared secret).
+
+**Behaviour:** consumer keys keep their per-key buckets at 3x each route's limit. `/batch` needs a
+key, and the key is passed on to every sub-request. Admin-only routes are unchanged. The flag is
+off by default, so deploying this version changes nothing until you turn it on.
+
+**Rolling it out safely**
+1. Give every app that calls the API a key first (consumer keys are capped at 3 per account;
+   server apps can use OAuth clients instead, see below).
+2. Check per-key usage in the developer console and confirm no anonymous traffic remains.
+3. Set `REQUIRE_API_KEY = "true"`, commit and push. Plain `[vars]` are reset to the file on each
+   deploy, so changing it in the dashboard would not last.
+4. To roll back, set it to `"false"` and push.
+
+Browser apps cannot keep a key secret. Treat a key shipped in front-end code as public: give it
+its own label, never reuse it elsewhere, and revoke it if it is abused.
+
 ## OAuth 2.0 (machine-to-machine)
 
 For services that call the API on their own behalf (MCP server, Thanzi Coach,

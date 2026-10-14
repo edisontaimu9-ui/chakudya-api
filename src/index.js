@@ -610,7 +610,7 @@ import {
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.32.0";
+const CNR_VERSION = "1.33.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -660,6 +660,42 @@ function isTruthyParam(v) {
 
 function unauthorized(message = "Valid API key required for this action") {
   return err(message, 401);
+}
+
+/**
+ * 401 for a route that is normally public when REQUIRE_API_KEY="true". Tells the caller
+ * exactly how to get a key and how to send it.
+ */
+function keyRequired(env) {
+  const docs = (env && env.DOCS_URL) || "https://edisontaimu9-ui.github.io/Chakudya-docs";
+  return json(
+    {
+      status: "error",
+      code: "api_key_required",
+      message: `An API key is required. Create a free key at ${docs}/#/account and send it as 'Authorization: Bearer YOUR_API_KEY'.`,
+    },
+    401,
+    { "WWW-Authenticate": 'Bearer realm="chakudya"' }
+  );
+}
+
+/**
+ * Routes that stay open even when REQUIRE_API_KEY="true":
+ *  - health and conformance reads, so uptime monitors and FHIR clients can discover the service
+ *  - the OAuth token endpoint and its metadata (the client secret IS the credential)
+ *  - /developer/* (authenticated by the caller's login token, not an API key)
+ *  - the RAG storage webhook (authenticated by its shared secret)
+ *  - /fhir, which has its own access gate (FHIR_AUTH_MODE)
+ */
+function isKeyExempt(resource, method, param) {
+  if (!resource) return true;
+  if (resource === "health" && method === "GET") return true;
+  if (resource === "oauth" && param === "token") return true;
+  if (resource === ".well-known") return true;
+  if (resource === "developer") return true;
+  if (resource === "fhir") return true;
+  if (resource === "rag" && param === "webhook") return true;
+  return false;
 }
 
 function rateLimited(retryAfter = 60) {
@@ -7297,11 +7333,14 @@ async function handleHealth(request, env) {
 // GET /
 function handleRoot(env) {
   return success({
+    api_key_required: env.REQUIRE_API_KEY === "true",
     name: "Chakudya Nutrition Registry (CNR)",
     tagline: "Malawi's Intelligent Food & Nutrition Knowledge Platform",
     version: CNR_VERSION,
     maintainer: "Edison Taimu",
-    auth: "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /rag/ask, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
+    auth: env.REQUIRE_API_KEY === "true"
+      ? "Every route needs 'Authorization: Bearer <API key>' (a free consumer key from the developer console, an admin key or an OAuth token). Open without a key: GET /health, GET /, POST /oauth/token and its metadata, /developer/*, /fhir conformance reads. Write operations on registry data additionally need an admin key."
+      : "Write operations (POST/PUT/PATCH/DELETE) require 'Authorization: Bearer <admin key>', except POST /packaged/submit, POST /packaged/scan, POST /rag/retrieve, POST /rag/ask, POST /memory/write, and GET /memory/recall, which are public but rate-limited.",
     // Rate limiting and the RAG/memory query cache both fail OPEN (silently)
     // if RATE_LIMIT_KV isn't bound — meaning the API keeps working but with
     // no rate limiting and no caching, and nothing else would tell you that.
@@ -9197,9 +9236,16 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
   // Developer-portal consumer keys: a valid consumer key on a public route gets
   // its own per-key bucket at 3x the route's limit instead of the shared per-IP one.
   let consumer = null;
+  let caller = null;
   if (policy.auth !== "admin" && resource !== "developer" && getBearerToken(request)) {
-    const who = await isAdmin(request, env, db, ctx);
-    if (who.valid && who.role === CONSUMER_ROLE && who.keyId != null) consumer = who;
+    caller = await isAdmin(request, env, db, ctx);
+    if (caller.valid && caller.role === CONSUMER_ROLE && caller.keyId != null) consumer = caller;
+  }
+
+  // Key-required mode: routes that used to be public now need any valid credential
+  // (consumer key, admin key or OAuth token). Off unless REQUIRE_API_KEY is "true".
+  if (policy.auth !== "admin" && env.REQUIRE_API_KEY === "true" && !isKeyExempt(resource, method, param)) {
+    if (!caller || !caller.valid) return { response: keyRequired(env) };
   }
 
   const rateBucketKey = consumer

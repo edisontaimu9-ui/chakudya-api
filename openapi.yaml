@@ -21,8 +21,14 @@ info:
     Machine-to-machine callers can authenticate with OAuth 2.0 client_credentials (`POST /oauth/token`) instead of a long-lived
     admin key.
 
+
+    When the service runs in key-required mode, every route needs `Authorization: Bearer YOUR_API_KEY` (a consumer key, admin
+    key or OAuth token) except `GET /`, `GET /health`, the OAuth token endpoint and its metadata, `/developer/*` and `/fhir`
+    (which has its own access rules). Anonymous calls receive 401 with the code `api_key_required`. `GET /` reports the mode
+    in `api_key_required`.
+
     '
-  version: 1.32.0
+  version: 1.33.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
