@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.36.0
+  version: 1.37.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -197,6 +197,75 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /admin/activity:
+    get:
+      tags:
+      - API Keys
+      summary: Recent admin actions (root key only)
+      description: Newest-first list of recent admin actions for the admin monitor page - API keys created and revoked, and
+        packaged foods approved or rejected (with the reviewer and rejection reason). Built from existing tables, so nothing
+        extra is stored. Key changes carry no actor because the API does not record one. Developer self-service keys are left
+        out. Never returns a raw key or its hash. Needs the root key.
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 30
+          maximum: 100
+      responses:
+        '200':
+          description: Recent admin actions
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: object
+                      properties:
+                        generated_at:
+                          type: string
+                          format: date-time
+                        sources:
+                          type: object
+                          description: Whether each source answered (api_keys, packaged_reviews).
+                        events:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              type:
+                                type: string
+                                enum:
+                                - key_created
+                                - key_revoked
+                                - packaged_approved
+                                - packaged_rejected
+                              at:
+                                type: string
+                                format: date-time
+                              actor:
+                                type: string
+                                nullable: true
+                              subject:
+                                type: string
+                              detail:
+                                type: string
+                              ref:
+                                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not the root key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /admin/overview:
     get:
       tags:
