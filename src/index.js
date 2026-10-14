@@ -3,7 +3,10 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.35.0
+ * Version: 1.36.0
+ * v1.36.0 changes: viewer support for the admin monitor. GET /rag/jobs takes ?status=, ?limit=, ?offset= and returns total;
+ *   GET /fhir/AuditEvent takes ?operation= and ?_offset= and returns Bundle.total. Existing calls behave as before.
+ *
  * v1.35.0 changes: GET /admin/overview (root key only) - read-only snapshot (registry counts, review queue,
  *   RAG ingest jobs, API key and usage totals) for the admin monitor page; src/adminOverview.js.
  *
@@ -620,7 +623,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.35.0";
+const CNR_VERSION = "1.36.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -899,7 +902,7 @@ async function finalizeFhirResponse(request, response, env, ctx, requestId, url,
   return out;
 }
 
-/** GET /fhir/AuditEvent[?date=&outcome=&agent-name=&_count=] and GET /fhir/AuditEvent/{id}. Access is checked by fhirAccessGate. */
+/** GET /fhir/AuditEvent[?date=&outcome=&agent-name=&operation=&_count=&_offset=] and GET /fhir/AuditEvent/{id}. Access is checked by fhirAccessGate. */
 async function handleFhirAuditEvent(request, url, db, env, id) {
   if (env.FHIR_AUDIT_STORE !== "true") {
     return json(operationOutcomeFor(501, "AuditEvent storage is not enabled on this deployment (set FHIR_AUDIT_STORE=true and run sql/028). Audit events are still written to the Worker logs.", "not-supported"), 501);
@@ -929,10 +932,17 @@ async function handleFhirAuditEvent(request, url, db, env, id) {
   }
   const agent = q.get("agent-name");
   if (agent) filters.agent = `eq.${agent.slice(0, 120)}`;
+  const operation = q.get("operation");
+  if (operation) {
+    // Substring match on the stored "METHOD /fhir/..." text. Strip characters that mean something in a PostgREST filter value.
+    const needle = operation.replace(/[^A-Za-z0-9 /$._-]/g, "").slice(0, 80);
+    if (needle) filters.operation = `ilike.*${needle}*`;
+  }
   const count = Math.min(Math.max(parseInt(q.get("_count") || "50", 10) || 50, 1), 200);
-  const { ok, body } = await db.select("fhir_audit_events", { filters, order: "recorded.desc", limit: count, select: "id,event" });
+  const offset = Math.max(parseInt(q.get("_offset") || "0", 10) || 0, 0);
+  const { ok, body, total } = await db.select("fhir_audit_events", { filters, order: "recorded.desc", limit: count, offset, select: "id,event" });
   if (!ok || !Array.isArray(body)) return json(operationOutcomeFor(502, "Audit query failed (has sql/028 been run?)"), 502);
-  return json(auditSearchBundle(url.origin, body));
+  return json(auditSearchBundle(url.origin, body, { count: typeof total === "number" ? total : undefined }));
 }
 
 // ─── EDGE CACHING (Cloudflare Cache API) ────────────────────────────────────
@@ -7547,7 +7557,7 @@ function handleRoot(env) {
         "POST /rag/ingest       (admin) → add document chunk (content, source, context)",
         "POST /rag/upload       (admin, multipart: file, source, context, replace) → auto-ingest PDF/DOCX/TXT/MD/CSV/HTML via queue",
         "POST /rag/enqueue      (admin) → {path, source} for a file already in the rag-uploads bucket, or {job_id} to retry",
-        "GET  /rag/jobs[/:id]   (admin) → ingestion job status",
+        "GET  /rag/jobs[/:id]   (admin) → ingestion job status; list takes ?status=queued|processing|done|failed, ?limit= (max 100), ?offset=",
         "DELETE /rag/source?source=... (admin) → bulk-delete all chunks for one document (use before re-ingesting a fixed document, since ingest never overwrites)",
         "POST /rag/ask          (API key, rate-limited) → RAG Search Orchestrator: intent detection -> fan-out search (semantic + Malawi FCT + packaged/OCR foods + exchange/renal/formula DBs + barcode + USDA/OFF/FatSecret fallback) -> rerank -> grounded LLM answer with citations (query, context, top_k, session_id)",
       ],

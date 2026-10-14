@@ -396,6 +396,26 @@ export async function handleIngestQueue(batch, env, db) {
   }
 }
 
+const JOB_STATUSES = ["queued", "processing", "done", "failed"];
+
+/** Parses the optional list filters for GET /rag/jobs. Returns { filters, limit, offset } or { error }. */
+export function jobListQuery(params) {
+  const filters = {};
+  const status = params.get("status");
+  if (status) {
+    if (!JOB_STATUSES.includes(status)) return { error: `'status' must be one of: ${JOB_STATUSES.join(", ")}` };
+    filters.status = `eq.${status}`;
+  }
+  const limit = Math.min(Math.max(parseInt(params.get("limit") || "20", 10) || 20, 1), 100);
+  const offset = Math.max(parseInt(params.get("offset") || "0", 10) || 0, 0);
+  return { filters, limit, offset };
+}
+
+/** Keeps list responses small: a failed job's error text is capped (the single-job route returns it whole). */
+export function trimJobError(job) {
+  return job && typeof job.error === "string" && job.error.length > 500 ? { ...job, error: job.error.slice(0, 500) + "…" } : job;
+}
+
 // ── HTTP routes ──────────────────────────────────────────────────────────────
 function safeName(name) {
   return name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120) || "file";
@@ -490,9 +510,13 @@ export async function handleRagPipeline(request, url, db, env, param, jobId, { s
       if (!ok || !row?.id) return err("Job not found", status === 200 ? 404 : status);
       return success(row);
     }
-    const { ok, status, body } = await db.select("rag_ingest_jobs", { limit: 20, order: "created_at.desc" });
+    // Optional ?status=queued|processing|done|failed, ?limit= (1-100, default 20), ?offset=.
+    const q = jobListQuery(url.searchParams);
+    if (q.error) return err(q.error);
+    const { ok, status, body, total } = await db.select("rag_ingest_jobs", { filters: q.filters, limit: q.limit, offset: q.offset, order: "created_at.desc" });
     if (!ok) return err(body?.message || "Could not list jobs", status);
-    return success(body, { count: Array.isArray(body) ? body.length : 0 });
+    const rows = Array.isArray(body) ? body.map(trimJobError) : [];
+    return success(rows, { count: rows.length, total: typeof total === "number" ? total : null, limit: q.limit, offset: q.offset });
   }
 
   if (request.method !== "POST") return err("Method not allowed", 405);

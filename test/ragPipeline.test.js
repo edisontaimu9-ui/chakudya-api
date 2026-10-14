@@ -103,3 +103,24 @@ test("pdfPagesToMarkdown emits page markers; text without markers has null pages
   assert.ok(pdfPagesToMarkdown(["One.", "Two."]).includes("<!--p:2-->"));
   assert.equal(chunkMarkdown("No markers here at all.", { minChars: 5 })[0].page, null);
 });
+
+import { jobListQuery, trimJobError } from "../src/ragPipeline.js";
+
+test("jobListQuery defaults and clamps", () => {
+  assert.deepEqual(jobListQuery(new URLSearchParams("")), { filters: {}, limit: 20, offset: 0 });
+  const q = jobListQuery(new URLSearchParams("status=failed&limit=9999&offset=-5"));
+  assert.deepEqual(q, { filters: { status: "eq.failed" }, limit: 100, offset: 0 });
+  assert.equal(jobListQuery(new URLSearchParams("limit=abc")).limit, 20);
+});
+
+test("jobListQuery rejects unknown status", () => {
+  assert.ok(jobListQuery(new URLSearchParams("status=bogus;drop")).error);
+});
+
+test("trimJobError caps long errors only", () => {
+  const long = trimJobError({ id: 1, error: "x".repeat(900) });
+  assert.equal(long.error.length, 501);
+  const short = { id: 2, error: "boom" };
+  assert.equal(trimJobError(short), short);
+  assert.equal(trimJobError({ id: 3, error: null }).error, null);
+});
