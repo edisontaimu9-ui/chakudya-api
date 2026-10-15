@@ -4115,6 +4115,25 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /activity-energy/bulk:
+    post:
+      tags:
+      - Energy
+      summary: Bulk-create activity energy rows (admin)
+      description: Seed file scripts/activity_energy_seed.json (130 rows). A unique (activity, type) constraint rejects re-seeding.
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/BulkSuccess'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /energy/factors:
     get:
       tags:
