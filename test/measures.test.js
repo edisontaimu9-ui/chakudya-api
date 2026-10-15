@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   findUnit, convertUnits, parseQuantity, formatQuantity, parseServingVolume, deriveDensity,
-  resolveQuantityToGrams, describeAmount, volumeEquivalents, measureCatalog, REFERENCE_TABLES, SCOOP_SIZES, UNIT_SURFACE_FORMS,
+  resolveQuantityToGrams, describeAmount, volumeEquivalents, isPlainMassLabel, densityFormWarning, measureCatalog, REFERENCE_TABLES, SCOOP_SIZES, UNIT_SURFACE_FORMS,
 } from "../src/measures.js";
 
 const near = (a, b, tol = 0.01) => assert.ok(Math.abs(a - b) <= tol, `${a} is not within ${tol} of ${b}`);
@@ -88,6 +88,7 @@ describe("quantities", () => {
     assert.equal(formatQuantity(0.67), "⅔");
     assert.equal(formatQuantity(2.97), "3");
     assert.equal(formatQuantity(41.62), "41.6");
+    assert.equal(formatQuantity(16.91), "16.9");
     assert.equal(formatQuantity(0.02), "0.02");
   });
 });
@@ -215,5 +216,26 @@ describe("catalog", () => {
     assert.equal(rows["1/2 cup"], 125);
     assert.equal(rows["3 cups"], 750);
     assert.equal(rows["1 slice of bread"], 42);
+  });
+});
+
+describe("tidy-ups", () => {
+  test("a restated weight is not a household serving", () => {
+    for (const l of ["100g", "100g / 100ml", "250 ml", "1 kg"]) assert.equal(isPlainMassLabel(l), true, l);
+    for (const l of ["1 cup (250ml)", "1 chipande (approx. 150-200g)", "1 slice (±42g)"]) assert.equal(isPlainMassLabel(l), false, l);
+    const servings = [{ label: "100g", grams: 100, source: "fct" }, ...NSIMA];
+    const d = describeAmount({ grams: 350, servings, densityGPerMl: null });
+    assert.deepEqual(d.household.servings.map((s) => s.label), ["1 chipande (approx. 150-200g)"]);
+  });
+  test("unit=serving skips the 100g restatement", () => {
+    const servings = [{ label: "100g", grams: 100, source: "fct" }, ...NSIMA];
+    assert.equal(resolveQuantityToGrams(() => servings, 2, "serving").grams, 350);
+  });
+  test("cooked serving on a food not named as cooked is flagged", () => {
+    assert.match(densityFormWarning("Rice, soaked, (Mpunga woviika)", "1 cup cooked rice (150g)"), /cooked food/);
+    assert.equal(densityFormWarning("Rice, cooked", "1 cup cooked rice (150g)"), null);
+    assert.equal(densityFormWarning("Cassava thick porridge, (Nsima ya kondowole)", "1 cup cooked porridge (250g)"), null);
+    assert.equal(densityFormWarning("Milk, whole", "1 cup (250ml)"), null);
+    assert.equal(densityFormWarning("Rice, soaked", null), null);
   });
 });

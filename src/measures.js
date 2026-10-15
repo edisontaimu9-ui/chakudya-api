@@ -138,11 +138,15 @@ const round = (n, dp = 2) => (n == null || !Number.isFinite(n) ? null : Math.rou
 
 const NICE_FRACTIONS = [[0, ""], [1 / 8, "⅛"], [1 / 4, "¼"], [1 / 3, "⅓"], [3 / 8, "⅜"], [1 / 2, "½"], [5 / 8, "⅝"], [2 / 3, "⅔"], [3 / 4, "¾"], [7 / 8, "⅞"], [1, ""]];
 
+/** "100g", "100g / 100ml", "250 ml": a weight or volume restated, not a household measure. */
+export const isPlainMassLabel = (labelText) =>
+  /^\s*\d+(?:\.\d+)?\s*(?:g|ml|kg|l)\s*(?:\/\s*\d+(?:\.\d+)?\s*(?:g|ml))?\s*$/i.test(String(labelText || ""));
+
 /** 1.5 -> "1½", 0.33 -> "⅓", 2.97 -> "3", 41.6 -> "41.6": a quantity as a cook would write it. */
 export function formatQuantity(q) {
   if (q == null || !Number.isFinite(q)) return null;
   if (q < 0.1) return String(round(q, 2));
-  if (q >= 20) return String(round(q, 1));
+  if (q >= 10) return String(round(q, 1));
   const whole = Math.floor(q);
   const frac = q - whole;
   const hit = NICE_FRACTIONS.find(([v]) => Math.abs(frac - v) < 0.04);
@@ -252,7 +256,10 @@ export function resolveQuantityToGrams(getServings, quantity, unitRaw) {
   const servings = getServings();
 
   if (u === "serving" || u === "servings") {
-    const best = servings.find((c) => c.source !== "reference") || servings[0];
+    const best =
+      servings.find((c) => c.source !== "reference" && !isPlainMassLabel(c.label)) ||
+      servings.find((c) => c.source !== "reference") ||
+      servings[0];
     if (best) return { grams: quantity * best.grams, basis: best.label };
   }
 
@@ -306,7 +313,7 @@ export function describeAmount({ grams, servings, densityGPerMl }) {
   const ml = densityGPerMl > 0 ? grams / densityGPerMl : null;
   const household = {
     servings: (servings || [])
-      .filter((s) => s.source !== "reference" && Number(s.grams) > 0)
+      .filter((s) => s.source !== "reference" && Number(s.grams) > 0 && !isPlainMassLabel(s.label))
       .map((s) => {
         const q = grams / s.grams;
         return { label: s.label, source: s.source, grams_per_serving: s.grams, quantity: round(q), display_quantity: formatQuantity(q) };
@@ -317,6 +324,20 @@ export function describeAmount({ grams, servings, densityGPerMl }) {
     standard: { grams: round(grams), kilograms: round(grams / 1000, 3), milliliters: round(ml), other_weight_units: weightEquivalents(grams) },
     household,
   };
+}
+
+const COOKED_LABEL = /\bcooked\b/i;
+const COOKED_FOOD_NAME = /(cooked|boiled|steamed|porridge|nsima|stew|fried|roasted|baked|soup|sauce)/i;
+
+/**
+ * Cup and spoon servings are usually written for the cooked food ("1 cup cooked rice (150g)"). When the
+ * serving that supplies the density says cooked but the food's own name doesn't, say so: the grams per cup
+ * of a raw, soaked or dry food are different.
+ */
+export function densityFormWarning(foodName, densityBasis) {
+  if (!densityBasis || !COOKED_LABEL.test(densityBasis)) return null;
+  if (COOKED_FOOD_NAME.test(String(foodName || ""))) return null;
+  return `The cup/spoon serving used here is for a cooked food ('${densityBasis}') but this food is listed as '${foodName}'. If it is raw, soaked or dry, a cup weighs differently: check the grams, or ask with weight (g) instead.`;
 }
 
 // ── printed reference tables (as in the sources; for display, not calculation) ─

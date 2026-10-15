@@ -11,6 +11,8 @@ const FOODS = [
   { id: 1, food_name: "Rice, cooked", kcal: 130, protein_g: 2.7, carbs_g: 28, fat_g: 0.3, measure: null, weight_g: null },
   { id: 2, food_name: "Nsima (maize stiff porridge)", kcal: 110, protein_g: 2.5, carbs_g: 24, fat_g: 0.5, measure: null, weight_g: null },
   { id: 3, food_name: "Milk, whole", kcal: 61, protein_g: 3.2, carbs_g: 4.8, fat_g: 3.3, measure: null, weight_g: null },
+  { id: 4, food_name: "Rice, soaked, (Mpunga woviika)", kcal: 80, protein_g: 1.3, carbs_g: 18, fat_g: 0.1, measure: "100g", weight_g: 100 },
+  { id: 5, food_name: "Milk, skim", kcal: 35, protein_g: 3.4, carbs_g: 5, fat_g: 0.1, measure: null, weight_g: null },
 ];
 
 before(() => {
@@ -130,6 +132,19 @@ describe("GET /foods/convert", () => {
     const d = (await read(await call("GET", "/foods/convert?q=milk&amount=500&unit=ml"))).body.data;
     assert.equal(d.standard.grams, 500);
     assert.equal(d.household.volume.suggested.quantity, 2);
+  });
+  test("a name that matches several foods says so and lists the others", async () => {
+    const d = (await read(await call("GET", "/foods/convert?q=milk&amount=250&unit=ml"))).body;
+    assert.equal(d.data.food.other_matches.length, 1);
+    assert.match(d.data.warnings.join(" "), /matched more than one food/);
+    const byId = (await read(await call("GET", "/foods/convert?id=3&amount=250&unit=ml"))).body.data;
+    assert.deepEqual(byId.warnings, []);
+  });
+  test("a cooked-rice cup applied to soaked rice carries a warning", async () => {
+    const d = (await read(await call("GET", "/foods/convert?q=soaked&amount=1&unit=cup"))).body.data;
+    assert.equal(d.food.id, 4);
+    assert.match(d.warnings.join(" "), /cooked food/);
+    assert.equal(d.household.servings.every((s) => !/^100\s?g$/i.test(s.label)), true);
   });
   test("errors", async () => {
     assert.equal((await call("GET", "/foods/convert?amount=2&unit=cup")).status, 400);

@@ -3,7 +3,12 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.44.0
+ * Version: 1.44.1
+ * v1.44.1 changes: GET /foods/convert tidy-up. The "100g" restatement is no longer listed as a household serving (and unit=serving no longer
+ *   picks it); food.other_matches lists up to 5 other local name matches and warnings[] says when a name matched more than one food;
+ *   warnings[] also flags a cooked-food cup/spoon serving applied to a food not named as cooked (rice "soaked" vs "cooked rice (150g)");
+ *   quantities of 10 or more show one decimal (16.9 fl oz, not 16⅞).
+ *
  * v1.44.0 changes: household and standard measures in one place. New src/measures.js holds one unit table built from the UCT Household
  *   Measurements Guide (tsp, Tbs, Dsp, heaped Dsp, 1/4-3 cups), the Kitchen Measurement Conversion Tables (US cup, fl oz, pint, quart, gallon, oz,
  *   lb) and Krause Appendix 2 (nutrition cup 240 ml, dry measure, #6-#60 portion scoops), with the printed tables kept as published.
@@ -653,7 +658,7 @@ import {
 } from "./fhir.js";
 import { measurementsToAssessQuery, buildWhoGrowthBundle } from "./fhirGrowth.js";
 import {
-  resolveQuantityToGrams, describeAmount, deriveDensity, findUnit, convertUnits, parseQuantity, formatQuantity,
+  resolveQuantityToGrams, describeAmount, deriveDensity, densityFormWarning, findUnit, convertUnits, parseQuantity, formatQuantity,
   volumeEquivalents, weightEquivalents, measureCatalog, UNIT_SURFACE_FORMS, UNITS,
 } from "./measures.js";
 import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./fhirNcp.js";
@@ -674,7 +679,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.44.0";
+const CNR_VERSION = "1.44.1";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -4478,7 +4483,7 @@ async function handleDriCompare(request) {
  * Finds the food row for one ingredient-style item ({food_id} or {food_name}): local `foods` first
  * (ilike + pickBestFoodMatch), then the lookupFoodCascade() external tiers. Shared by
  * resolveIngredientsList() and GET /foods/convert so both resolve a name identically.
- * Returns { food, matchedSource } (food null when nothing matched) or { error } when neither id nor name was given.
+ * Returns { food, matchedSource, alternatives? } (food null when nothing matched; alternatives are up to 5 other local name matches) or { error } when neither id nor name was given.
  */
 async function findFoodForIngredient(item, db, env) {
   if (item.food_id != null) {
@@ -4491,7 +4496,13 @@ async function findFoodForIngredient(item, db, env) {
       limit: 25,
     });
     const bestLocal = local.ok ? pickBestFoodMatch(local.body, item.food_name) : null;
-    if (bestLocal) return { food: bestLocal, matchedSource: "local" };
+    if (bestLocal) {
+      const alternatives = (local.body || [])
+        .filter((f) => f.id !== bestLocal.id)
+        .slice(0, 5)
+        .map((f) => ({ id: f.id, food_name: f.food_name }));
+      return { food: bestLocal, matchedSource: "local", alternatives };
+    }
     const cascade = await lookupFoodCascade(db, { query: item.food_name }, env);
     if (cascade?.food) return { food: cascade.food, matchedSource: cascade.source };
     return { food: null, matchedSource: null };
@@ -7803,9 +7814,22 @@ async function handleFoodsConvert(request, url, db, env, idFromPath = null) {
       assumptions.push("This food has no cup or spoon serving on file, so spoon and cup equivalents are left out rather than guessed. Its own servings are listed under household.servings.");
     }
 
+    const densityBasis = resolved.density_basis ?? deriveDensity(servings)?.basis ?? null;
+    const warnings = [];
+    const formWarning = densityFormWarning(food.food_name || food.product_name || q, densityBasis);
+    if (formWarning) warnings.push(formWarning);
+    if ((found.alternatives || []).length > 0 && idParam == null) {
+      warnings.push(`'${q}' matched more than one food; this used '${food.food_name}'. Repeat with id=<id> (see food.other_matches) for a different one.`);
+    }
+
     return success(
       {
-        food: { id: food.id ?? null, food_name: food.food_name || food.product_name || q || null, matched_source: found.matchedSource },
+        food: {
+          id: food.id ?? null,
+          food_name: food.food_name || food.product_name || q || null,
+          matched_source: found.matchedSource,
+          other_matches: found.alternatives || [],
+        },
         input: {
           amount,
           unit: unitRaw,
@@ -7817,9 +7841,10 @@ async function handleFoodsConvert(request, url, db, env, idFromPath = null) {
         standard: described.standard,
         household: described.household,
         density_g_per_ml: density != null ? roundServingVal(density) : null,
-        density_basis: resolved.density_basis ?? deriveDensity(servings)?.basis ?? null,
+        density_basis: densityBasis,
         nutrients,
         assumptions,
+        warnings,
       },
       {
         message: "Standard and household measures for this amount",
