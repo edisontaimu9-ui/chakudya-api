@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.38.0
+  version: 1.39.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -197,6 +197,71 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /admin/usage:
+    get:
+      tags:
+      - API Keys
+      summary: Usage by endpoint (root key only)
+      description: Which endpoints get called most. Calls are counted per UTC day, method and route (ids replaced, for example
+        `/foods/:id`) in `route_usage`. Counts only - no keys, IPs, query strings or bodies. Skipped - OPTIONS, `/`, `/health`
+        and `/admin/*`. Storage is off unless `ROUTE_USAGE_STORE=true` (run `sql/032_add_route_usage.sql` first). When the table
+        cannot be read the response has `available` false and a note. Needs the root key.
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: days
+        in: query
+        schema:
+          type: integer
+          default: 7
+          maximum: 30
+        description: Look-back window in UTC days, including today.
+      responses:
+        '200':
+          description: Call counts per endpoint
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: object
+                      properties:
+                        generated_at:
+                          type: string
+                          format: date-time
+                        window_days:
+                          type: integer
+                        available:
+                          type: boolean
+                        storage_enabled:
+                          type: boolean
+                        truncated:
+                          type: boolean
+                        totals:
+                          type: object
+                          description: calls, errors and routes (number of distinct endpoints used).
+                        daily:
+                          type: array
+                          items:
+                            type: object
+                            description: day and count, oldest first, zero-filled.
+                        top:
+                          type: array
+                          description: Up to 25 busiest endpoints.
+                          items:
+                            type: object
+                            description: method, route, calls, errors, error_rate (percent), avg_ms, share (percent of all calls) and last_day.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not the root key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /admin/monitoring:
     get:
       tags:

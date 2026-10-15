@@ -68,6 +68,9 @@ FHIR_AUDIT_STORE = "true"
 # Writes are fire-and-forget and fail silently, so this is safe to leave on before the table exists.
 # REQUEST_LOG_SLOW_MS sets what counts as slow (default 1500).
 REQUEST_LOG_STORE = "true"
+# Admin monitor "Usage by endpoint": count calls per route per day in route_usage (run sql/032 first).
+# One small fire-and-forget database call per request. Set to "false" to stop counting.
+ROUTE_USAGE_STORE = "true"
 
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
 # Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).
