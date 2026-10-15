@@ -101,31 +101,58 @@ export const DISH_DEFAULT_STAPLE = {
   nsima: "maize",
 };
 
+// Among rows of the default staple, the plain everyday variant leads: for nsima that is the refined
+// flour one ("Nsima ya ufa oyera"), ahead of whole-grain or degermed. dish word -> qualifier words.
+export const DISH_PREFERRED_VARIANT = {
+  nsima: ["refined"],
+};
+
+// A base segment with one of these ("Maize and soya thick porridge") is a composite/fortified dish,
+// not the plain staple: it still counts as maize but ranks behind every plain maize row.
+const COMPOSITE_MARKERS = new Set(["and", "with"]);
+
 // Chichewa/English link words that carry no food meaning ("nsima ya", "a bowl of nsima").
 const QUERY_FILLER_WORDS = new Set(["ya", "la", "wa", "a", "an", "the", "of", "some"]);
 
 /**
- * The staple a bare dish-name query implies ("nsima" -> "maize"), or null when the query says
- * anything else about the food (any word that is not a filler or a dish word with a default).
+ * What a bare dish-name query implies, { staple, preferred[] } ("nsima" -> maize, refined first), or
+ * null when the query says anything else about the food (any word that is not a filler or a dish
+ * word with a default).
  */
-export function defaultStapleFor(query) {
+export function impliedDefaultsFor(query) {
   const words = tokenize(query).filter((w) => !QUERY_FILLER_WORDS.has(w));
   if (!words.length) return null;
   const staples = words.map((w) => DISH_DEFAULT_STAPLE[w]);
-  if (staples.some((x) => !x)) return null;
-  return staples.every((x) => x === staples[0]) ? staples[0] : null;
+  if (staples.some((x) => !x) || !staples.every((x) => x === staples[0])) return null;
+  const preferred = [...new Set(words.flatMap((w) => DISH_PREFERRED_VARIANT[w] || []))];
+  return { staple: staples[0], preferred };
+}
+
+/** The staple a bare dish-name query implies ("nsima" -> "maize"), or null. */
+export function defaultStapleFor(query) {
+  return impliedDefaultsFor(query)?.staple ?? null;
+}
+
+// 0 plain staple + preferred variant, 1 plain staple, 2 composite staple, 3 anything else.
+function defaultRank(row, implied) {
+  const parsed = parseFoodName(row?.food_name || "");
+  if (!parsed.baseWords.includes(implied.staple)) return 3;
+  if (parsed.baseWords.some((w) => COMPOSITE_MARKERS.has(w))) return 2;
+  return implied.preferred.some((w) => parsed.qualifierWords.includes(w)) ? 0 : 1;
 }
 
 /**
- * Stable reorder for list endpoints (search, autocomplete): rows whose base food is the query's
- * default staple go first, everything else keeps its order. Returns the rows unchanged when the
- * query has no default staple.
+ * Stable reorder for list endpoints (search, autocomplete): plain maize rows (refined flour first)
+ * lead, then composite maize dishes, then everything else, each group keeping its incoming order.
+ * Returns the rows unchanged when the query has no default staple.
  */
 export function preferDefaultStaple(rows, query) {
-  const staple = defaultStapleFor(query);
-  if (!staple || !Array.isArray(rows) || rows.length < 2) return rows;
-  const leads = (r) => parseFoodName(r?.food_name || "").baseWords.includes(staple);
-  return [...rows.filter(leads), ...rows.filter((r) => !leads(r))];
+  const implied = impliedDefaultsFor(query);
+  if (!implied || !Array.isArray(rows) || rows.length < 2) return rows;
+  return rows
+    .map((row, i) => ({ row, i, rank: defaultRank(row, implied) }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((x) => x.row);
 }
 
 /**
@@ -264,11 +291,22 @@ export function scoreFoodCandidate(row, queryAttrs) {
   }
 
   // A bare local dish name ("nsima") leads with its everyday staple (maize), not an alternative
-  // staple that happens to share the dish's Chichewa name in its parenthetical.
-  const impliedStaple = defaultStapleFor(queryAttrs.words.join(" "));
-  if (impliedStaple && parsed.baseWords.includes(impliedStaple)) {
-    score += 25;
-    reasons.push("default_staple");
+  // staple that happens to share the dish's Chichewa name in its parenthetical. Within the staple,
+  // a composite dish ("Maize and soya ...") counts for less than the plain one, and the preferred
+  // variant (refined flour for nsima) gets a small lead over whole-grain and degermed.
+  const implied = impliedDefaultsFor(queryAttrs.words.join(" "));
+  if (implied && parsed.baseWords.includes(implied.staple)) {
+    if (parsed.baseWords.some((w) => COMPOSITE_MARKERS.has(w))) {
+      score += 8;
+      reasons.push("default_staple_composite");
+    } else {
+      score += 25;
+      reasons.push("default_staple");
+      if (implied.preferred.some((w) => parsed.qualifierWords.includes(w))) {
+        score += 6;
+        reasons.push("default_variant");
+      }
+    }
   }
 
   // Attribute categories: state / form / freshness / variety. Match ->
@@ -327,6 +365,20 @@ export function scoreFoodCandidate(row, queryAttrs) {
       score += parenOverlapRatio * 35;
       reasons.push("parenthetical_match");
       if (parenOverlapRatio === 1) reasons.push("full_parenthetical_match");
+    }
+  }
+
+  // Every word the query asked for appears somewhere in this name (main name, qualifiers or the
+  // local-name parenthetical): "nsima ya galamilu" is fully covered by exactly one row. Without this,
+  // that row's unrequested qualifiers ("degermed- dehulled flour") could cost it the win against a
+  // shorter row that matches only the first word.
+  if (queryAttrs.coreWords.length) {
+    const everyCovered = queryAttrs.coreWords.every(
+      (w) => parsed.baseWords.includes(w) || parsed.qualifierWords.includes(w) || parsed.parenWords.includes(w)
+    );
+    if (everyCovered) {
+      score += 20;
+      reasons.push("full_query_coverage");
     }
   }
 

@@ -225,6 +225,34 @@ describe("default staple for a bare dish name", () => {
     assert.match(best.scored[1].row.food_name, /^Maize thick porridge/);
   });
 
+  // The maize nsima rows as the live API returns them (cassava first, the maize+soya porridge shortest).
+  const LIVE_NSIMA = [
+    { id: 9, food_name: "Cassava thick porridge, (Nsima ya kondowole)" },
+    { id: 14, food_name: "Maize and soya thick porridge, (Nsima ya ufa wa chimanga ndi soya)" },
+    { id: 12, food_name: "Maize thick porridge, white, whole flour, (Nsima ya mgaiwa)" },
+    { id: 13, food_name: "Maize thick porridge, degermed- dehulled flour, (Nsima ya galamilu)" },
+    { id: 10, food_name: "Maize thick porridge, refined flour, (Nsima ya ufa oyera)" },
+    { id: 15, food_name: "Maize thick porridge, white, whole flour, (Nsima ya mgaiwa), Calculated" },
+  ];
+
+  test("live rows: a bare 'nsima' is plain refined maize, never the maize+soya porridge or cassava", () => {
+    assert.equal(pickBestFoodMatch(LIVE_NSIMA, "nsima").id, 10);
+    const order = preferDefaultStaple(LIVE_NSIMA, "nsima").map((r) => r.id);
+    assert.equal(order[0], 10);
+    assert.ok(order.indexOf(14) > order.indexOf(13), "composite after every plain maize row");
+    assert.ok(order.indexOf(14) > order.indexOf(12));
+    assert.equal(order.at(-1), 9, "cassava last");
+    assert.deepEqual(order.slice(0, 4).sort(), [10, 12, 13, 15].sort());
+  });
+
+  test("live rows: a specific query still reaches its own row", () => {
+    assert.equal(pickBestFoodMatch(LIVE_NSIMA, "nsima ya mgaiwa").id, 12);
+    assert.equal(pickBestFoodMatch(LIVE_NSIMA, "nsima ya galamilu").id, 13);
+    assert.equal(pickBestFoodMatch(LIVE_NSIMA, "nsima ya kondowole").id, 9);
+    assert.equal(pickBestFoodMatch(LIVE_NSIMA, "cassava nsima").id, 9);
+    assert.equal(pickBestFoodMatch(LIVE_NSIMA, "maize and soya nsima").id, 14);
+  });
+
   test("preferDefaultStaple is a stable reorder, and leaves other queries alone", () => {
     const rows = [
       { id: 9, food_name: "Cassava thick porridge, (Nsima ya kondowole)" },
@@ -232,7 +260,7 @@ describe("default staple for a bare dish name", () => {
       { id: 11, food_name: "Sorghum thick porridge, (Nsima ya mapira)" },
       { id: 10, food_name: "Maize thick porridge, refined flour, (Nsima ya ufa oyera)" },
     ];
-    assert.deepEqual(preferDefaultStaple(rows, "nsima").map((r) => r.id), [12, 10, 9, 11]);
+    assert.deepEqual(preferDefaultStaple(rows, "nsima").map((r) => r.id), [10, 12, 9, 11]); // refined flour first, then whole grain
     assert.deepEqual(preferDefaultStaple(rows, "cassava nsima").map((r) => r.id), [9, 12, 11, 10]);
     assert.deepEqual(preferDefaultStaple(rows, "rice").map((r) => r.id), [9, 12, 11, 10]);
   });

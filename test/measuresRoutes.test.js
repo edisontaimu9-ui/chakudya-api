@@ -9,6 +9,7 @@ const realFetch = globalThis.fetch;
 globalThis.caches = { default: { match: async () => undefined, put: async () => {}, delete: async () => false } };
 const FOODS = [
   { id: 1, food_name: "Rice, cooked", kcal: 130, protein_g: 2.7, carbs_g: 28, fat_g: 0.3, measure: null, weight_g: null },
+  { id: 14, food_name: "Maize and soya thick porridge, (Nsima ya ufa wa chimanga ndi soya)", kcal: 115, protein_g: 4, carbs_g: 22, fat_g: 1, measure: null, weight_g: null },
   { id: 6, food_name: "Cassava thick porridge, (Nsima ya kondowole)", kcal: 120, protein_g: 0.4, carbs_g: 28, fat_g: 0.4, measure: null, weight_g: null },
   { id: 2, food_name: "Maize thick porridge, refined flour, (Nsima ya ufa oyera)", kcal: 110, protein_g: 2.5, carbs_g: 24, fat_g: 0.5, measure: null, weight_g: null },
   { id: 3, food_name: "Milk, whole", kcal: 61, protein_g: 3.2, carbs_g: 4.8, fat_g: 3.3, measure: null, weight_g: null },
@@ -33,7 +34,7 @@ before(() => {
     }
     // The database ranks by text similarity: for "nsima" it returns the cassava row first, as the live one does.
     if (u.pathname === "/rest/v1/rpc/fuzzy_food_search" || u.pathname === "/rest/v1/rpc/autocomplete_food_names") {
-      return json([FOODS[1], FOODS[2], { id: 11, food_name: "Sorghum thick porridge, (Nsima ya mapira)" }]);
+      return json([FOODS[2], FOODS[1], FOODS[3], { id: 11, food_name: "Sorghum thick porridge, (Nsima ya mapira)" }]);
     }
     return json([]);
   };

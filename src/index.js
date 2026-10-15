@@ -3,7 +3,13 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.44.2
+ * Version: 1.44.3
+ * v1.44.3 changes: the bare-"nsima" default is now deterministic. Plain maize nsima leads, refined flour ("Nsima ya ufa oyera") first as the
+ *   everyday variant (DISH_PREFERRED_VARIANT), then whole-grain and degermed, then composite maize dishes ("Maize and soya ...") after every plain
+ *   maize row, then other staples. Same order in the single-food matcher and in /foods/search and /foods/autocomplete. 1.44.2 only
+ *   preferred "any maize-named row", so /foods/convert could land on the maize+soya porridge. Also: a name that contains every word of the query
+ *   (main name, qualifiers or local-name parenthetical) gets a coverage bonus, so "nsima ya galamilu" reaches its own degermed row.
+ *
  * v1.44.2 changes: a bare "nsima" now resolves to maize nsima instead of cassava (kondowole) everywhere a name becomes a food: the shared
  *   matcher in src/foodMatching.js (lookup, compare, substitutes, recipes, meals, ingredient parsing, /foods/convert, MCP) gets a default-staple
  *   rule (DISH_DEFAULT_STAPLE: nsima -> maize), and the list endpoints (GET /foods/search, /foods/autocomplete, synonym expansion) put maize
@@ -687,7 +693,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.44.2";
+const CNR_VERSION = "1.44.3";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
