@@ -377,7 +377,8 @@ GET responses for reference-style resources are cached at the Cloudflare edge, k
 | Resource | Cached? | TTL |
 |---|---|---|
 | `GET /foods`, `/exchange`, `/renal`, `/formulas`, `/glycaemic-index`, `/bmi-for-age`, `/hc-velocity`, `/length-velocity`, `/weight-velocity`, `/muac-for-age`, `/muac`, `/length-height-for-age`, `/weight-for-age`, `/weight-for-length-height`, `/bmi-for-age-under-5`, `/hc-for-age`, `/growth/assess` | ✅ | 1 hour |
-| `GET /foods/compare` | ✅ | 1 hour |
+| `GET /foods/compare`, `GET /foods/convert`, `GET /foods/:id/convert` | ✅ | 1 hour |
+| `GET /measures`, `GET /measures/convert` | ✅ | 24 hours |
 | `GET /foods/lookup` | ✅ | 30 min |
 | `GET /foods/autocomplete` | ✅ | 1 hour |
 | `GET /foods/categories` | ✅ | 24 hours |
@@ -744,6 +745,19 @@ The grouping deliberately overrides the plain category taxonomy where it matters
 Ranking is a single primary nutrient's closeness, not a full dietary-equivalence judgment — it doesn't know about cost, local availability, taste, or realistic portion size, and every candidate's full `comparison_vs_original` (kcal/protein/carbs/fat/iron/calcium) is included precisely so a clinician or cook can see *how* it differs, not just that it's "close".
 
 **`GET /foods/compare?foods=nsima,rice,potatoes`** *(API key, rate-limited, cached 1h)* — Nutrient Comparison: lines up 2-6 foods side by side. Resolves each name the same way `/foods/substitutes` does (local match, falling back to the external lookup cascade), then returns per-100g energy, protein, carbohydrate, fiber, fat, and the full micronutrient panel for each — plus `nutrient_comparison`, the same fields pivoted per-nutrient with the highest/lowest food flagged, so "which has more iron" doesn't need re-deriving client-side.
+
+**`GET /foods/convert?q=rice&amount=2&unit=cup`** *(API key, rate-limited, cached 1h)* — Household and standard measures for one food, either way round. Also `GET /foods/:id/convert?amount=&unit=` and `?id=`. Give a household measure (`tsp`, `tbsp`, `dsp`, `h dsp`, `cup`, `us cup`, `scoop 16`, or the food's own `chipande`, `piece`, `slice`) and get the standard weight; give a standard measure (`g`, `kg`, `oz`, `lb`, `ml`, `l`, `fl oz`) and get the household equivalents. Every reply carries both, plus the nutrients for that amount. It uses the same food matching and gram conversion as `POST /recipes/calculate`, so the numbers agree.
+
+```
+GET /foods/convert?q=rice&amount=2&unit=cup      → 300 g, 500 ml, 2 × "1 cup cooked rice (150g)", 33.3 tbsp, 10.6 oz, nutrients for 300 g
+GET /foods/convert?q=rice&amount=300&unit=g      → the same, starting from grams: 2 cups, 33.3 tbsp
+GET /foods/convert?q=nsima&amount=2&unit=chipande → 350 g
+GET /foods/convert?q=nsima&amount=350&unit=g     → 2 chipande
+```
+
+How a volume becomes grams: the food's own serving in that unit first (a "1 cup cooked rice (150g)" serving answers `cup`); otherwise the food's density, worked out from any cup or spoon serving it has (150 g in 250 ml = 0.6 g/ml, so 1 tbsp is 9 g); otherwise 1 g/ml, which is flagged in `assumptions[]`. When a weight is asked for and the food has no density, spoon and cup equivalents are left out rather than guessed, and the food's own servings (chipande, piece) are still given. `cup` is the 250 ml metric household cup; `us cup` is the 240 ml nutrition cup.
+
+**`GET /measures`** *(API key, rate-limited, cached 24h)* — every unit with its size, aliases and source, the printed reference tables as published, and the #6-#60 portion scoop sizes. Sources: the University of Cape Town Division of Human Nutrition *Household Measurements Guide*, the *Kitchen Measurement Conversion Tables*, and Krause and Mahan's *Food & the Nutrition Care Process* (16th ed.) Appendix 2. `?section=units|scoop_sizes|reference_tables|sources` returns one part. **`GET /measures/convert?amount=3&from=tbsp&to=ml`** converts unit to unit with no food (volume to volume, weight to weight; leave out `to` for every unit of that kind). The printed kitchen table rounds ounces (8 oz is printed as 240 g); calculations use 28.35 g per ounce.
 
 Glycaemic considerations are included **only where a published, sourced value exists** — nothing is estimated or guessed. Each food gets either a `glycaemic.entries[]` (measured GI/GL with citation, from the `glycaemic_index_data` reference table — see below) or `glycaemic: null` plus a clearly-labelled `glycaemic_note` heuristic (fiber-to-carbohydrate ratio only, explicitly not presented as a GI value).
 

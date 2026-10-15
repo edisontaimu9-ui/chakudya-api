@@ -3,7 +3,18 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.43.0
+ * Version: 1.44.0
+ * v1.44.0 changes: household and standard measures in one place. New src/measures.js holds one unit table built from the UCT Household
+ *   Measurements Guide (tsp, Tbs, Dsp, heaped Dsp, 1/4-3 cups), the Kitchen Measurement Conversion Tables (US cup, fl oz, pint, quart, gallon, oz,
+ *   lb) and Krause Appendix 2 (nutrition cup 240 ml, dry measure, #6-#60 portion scoops), with the printed tables kept as published.
+ *   GET /foods/convert?q=rice&amount=2&unit=cup (also /foods/:id/convert and ?id=) takes a household or a standard measure of one food and
+ *   returns both: grams, ml and oz/lb, the food's own servings (chipande, cup, piece) as counts, spoon/cup equivalents and the nutrients.
+ *   GET /measures lists every unit, table and scoop size; GET /measures/convert does unit-to-unit (volume to volume, weight to weight).
+ *   Behaviour change in the shared gram conversion (POST /recipes/calculate, /meals/analyze, /ingredients/parse): a volume unit (ml, l, tsp, tbsp,
+ *   dsp, cup variants, scoops) now uses the food's own density when it has a cup or spoon serving (1 tbsp of cooked rice is 9 g, not 15 g);
+ *   foods without one behave as before (1 g/ml, now flagged). Weight units and food-specific labels (chipande, piece) are unchanged.
+ *   New units: us cup, scoop 6-60, dry pint/quart, tbs, plurals. No SQL.
+ *
  * v1.43.0 changes: POST /energy/requirements takes activity_log [{activity, type?, minutes|hours}]. Each activity is looked up in the
  *   activity_energy_expenditure table (Appendix 10, kcal per hour at the person's weight), converted to METs and delta PAL, and added to the
  *   PAL that feeds the IOM equations. The reply carries an activity_log block with every step. No SQL: uses the v1.42.0 table.
@@ -641,6 +652,10 @@ import {
   toCm,
 } from "./fhir.js";
 import { measurementsToAssessQuery, buildWhoGrowthBundle } from "./fhirGrowth.js";
+import {
+  resolveQuantityToGrams, describeAmount, deriveDensity, findUnit, convertUnits, parseQuantity, formatQuantity,
+  volumeEquivalents, weightEquivalents, measureCatalog, UNIT_SURFACE_FORMS, UNITS,
+} from "./measures.js";
 import { ncpOperationFor, diagnosisCodesRequested, buildNcpCodeSystem } from "./fhirNcp.js";
 import { staticConformanceResource } from "./fhirTerminology.js";
 import { diagnosisOperationFor } from "./fhirDiagnosis.js";
@@ -659,7 +674,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.41.0";
+const CNR_VERSION = "1.44.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1001,6 +1016,9 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "categories") {
     return { ttl: 86400 }; // 24 hours — near-static reference data
   }
+  if (resource === "measures") {
+    return { ttl: 86400 }; // 24 hours — static reference tables and pure unit arithmetic
+  }
   if (resource === "foods" && param === "autocomplete") {
     return { ttl: 3600 }; // 1 hour — repeat partial-query lookups are common while typing
   }
@@ -1130,6 +1148,7 @@ function routePolicy(resource, method, param, action) {
   const isRagJobs = resource === "rag" && param === "jobs" && method === "GET";
   const isRagWebhook = resource === "rag" && param === "webhook" && method === "POST";
   const isFoodsLookup = resource === "foods" && param === "lookup" && method === "GET";
+  const isFoodsConvert = resource === "foods" && (param === "convert" || action === "convert") && method === "GET";
   const isFoodsSearch = resource === "foods" && param === "search" && method === "GET";
   const isFoodsByCategory = resource === "foods" && param === "by-category" && method === "GET";
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
@@ -1227,6 +1246,17 @@ function routePolicy(resource, method, param, action) {
   // but capped to protect those quotas, separate from plain local reads.
   if (isFoodsLookup) {
     return { auth: "key", rate: { limit: 20, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Measure conversion resolves a food by name (local first, then the external cascade) and does
+  // arithmetic on it — the same cost profile as a lookup, a little cheaper because local usually hits.
+  if (isFoodsConvert) {
+    return { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Measures reference (units, printed tables, unit-to-unit conversion): pure computation, no database.
+  if (resource === "measures" && method === "GET") {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
 
   // Fuzzy search — a single indexed Postgres RPC call (pg_trgm + levenshtein),
@@ -3984,90 +4014,19 @@ function buildServingSizes(food) {
 // see handleRecipesCalculate(). No persistence — purely a calculation on
 // top of existing data.
 
-// Unambiguous mass/volume units — exact conversion, doesn't depend on which
-// food it's attached to. ml/l assume ~1g/ml (water-like density) since we
-// don't have per-food density data; fine for the liquids/porridges this is
-// mostly used for, less exact for e.g. oil. Values cross-checked against
-// the Nutrition Care Manual (NC Dietetic Association, 2011) equivalents/
-// conversion tables — cup=240mL, Tbsp=15mL, tsp=5mL, oz=28.35g, lb=453.6g,
-// pint=473.2mL, quart=946.2mL, gallon=3785mL all match that reference.
-// "oz"/"ounce" defaults to the dry/weight ounce (28.35g), since that's how
-// most food-ingredient quantities in oz are meant; "fl oz" (fluid ounce,
-// ~29.57mL/g) is kept as a distinct unit rather than folded into "oz",
-// since the two are genuinely different quantities for non-water liquids.
-const GENERIC_UNIT_GRAMS = {
-  g: 1, gram: 1, grams: 1, gm: 1,
-  kg: 1000, kilogram: 1000, kilograms: 1000,
-  mg: 0.001, milligram: 0.001,
-  ml: 1, milliliter: 1, millilitre: 1,
-  l: 1000, liter: 1000, litre: 1000,
-  oz: 28.35, ounce: 28.35, ounces: 28.35,
-  lb: 453.6, pound: 453.6, pounds: 453.6,
-  floz: 29.57, fl_oz: 29.57, fluidounce: 29.57, fluidounces: 29.57,
-  pint: 473.2, pints: 473.2,
-  quart: 946.2, quarts: 946.2,
-  gallon: 3785, gallons: 3785,
-  // Dessertspoon — between a teaspoon and tablespoon, common in Malawian/
-  // Southern African recipes and measurement guides but absent from most
-  // generic unit tables. 20ml plain, 30ml heaped (per household measurements
-  // guide: 1 Dsp = 20ml, 1 heaped Dsp = 30ml).
-  dsp: 20, dessertspoon: 20, dessertspoons: 20,
-  "h dsp": 30, "hdsp": 30, "heaped dsp": 30, "heaped dessertspoon": 30, "heaped dessertspoons": 30,
-};
-
-// Generic household-unit fallback — used only when the unit couldn't be
-// matched against this specific food's own serving_sizes (see
-// resolveIngredientGrams below), so it's necessarily coarser than a
-// food-specific measure.
-const GENERIC_HOUSEHOLD_UNIT_GRAMS = {
-  // 250ml metric cup (per household measurements guide: 1 cup = 250ml,
-  // 2 cups = 500ml, 3 cups = 750ml) — NOT the 240ml US customary cup.
-  cup: 250, cups: 250,
-  tbsp: 15, tablespoon: 15, tablespoons: 15,
-  tsp: 5, teaspoon: 5, teaspoons: 5,
-  slice: 30, slices: 30,
-  handful: 30, handfuls: 30,
-  pinch: 0.5, pinches: 0.5,
-};
+// Unit sizes (g, kg, oz, lb, ml, tsp, tbsp, dsp, cup, us cup, fl oz, scoops ...) now live in
+// src/measures.js, which holds the UCT household guide, the kitchen conversion tables and Krause
+// Appendix 2 in one table. "cup" is the 250 ml metric household cup (not the 240 ml US cup, which
+// is "us cup"); oz is the weight ounce (28.35 g) and "fl oz" is kept distinct (29.57 ml).
 
 /**
- * Converts one ingredient's {quantity, unit} to grams for a given food row.
- * Three tiers, most accurate first:
- *   1. Unambiguous mass/volume unit (g, kg, ml, oz, ...) — exact.
- *   2. "serving"/"servings", or a household unit (cup, tbsp, piece, ...)
- *      matched against THIS food's own buildServingSizes() candidates —
- *      e.g. "2 cups rice" resolves via rice's own "1 cup cooked rice
- *      (150g)" entry, not a generic cup.
- *   3. Generic household-unit fallback (GENERIC_HOUSEHOLD_UNIT_GRAMS) when
- *      no food-specific match exists — coarser, same rationale as
- *      CATEGORY_SERVING_DEFAULTS above.
- * Returns { grams, basis } on success, or { grams: null, reason } when the
- * unit can't be resolved at all.
+ * Converts one ingredient's {quantity, unit} to grams for a given food row (see
+ * resolveQuantityToGrams in src/measures.js for the tiers). Weight units are exact; volume units use
+ * the food's own serving in that unit, else the food's own density (from its cup/spoon serving), else
+ * 1 g/ml, flagged. Returns { grams, basis, density_g_per_ml? } or { grams: null, reason }.
  */
 function resolveIngredientGrams(food, quantity, unit) {
-  const u = String(unit || "g").trim().toLowerCase();
-
-  if (GENERIC_UNIT_GRAMS[u] != null) {
-    return { grams: quantity * GENERIC_UNIT_GRAMS[u], basis: `${u} (direct mass/volume conversion)` };
-  }
-
-  const candidates = buildServingSizes(food);
-
-  if (u === "serving" || u === "servings") {
-    const best = candidates.find((c) => c.source !== "reference") || candidates[0];
-    if (best) return { grams: quantity * best.grams, basis: best.label };
-  }
-
-  const candidateMatch = candidates.find((c) => c.label.toLowerCase().includes(u));
-  if (candidateMatch) {
-    return { grams: quantity * candidateMatch.grams, basis: candidateMatch.label };
-  }
-
-  if (GENERIC_HOUSEHOLD_UNIT_GRAMS[u] != null) {
-    return { grams: quantity * GENERIC_HOUSEHOLD_UNIT_GRAMS[u], basis: `generic '${u}' estimate (not food-specific)` };
-  }
-
-  return { grams: null, reason: `unrecognized unit '${unit}' — use g/kg/ml/l/oz/lb, a household unit (cup/tbsp/tsp/piece/slice/handful/serving), or a food-specific label` };
+  return resolveQuantityToGrams(() => buildServingSizes(food), quantity, unit);
 }
 
 // pickBestFoodMatch()/pickBestFoodMatchDetailed() now live in
@@ -4123,12 +4082,11 @@ const UNICODE_FRACTIONS = {
 };
 const UNICODE_FRACTION_CHARS = Object.keys(UNICODE_FRACTIONS).join("");
 
-// Every unit resolveIngredientGrams() already understands (GENERIC_UNIT_GRAMS
-// + GENERIC_HOUSEHOLD_UNIT_GRAMS, both keyed by the exact surface forms —
-// plurals included — it looks up), plus "piece(s)" as a plain count synonym.
+// Every unit resolveIngredientGrams() understands (the unit table in src/measures.js, plurals and
+// alternate spellings included), plus the count-like slice/handful/pinch and "piece(s)".
 const KNOWN_INGREDIENT_UNITS = new Set([
-  ...Object.keys(GENERIC_UNIT_GRAMS),
-  ...Object.keys(GENERIC_HOUSEHOLD_UNIT_GRAMS),
+  ...UNIT_SURFACE_FORMS,
+  "slice", "slices", "handful", "handfuls", "pinch", "pinches",
   "serving", "servings", "piece", "pieces",
 ]);
 
@@ -4516,6 +4474,31 @@ async function handleDriCompare(request) {
  * { resolvedIngredients, unresolvedIngredients } — never throws on a bad
  * individual ingredient, only on a malformed list (caller's job to check).
  */
+/**
+ * Finds the food row for one ingredient-style item ({food_id} or {food_name}): local `foods` first
+ * (ilike + pickBestFoodMatch), then the lookupFoodCascade() external tiers. Shared by
+ * resolveIngredientsList() and GET /foods/convert so both resolve a name identically.
+ * Returns { food, matchedSource } (food null when nothing matched) or { error } when neither id nor name was given.
+ */
+async function findFoodForIngredient(item, db, env) {
+  if (item.food_id != null) {
+    const { ok, body } = await db.selectOne("foods", item.food_id);
+    return ok && body ? { food: body, matchedSource: "food_id" } : { food: null, matchedSource: null };
+  }
+  if (item.food_name) {
+    const local = await db.select("foods", {
+      filters: { food_name: `ilike.*${escapeLikePattern(item.food_name)}*` },
+      limit: 25,
+    });
+    const bestLocal = local.ok ? pickBestFoodMatch(local.body, item.food_name) : null;
+    if (bestLocal) return { food: bestLocal, matchedSource: "local" };
+    const cascade = await lookupFoodCascade(db, { query: item.food_name }, env);
+    if (cascade?.food) return { food: cascade.food, matchedSource: cascade.source };
+    return { food: null, matchedSource: null };
+  }
+  return { error: "provide either 'food_id' or 'food_name'" };
+}
+
 async function resolveIngredientsList(ingredients, db, env) {
   const resolvedIngredients = [];
   const unresolvedIngredients = [];
@@ -4527,35 +4510,12 @@ async function resolveIngredientsList(ingredients, db, env) {
       continue;
     }
 
-    let food = null;
-    let matchedSource = null;
-
-    if (item.food_id != null) {
-      const { ok, body } = await db.selectOne("foods", item.food_id);
-      if (ok && body) {
-        food = body;
-        matchedSource = "food_id";
-      }
-    } else if (item.food_name) {
-      const local = await db.select("foods", {
-        filters: { food_name: `ilike.*${escapeLikePattern(item.food_name)}*` },
-        limit: 25,
-      });
-      const bestLocal = local.ok ? pickBestFoodMatch(local.body, item.food_name) : null;
-      if (bestLocal) {
-        food = bestLocal;
-        matchedSource = "local";
-      } else {
-        const cascade = await lookupFoodCascade(db, { query: item.food_name }, env);
-        if (cascade?.food) {
-          food = cascade.food;
-          matchedSource = cascade.source;
-        }
-      }
-    } else {
-      unresolvedIngredients.push({ input: item, reason: "provide either 'food_id' or 'food_name'" });
+    const found = await findFoodForIngredient(item, db, env);
+    if (found.error) {
+      unresolvedIngredients.push({ input: item, reason: found.error });
       continue;
     }
+    const { food, matchedSource } = found;
 
     if (!food) {
       unresolvedIngredients.push({ input: item, reason: "food not found (checked local data and external sources)" });
@@ -7467,6 +7427,7 @@ function handleRoot(env) {
         "GET  /foods/autocomplete?q=...&max_results=  (API key, rate-limited) → local-first as-you-type suggestions: Malawi FCT + packaged foods (brand/product) substring match, backfilled with fuzzy search for typo tolerance ('nsim' -> Nsima, Nsima ya chimanga, Nsima ya kondowole, ...), then food_synonyms expansion, then FatSecret Premier suggestions last for anything with no local coverage (skipped, not fatal, if FatSecret isn't configured)",
         "GET  /foods/categories                 (API key, rate-limited, cached 24h) → FatSecret Premier food category list",
         "GET  /foods/substitutes?food_name=chicken&limit=  (API key, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
+        "GET  /foods/convert?q=rice&amount=2&unit=cup   (API key, rate-limited, cached 1h; also GET /foods/:id/convert?amount=&unit= and ?id=) → one food, one amount, either way round. Give a household measure (tsp, tbsp, dsp, h dsp, cup, us cup, scoop 16, chipande, piece, slice ...) and get the standard weight; give a standard measure (g, kg, oz, lb, ml, l, fl oz) and get the household equivalents. Always returns standard {grams, kilograms, milliliters, other_weight_units}, household {servings[] (the food's own chipande/cup/piece as fractional counts), volume {suggested, all[]} (spoons and cups, only when the food has a density from its own cup/spoon serving)}, nutrients for that amount, density_g_per_ml, and assumptions[] (1 g/ml is assumed and flagged for a volume with no density on file). Same food matching and gram conversion as POST /recipes/calculate. 'cup' is the 250 ml metric household cup (UCT guide); 'us cup' is 240 ml (Krause). amount accepts 2, 0.5, 1/2, 1 1/2",
         "GET  /foods/compare?foods=nsima,rice,potatoes  (API key, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
         "GET  /foods/:id/label?serving=  (API key, rate-limited, cached 1h) → Codex-oriented nutrition label for one food. References CXS 1-1985 (General Standard for the Labelling of Pre-packaged Foods, `labelling_standard`) and CXG 2-1985 (Guidelines on Nutrition Labelling, `nutrition_labelling_guideline`) separately. Legacy flat fields (serving_size, calories, total_fat_g, saturated_fat_g, carbohydrates_g, fiber_g, sugars_g, protein_g, sodium_mg, vitamins_minerals, standard) are unchanged; adds energy_kcal/energy_kj, a structured nutrition_declaration and vitamins_minerals_detail (each field paired with status: available/not_available/estimated — a genuine 0 is never shown as missing, and 'estimated' only appears where the source FCT's data_quality_flags itself flags that value as assumed), per_100g_reference (the raw 100g basis a scaled serving was derived from), and a calculation block (serving_weight_source: measured/estimated, value_basis: direct_from_database/calculated_from_per_100g_reference). Defaults to the most specific serving Serving-Size Intelligence has (chipande/mtanda, cup, tablespoon, handful, piece, etc. — see SERVING_SIZE_KEYWORDS); ?serving= picks another by label text (e.g. ?serving=100g) — an unrecognized ?serving= falls back to the default rather than erroring, flagged via requested_serving.matched=false. missing_fields flags any mandatory value this food doesn't have data for. Invalid (non-numeric) food IDs and non-positive serving weights return 400/422 with a clear message. POST /recipes/calculate returns the same nutrition_label shape for a whole recipe (its own per-serving totals — no single food row, so no per_100g_reference or quality-flag-based 'estimated' status there)",
         "POST /foods            (admin)",
@@ -7641,6 +7602,10 @@ function handleRoot(env) {
       meals: [
         "POST /meals/analyze   (API key, rate-limited) → body {meal_type?, ingredients:[{food_id?|food_name, quantity, unit?}], daily_targets?:{kcal,protein_g,carbs_g,fat_g}}; same ingredient resolution as /recipes/calculate, no servings — returns total_nutrients, macronutrient_breakdown (kcal + % from protein/carbs/fat, Atwater 4/4/9, compared against the standard adult AMDR range), food_groups_present/food_groups_missing (from the core Grains/Legumes/Protein/Vegetables/Fruits/Dairy set), and — only if daily_targets was supplied — daily_target_comparison; purely descriptive, never invents a personalized target itself",
       ],
+      measures: [
+        "GET  /measures   (API key, rate-limited, cached 24h) → every unit (id, ml or grams, system, aliases, source), the printed reference tables as published (UCT household guide, kitchen conversion tables, Krause Appendix 2: liquid equivalents, dry measure, weights, metric conversion factors) and the #6-#60 portion scoop sizes. ?section=units|scoop_sizes|reference_tables|sources returns one part",
+        "GET  /measures/convert?amount=3&from=tbsp&to=ml   (API key, rate-limited, cached 24h) → unit to unit with no food: volume to volume, weight to weight; omit 'to' for every unit of that kind. Weight-to-volume needs a food: use GET /foods/convert",
+      ],
       ingredients: [
         "POST /ingredients/parse   (API key, rate-limited) → body {text}; parses free text like \"2 eggs, 1 cup rice, 100g chicken and ½ avocado\" into ingredients:[{food_name, quantity, unit}] — the exact shape /recipes/calculate and /meals/analyze accept. Groq LLM parse, falls back to a local regex parser if GROQ_API_KEY isn't configured or the LLM call fails. A bare count with no stated unit (\"2 eggs\") comes back as unit:\"serving\", not grams.",
       ],
@@ -7772,6 +7737,151 @@ async function handleFoodsLabel(request, url, db, id) {
   } catch (e) {
     return err(`Label calculation failed: ${e?.message || String(e)}`, 500);
   }
+}
+
+/**
+ * GET /foods/convert?q=rice&amount=2&unit=cup
+ * GET /foods/convert?id=12&amount=300&unit=g      GET /foods/:id/convert?amount=2&unit=chipande
+ *
+ * One food, one amount, either way round: give a household measure (cup, tbsp, dsp, scoop 16, chipande,
+ * piece ...) and get the standard weight, or give a standard measure (g, kg, oz, ml ...) and get the
+ * household equivalents. The reply always carries both, plus the nutrients for that amount. Uses the
+ * same food matching and gram conversion as POST /recipes/calculate (resolveIngredientGrams), so the
+ * numbers agree. Spoon/cup equivalents need a density, taken from the food's own cup or spoon serving;
+ * with none on file they are left out (a weight input) or 1 g/ml is assumed and flagged (a volume input).
+ */
+async function handleFoodsConvert(request, url, db, env, idFromPath = null) {
+  if (request.method !== "GET") return err("Only GET is supported for /foods/convert", 405);
+
+  const idParam = idFromPath ?? url.searchParams.get("id");
+  const q = (url.searchParams.get("q") || url.searchParams.get("food") || "").trim();
+  if (idParam == null && !q) return err("Provide 'q' (food name) or 'id'");
+  if (idParam != null && !/^\d+$/.test(String(idParam))) {
+    return err(`Invalid food ID '${idParam}' — must be a positive integer`, 400);
+  }
+
+  const amountRaw = url.searchParams.get("amount");
+  const amount = amountRaw == null || amountRaw === "" ? 1 : parseQuantity(amountRaw);
+  if (!(amount > 0) || !Number.isFinite(amount)) {
+    return err("'amount' must be a positive number, e.g. 2, 0.5, 1/2 or 1 1/2");
+  }
+  const unitRaw = (url.searchParams.get("unit") || "g").trim();
+
+  try {
+    const found = await findFoodForIngredient(idParam != null ? { food_id: idParam } : { food_name: q }, db, env);
+    if (!found.food) return notFound("Food");
+    const food = found.food;
+
+    const servings = buildServingSizes(food);
+    const resolved = resolveIngredientGrams(food, amount, unitRaw);
+    if (resolved.grams == null) return err(resolved.reason, 422);
+    const grams = resolved.grams;
+
+    const density = resolved.density_g_per_ml ?? deriveDensity(servings)?.gPerMl ?? null;
+    const described = describeAmount({ grams, servings, densityGPerMl: density });
+
+    const scale = grams / 100;
+    const nutrients = {};
+    for (const field of SERVING_SCALE_FIELDS) {
+      if (food[field] != null && food[field] !== "") nutrients[field] = roundServingVal(Number(food[field]) * scale);
+    }
+
+    const unitDef = findUnit(unitRaw);
+    const inputKind = !unitDef
+      ? "food_specific_serving"
+      : unitDef.kind === "mass"
+      ? "standard_weight"
+      : unitDef.household
+      ? "household_volume"
+      : "standard_volume";
+
+    const assumptions = [];
+    if (resolved.assumed_density) {
+      assumptions.push("This food has no cup or spoon serving on file, so 1 g/ml (water-like) was assumed to turn the volume into grams. Treat the grams as a rough estimate for dense or airy foods.");
+    }
+    if (density == null) {
+      assumptions.push("This food has no cup or spoon serving on file, so spoon and cup equivalents are left out rather than guessed. Its own servings are listed under household.servings.");
+    }
+
+    return success(
+      {
+        food: { id: food.id ?? null, food_name: food.food_name || food.product_name || q || null, matched_source: found.matchedSource },
+        input: {
+          amount,
+          unit: unitRaw,
+          unit_id: unitDef?.id ?? null,
+          kind: inputKind,
+          system: unitDef?.system ?? null,
+          how_converted: resolved.basis,
+        },
+        standard: described.standard,
+        household: described.household,
+        density_g_per_ml: density != null ? roundServingVal(density) : null,
+        density_basis: resolved.density_basis ?? deriveDensity(servings)?.basis ?? null,
+        nutrients,
+        assumptions,
+      },
+      {
+        message: "Standard and household measures for this amount",
+        note: "Nutrients are for the amount asked for, scaled from the per-100g values. 'cup' is the 250 ml metric household cup; use 'us cup' for 240 ml. GET /measures lists every unit and its source.",
+      }
+    );
+  } catch (e) {
+    return err(`Measure conversion failed: ${e?.message || String(e)}`, 500);
+  }
+}
+
+/**
+ * GET /measures                         every unit, the printed reference tables and the scoop sizes
+ * GET /measures?section=units|scoop_sizes|reference_tables|sources
+ * GET /measures/convert?amount=3&from=tbsp[&to=ml]   unit-to-unit, no food (volume to volume, weight to weight)
+ */
+function handleMeasures(request, url, param) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  if (!param) {
+    const catalog = measureCatalog();
+    const section = url.searchParams.get("section");
+    if (section) {
+      if (!(section in catalog) || section === "note") {
+        return err("'section' must be one of: units, scoop_sizes, reference_tables, sources");
+      }
+      return success(catalog[section], { message: `Measures: ${section}`, note: catalog.note });
+    }
+    return success(catalog, { message: "Household and standard measures" });
+  }
+
+  if (param === "convert") {
+    const amount = parseQuantity(url.searchParams.get("amount") ?? "1");
+    if (!(amount >= 0) || !Number.isFinite(amount)) return err("'amount' must be a number, e.g. 3, 0.5 or 1/2");
+    const fromRaw = url.searchParams.get("from");
+    if (!fromRaw) return err("'from' is required, e.g. from=tbsp (see GET /measures for every unit)");
+    const from = findUnit(fromRaw);
+    if (!from) return err(`Unknown unit '${fromRaw}' — see GET /measures for every unit`);
+
+    const toRaw = url.searchParams.get("to");
+    const targets = toRaw
+      ? [toRaw]
+      : UNITS.filter((u) => u.kind === from.kind && !u.id.startsWith("scoop_") && !u.id.startsWith("dry_") && u.id !== from.id).map((u) => u.id);
+
+    const results = [];
+    for (const t of targets) {
+      const c = convertUnits(amount, fromRaw, t);
+      if (!c.ok) return err(c.error, 422);
+      results.push({
+        unit: c.to.id,
+        label: c.to.label,
+        quantity: Math.round(c.value * 1000) / 1000,
+        display_quantity: formatQuantity(c.value),
+      });
+    }
+    return success(
+      { amount, from: { id: from.id, label: from.label, system: from.system }, results },
+      { message: "Unit conversion", note: "Volume converts to volume and weight to weight. For weight-to-volume (grams of rice to cups) use GET /foods/convert." }
+    );
+  }
+
+  return notFound("Measures route");
 }
 
 async function handleFoods(request, url, db, id) {
@@ -8738,6 +8848,10 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       return notFound();
     }
 
+    case "measures": {
+      return handleMeasures(request, url, param || null);
+    }
+
     case "foods": {
       if (param === "lookup") {
         return await handleFoodsLookup(request, url, db, env);
@@ -8764,8 +8878,14 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         if (request.method !== "POST") return err("Method not allowed", 405);
         return await handleBulkInsert(request, db, "foods", { requiredField: "food_name", label: "foods" });
       }
+      if (param === "convert") {
+        return await handleFoodsConvert(request, url, db, env);
+      }
       if (param && action === "label") {
         return await handleFoodsLabel(request, url, db, param);
+      }
+      if (param && action === "convert") {
+        return await handleFoodsConvert(request, url, db, env, param);
       }
       const id = param || null;
       return await handleFoods(request, url, db, id);

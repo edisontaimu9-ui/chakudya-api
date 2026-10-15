@@ -986,6 +986,143 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /foods/convert:
+    get:
+      tags:
+      - Foods
+      summary: Household and standard measures for one food, either way round (API key, rate-limited)
+      description: 'Give a household measure (tsp, tbsp, dsp, h dsp, cup, us cup, scoop 16, or a food-specific label such as chipande,
+        piece, slice) and get the standard weight; give a standard measure (g, kg, oz, lb, ml, l, fl oz) and get the household
+        equivalents. The reply always has `standard`, `household` (the food''s own servings as fractional counts, plus spoon and cup
+        equivalents when the food has a density), the nutrients for that amount, and `assumptions`. A volume becomes grams using the
+        food''s own serving in that unit, else its density from a cup or spoon serving, else 1 g/ml (flagged). `cup` is the 250 ml metric
+        household cup; `us cup` is 240 ml. Same food matching and gram conversion as POST /recipes/calculate.'
+      parameters:
+      - name: q
+        in: query
+        description: Food name. Give this or `id`.
+        schema:
+          type: string
+          example: rice
+      - name: id
+        in: query
+        description: Food id. Give this or `q`. Also available as GET /foods/{id}/convert.
+        schema:
+          type: integer
+      - name: amount
+        in: query
+        description: Quantity, default 1. Accepts 2, 0.5, 1/2, 1 1/2.
+        schema:
+          type: string
+          example: '2'
+      - name: unit
+        in: query
+        description: Unit, default g. See GET /measures for every unit, or use a food-specific label (chipande, piece, slice).
+        schema:
+          type: string
+          example: cup
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The unit could not be resolved for this food.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /foods/{id}/convert:
+    get:
+      tags:
+      - Foods
+      summary: Household and standard measures for the food with this id (API key, rate-limited)
+      description: Same as GET /foods/convert with `id` in the path.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: amount
+        in: query
+        schema:
+          type: string
+          example: '300'
+      - name: unit
+        in: query
+        schema:
+          type: string
+          example: g
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The unit could not be resolved for this food.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /measures:
+    get:
+      tags:
+      - Foods
+      summary: Every unit, the printed reference tables and the scoop sizes (API key, rate-limited)
+      description: 'Units with their size, aliases and source, the printed reference tables as published (UCT Household Measurements
+        Guide, Kitchen Measurement Conversion Tables, Krause and Mahan 16th ed. Appendix 2), and the #6-#60 portion scoop sizes.'
+      parameters:
+      - name: section
+        in: query
+        description: Return one part only.
+        schema:
+          type: string
+          enum:
+          - units
+          - scoop_sizes
+          - reference_tables
+          - sources
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /measures/convert:
+    get:
+      tags:
+      - Foods
+      summary: Unit to unit, no food (API key, rate-limited)
+      description: 'Volume to volume or weight to weight. Leave out `to` for every unit of that kind. Weight-to-volume needs a food,
+        so use GET /foods/convert for that.'
+      parameters:
+      - name: amount
+        in: query
+        schema:
+          type: string
+          example: '3'
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          example: tbsp
+      - name: to
+        in: query
+        schema:
+          type: string
+          example: ml
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          description: The two units are of different kinds (volume vs weight).
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /foods/by-category:
     get:
       tags:
