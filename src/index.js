@@ -4,6 +4,8 @@
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
  * Version: 1.45.0
+ * (1.45.0 also: when the ranking is unsure on a query that states a state/variety, /foods/search asks Groq to reorder the same rows - src/foodIntentLlm.js,
+ *   reorder-only, 2.5 s timeout, KV-cached, silently skipped without GROQ_API_KEY.)
  * v1.45.0 changes: intent-aware food search. No new endpoints, no contract, SQL or data changes. GET /foods/search, /foods/autocomplete (via its fuzzy
  *   backfill) and the lookup cascade (/foods/lookup and everything built on it) now rank the database shortlist with the scorer in src/foodMatching.js
  *   instead of trusting text similarity alone: exact/keyword match, preparation state (cooked, raw, soaked, dried, fermented, ... compared by meaning:
@@ -626,7 +628,8 @@ import {
   sodiumCdrrForAge,
   resolveDriLifeStage,
 } from "./dri_data.js";
-import { pickBestFoodMatch, pickBestFoodMatchDetailed, defaultStapleFor, preferDefaultStaple, searchFoodsRanked, hasStatedAttributes, retrievalTermFor, conflictsWithQuery } from "./foodMatching.js";
+import { pickBestFoodMatch, pickBestFoodMatchDetailed, defaultStapleFor, preferDefaultStaple, searchFoodsRanked, hasStatedAttributes, retrievalTermFor, conflictsWithQuery, rankingNeedsHelp } from "./foodMatching.js";
+import { llmRerankFoods } from "./foodIntentLlm.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
 import { parseHcVelocityQuery, classifyHcVelocity, normalizeSex as normalizeHcSex } from "./hcVelocity.js";
 import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVelocity.js";
@@ -5826,6 +5829,41 @@ async function handleFoodsSearch(request, url, db, env) {
           seenIds.add(row.id);
           results.push({ ...row, _source: "foods", _match_type: "synonym", _matched_term: term });
         }
+      }
+    }
+  }
+
+  // Optional LLM tie-breaker (src/foodIntentLlm.js): only when the ranking above is unsure on a query that
+  // states a preparation/variety. It can only reorder the food rows already found; cached 7 days in KV.
+  if (q && env.GROQ_API_KEY) {
+    const foodRows = results.filter((r) => r._source === "foods");
+    if (rankingNeedsHelp(foodRows, q)) {
+      const ids = foodRows.slice(0, 10).map((r) => r.id);
+      const cacheKey = [q.toLowerCase(), ids.join(",")];
+      let order = null;
+      try {
+        order = (await getQueryCache(env, "foodintent", cacheKey))?.order || null;
+      } catch { /* cache is best-effort */ }
+      let reordered = null;
+      if (order) {
+        const byId = new Map(foodRows.map((r) => [String(r.id), r]));
+        reordered = [...order.map((id) => byId.get(id)).filter(Boolean), ...foodRows.filter((r) => !order.includes(String(r.id)))];
+      } else {
+        const out = await llmRerankFoods({ env, query: q, rows: foodRows });
+        if (out.used) {
+          reordered = out.rows;
+          try {
+            await env.RATE_LIMIT_KV?.put(
+              `foodintent:${await sha256Hex(cacheKey.join("|"))}`,
+              JSON.stringify({ order: out.order }),
+              { expirationTtl: 7 * 24 * 3600 }
+            );
+          } catch { /* cache is best-effort */ }
+        }
+      }
+      if (reordered) {
+        let i = 0;
+        for (let k = 0; k < results.length; k++) if (results[k]._source === "foods") results[k] = reordered[i++];
       }
     }
   }

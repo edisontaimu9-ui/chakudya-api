@@ -427,7 +427,9 @@ export function scoreFoodCandidate(row, queryAttrs, ctx = {}) {
       score += 18;
       reasons.push(`${category}_match`);
     } else if (stated && nameValue && nameValue !== stated) {
-      score -= 25;
+      // A different cooking state changes the nutrient values far more than a different variety of the
+      // same cooked food, so a variety conflict costs less than a state conflict.
+      score -= category === "variety" ? 15 : 25;
       reasons.push(`${category}_conflict`);
     } else if (!stated && nameValue) {
       score -= 4;
@@ -644,4 +646,16 @@ export function pickBestFoodMatchDetailed(rows, query) {
     alternates: scored.slice(1, 4).map((s) => s.row),
     scored,
   };
+}
+
+/**
+ * True when the deterministic ranking is not a confident call on a query that states a preparation or
+ * variety: the top row conflicts with what was asked, or the top two rows are too close. Only then is the
+ * optional LLM tie-breaker (src/foodIntentLlm.js) worth its cost.
+ */
+export function rankingNeedsHelp(rows, query) {
+  if (!Array.isArray(rows) || rows.length < 2 || !hasStatedAttributes(query)) return false;
+  const [top, second] = scoreFoodCandidates(rows, query);
+  const conflict = top.reasons.includes("state_conflict") || top.reasons.includes("variety_conflict");
+  return conflict || top.score - second.score < AMBIGUITY_SCORE_GAP;
 }
