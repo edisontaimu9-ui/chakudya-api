@@ -308,3 +308,187 @@ describe("backward compatibility (real data)", () => {
     assert.equal(best.id, 198);
   });
 });
+
+// ── v1.45.0: intent-aware search (state, variety, local names, aliases) ──────────────────────────────
+import {
+  stateOf,
+  stateRelation,
+  hasStatedAttributes,
+  retrievalTermFor,
+  rankFoodRows,
+  conflictsWithQuery,
+  searchFoodsRanked,
+} from "../src/foodMatching.js";
+
+// REAL rows are the ones captured from the live API (see the fixtures at the top of this file).
+// SYNTHETIC rows follow the FCT naming pattern ("<food>, <qualifiers>, (<local name>)") for variety/state
+// pairs the local fixtures do not contain; they exercise the general scoring, not a claim about the table.
+const SYNTHETIC_RICE = [
+  { id: 901, food_name: "Rice, brown, cooked, (Mpunga wofiira wophika)" },
+  { id: 902, food_name: "Rice, white, cooked, (Mpunga woyera wophika)" },
+  { id: 903, food_name: "Rice, white, raw, (Mpunga woyera waiwisi)" },
+];
+const ALL_RICE = [...REAL_RICE_ROWS, REAL_RICE_PORRIDGE_ROW, ...SYNTHETIC_RICE];
+
+// Stand-in for fuzzy_food_search(): like the real function, EVERY word of the term must be found in the
+// name (stricter than trigram similarity, which is the point being tested).
+function fakeFuzzyDb(rows) {
+  return async (term, width) => {
+    const words = (term || "").toLowerCase().match(/[a-z']+/g) || [];
+    return rows
+      .filter((r) => {
+        const nameWords = (r.food_name || "").toLowerCase().match(/[a-z']+/g) || [];
+        return words.every((w) => nameWords.includes(w));
+      })
+      .slice(0, width);
+  };
+}
+
+describe("preparation state is compared by meaning", () => {
+  test("synonyms and Chichewa state words collapse to one state", () => {
+    assert.equal(stateOf("uncooked"), "raw");
+    assert.equal(stateOf("wophika"), "cooked");
+    assert.equal(stateOf("yophika"), "cooked");
+    assert.equal(stateOf("woviika"), "soaked");
+    assert.equal(stateOf("rice"), null);
+  });
+
+  test("cooked is related to a cooking method, in conflict with raw/soaked/dried/fermented", () => {
+    assert.equal(stateRelation("cooked", "cooked").kind, "match");
+    assert.equal(stateRelation("cooked", "boiled").kind, "related");
+    assert.equal(stateRelation("boiled", "cooked").kind, "related");
+    for (const other of ["raw", "soaked", "dried", "fermented"]) {
+      assert.equal(stateRelation("cooked", other).kind, "conflict", other);
+    }
+    assert.equal(stateRelation("boiled", "fried").kind, "conflict");
+    assert.equal(stateRelation("boiled", "steamed").kind, "related");
+  });
+
+  test("a Chichewa state word in the query is read as that state, not as the food", () => {
+    const attrs = parseQueryAttributes("mpunga wophika");
+    assert.equal(attrs.stated.state, "cooked");
+    assert.deepEqual(attrs.coreWords, ["mpunga"]);
+  });
+
+  test("spelling variants of the same word are folded", () => {
+    assert.deepEqual(parseQueryAttributes("Sima ya mgayiwa").words, ["nsima", "ya", "mgaiwa"]);
+  });
+});
+
+describe("rice: state, variety and word order (the examples from the brief)", () => {
+  test("'Brown cooked rice' and 'Rice, Brown, Cooked' pick the same record", () => {
+    assert.equal(rankFoodRows(ALL_RICE, "Brown cooked rice")[0].id, 901);
+    assert.equal(rankFoodRows(ALL_RICE, "Rice, Brown, Cooked")[0].id, 901);
+  });
+
+  test("an explicit state outranks the unqualified base food", () => {
+    assert.equal(rankFoodRows(ALL_RICE, "raw rice")[0].id, 903);
+    assert.ok(["901", "902"].includes(String(rankFoodRows(ALL_RICE, "cooked rice")[0].id)));
+  });
+
+  test("a bare 'rice' prefers the plain base food over a dish or a specific variant", () => {
+    const order = rankFoodRows(ALL_RICE, "Rice").map((r) => r.id);
+    assert.equal(order[0], 101); // REAL "Rice, soaked, (Mpunga woviika)": nothing but the base food and one state
+    assert.ok(order.indexOf(102) > order.indexOf(902), "pudding after plain rice rows");
+    assert.ok(order.indexOf(103) > order.indexOf(902));
+  });
+
+  test("a state conflict ranks lower but is still listed", () => {
+    const order = rankFoodRows(REAL_RICE_ROWS, "cooked rice").map((r) => r.id);
+    assert.ok(order.includes(101));
+    assert.equal(order[0], 101); // only plain-rice row there is; the dishes are worse
+  });
+
+  test("conflictsWithQuery flags a different state or variety, not an unqualified row", () => {
+    assert.equal(conflictsWithQuery(REAL_RICE_ROWS[0], "cooked rice"), true);
+    assert.equal(conflictsWithQuery(SYNTHETIC_RICE[1], "brown rice"), true);
+    assert.equal(conflictsWithQuery(SYNTHETIC_RICE[0], "brown cooked rice"), false);
+    assert.equal(conflictsWithQuery(REAL_RICE_ROWS[0], "rice"), false);
+    assert.equal(conflictsWithQuery(REAL_RICE_ROWS[0], "soaked rice"), false);
+  });
+
+  test("Chichewa query with a state: 'mpunga wophika' reaches cooked rice, not the soaked row", () => {
+    assert.ok([901, 902].includes(rankFoodRows(ALL_RICE, "mpunga wophika")[0].id));
+  });
+});
+
+describe("retrieval: the database needs every word, so a state word must not hide rows", () => {
+  test("hasStatedAttributes / retrievalTermFor", () => {
+    assert.equal(hasStatedAttributes("brown cooked rice"), true);
+    assert.equal(hasStatedAttributes("rice"), false);
+    assert.equal(retrievalTermFor("Rice, Brown, Cooked"), "rice");
+    assert.equal(retrievalTermFor("nsima ya galamilu"), "nsima galamilu");
+    assert.equal(retrievalTermFor("cooked"), "cooked"); // never an empty term
+  });
+
+  test("'cooked rice' still reaches 'Rice, soaked' through the second, identity-words-only fetch", async () => {
+    const db = fakeFuzzyDb(REAL_RICE_ROWS);
+    assert.deepEqual(await db("cooked rice", 24), []); // what the database alone would return
+    const rows = await searchFoodsRanked(db, "cooked rice", { maxResults: 8 });
+    assert.equal(rows[0].id, 101);
+  });
+
+  test("a bare 'rice' is no longer led by 'Rice pudding' (database order put the pudding first)", async () => {
+    const dbPudd = fakeFuzzyDb([REAL_RICE_ROWS[1], REAL_RICE_ROWS[2], REAL_RICE_ROWS[0]]);
+    const rows = await searchFoodsRanked(dbPudd, "rice", { maxResults: 8 });
+    assert.equal(rows[0].id, 101);
+  });
+
+  test("no second fetch when the query states nothing, or the first fetch was full", async () => {
+    let calls = 0;
+    const counting = async (t, w) => { calls++; return fakeFuzzyDb(ALL_RICE)(t, w); };
+    await searchFoodsRanked(counting, "rice", { maxResults: 8 });
+    assert.equal(calls, 1);
+    calls = 0;
+    await searchFoodsRanked(counting, "cooked rice", { maxResults: 1 }); // first fetch yields rows
+    assert.equal(calls, 1);
+  });
+
+  test("result count and row identity are untouched: only the order changes", async () => {
+    const rows = await searchFoodsRanked(fakeFuzzyDb(ALL_RICE), "rice", { maxResults: 50 });
+    assert.deepEqual(rows.map((r) => r.id).sort(), ALL_RICE.map((r) => r.id).sort());
+    for (const r of rows) assert.deepEqual(r, ALL_RICE.find((x) => x.id === r.id));
+  });
+});
+
+describe("nsima stays distinct (real rows), including through the new search path", () => {
+  const rowsDb = fakeFuzzyDb(LIVE_NSIMA_ROWS());
+  function LIVE_NSIMA_ROWS() {
+    return [
+      { id: 9, food_name: "Cassava thick porridge, (Nsima ya kondowole)" },
+      { id: 14, food_name: "Maize and soya thick porridge, (Nsima ya ufa wa chimanga ndi soya)" },
+      { id: 12, food_name: "Maize thick porridge, white, whole flour, (Nsima ya mgaiwa)" },
+      { id: 13, food_name: "Maize thick porridge, degermed- dehulled flour, (Nsima ya galamilu)" },
+      { id: 10, food_name: "Maize thick porridge, refined flour, (Nsima ya ufa oyera)" },
+      { id: 15, food_name: "Maize thick porridge, white, whole flour, (Nsima ya mgaiwa), Calculated" },
+    ];
+  }
+
+  test("each named nsima reaches its own row", async () => {
+    const top = async (q) => (await searchFoodsRanked(rowsDb, q, { maxResults: 8 }))[0].id;
+    assert.equal(await top("nsima"), 10);
+    assert.equal(await top("Nsima ya mgaiwa"), 12);
+    assert.equal(await top("Sima ya mgayiwa"), 12); // spelling variants of the same words
+    assert.equal(await top("nsima ya galamilu"), 13);
+    assert.equal(await top("nsima ya kondowole"), 9);
+  });
+
+  test("a verified alias never pulls a row over a direct name match", () => {
+    // 009's nsima group also lists maize/ufa/chimanga; those aliases must not outrank the row that names the word.
+    const rows = LIVE_NSIMA_ROWS();
+    const aliases = ["maize", "ufa", "chimanga", "maize flour", "cassava", "kondowole"];
+    assert.equal(rankFoodRows(rows, "nsima ya kondowole", { aliases })[0].id, 9);
+    assert.equal(rankFoodRows(rows, "nsima ya galamilu", { aliases })[0].id, 13);
+  });
+
+  test("an alias fills a gap only when no row carries the word", () => {
+    const rows = [
+      { id: 1, food_name: "Rice, soaked, (Mpunga woviika)" },
+      { id: 2, food_name: "Beans, dried, (Nyemba zouma)" },
+    ];
+    // nobody names "chelani", so its verified alias (rice) is the only link
+    assert.equal(rankFoodRows(rows, "chelani", { aliases: ["rice"] })[0].id, 1);
+    // without an alias nothing is invented
+    assert.ok(!scoreFoodCandidates(rows, "chelani")[0].reasons.includes("alias_match_in_base"));
+  });
+});

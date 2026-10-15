@@ -3,7 +3,16 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.44.3
+ * Version: 1.45.0
+ * v1.45.0 changes: intent-aware food search. No new endpoints, no contract, SQL or data changes. GET /foods/search, /foods/autocomplete (via its fuzzy
+ *   backfill) and the lookup cascade (/foods/lookup and everything built on it) now rank the database shortlist with the scorer in src/foodMatching.js
+ *   instead of trusting text similarity alone: exact/keyword match, preparation state (cooked, raw, soaked, dried, fermented, ... compared by meaning:
+ *   "cooked" is related to boiled, in conflict with raw/soaked; Chichewa wophika/yaiwisi/woviika count), variety, dish vs ingredient, local names,
+ *   and verified food_synonyms aliases that only fill gaps and never outrank a direct name match. A stated state/variety steers the ranking but can no
+ *   longer hide rows (a second fetch on the food's own words runs when the first is thin), so "cooked rice" reaches "Rice, soaked" and "Brown cooked
+ *   rice" = "Rice, Brown, Cooked". Lookup does not answer with a row whose state/variety conflicts with the query; it goes on to USDA/OFF/FatSecret
+ *   and only falls back to that row if they find nothing. Spelling variants of one word (sima, mgayiwa) are folded. Same ids, values and response shape.
+ *
  * v1.44.3 changes: the bare-"nsima" default is now deterministic. Plain maize nsima leads, refined flour ("Nsima ya ufa oyera") first as the
  *   everyday variant (DISH_PREFERRED_VARIANT), then whole-grain and degermed, then composite maize dishes ("Maize and soya ...") after every plain
  *   maize row, then other staples. Same order in the single-food matcher and in /foods/search and /foods/autocomplete. 1.44.2 only
@@ -617,7 +626,7 @@ import {
   sodiumCdrrForAge,
   resolveDriLifeStage,
 } from "./dri_data.js";
-import { pickBestFoodMatch, pickBestFoodMatchDetailed, defaultStapleFor, preferDefaultStaple } from "./foodMatching.js";
+import { pickBestFoodMatch, pickBestFoodMatchDetailed, defaultStapleFor, preferDefaultStaple, searchFoodsRanked, hasStatedAttributes, retrievalTermFor, conflictsWithQuery } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
 import { parseHcVelocityQuery, classifyHcVelocity, normalizeSex as normalizeHcSex } from "./hcVelocity.js";
 import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVelocity.js";
@@ -693,7 +702,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.44.3";
+const CNR_VERSION = "1.45.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -5792,10 +5801,26 @@ async function handleFoodsSearch(request, url, db, env) {
 
     if (q && results.length < maxResults) {
       expandedTerms = await expandSynonyms(db, q);
+      // A multi-word query ("mpunga wophika") matches no synonym term as a whole. When it states a
+      // preparation/variety or found nothing, look each food word up on its own (exact term, max 3 words)
+      // and rank what the alias terms return against what the user typed.
+      let viaWords = false;
+      if (!expandedTerms.length && (results.length === 0 || hasStatedAttributes(q))) {
+        const words = retrievalTermFor(q).split(" ").filter((w) => w.length >= 3).slice(0, 3);
+        const found = new Set();
+        for (const w of words) for (const t of await expandSynonyms(db, w, { exact: true })) found.add(t);
+        expandedTerms = [...found];
+        viaWords = expandedTerms.length > 0;
+      }
       const seenIds = new Set(results.map((r) => r.id));
       for (const term of expandedTerms) {
         if (results.length >= maxResults) break;
-        const synRows = await fuzzyFoodSearch(db, term, { maxResults: maxResults - results.length, minSimilarity, category });
+        const synRows = await fuzzyFoodSearch(db, term, {
+          maxResults: maxResults - results.length,
+          minSimilarity,
+          category,
+          ...(viaWords ? { rankQuery: q, aliases: expandedTerms } : {}),
+        });
         for (const row of synRows) {
           if (seenIds.has(row.id)) continue;
           seenIds.add(row.id);
@@ -6194,10 +6219,19 @@ async function lookupFoodCascade(db, { query, barcode, skipLocal = false }, env)
   // misspelled Malawian food name (e.g. "Chinagwa" for "Chinangwa") before
   // falling through to external APIs that don't index Chichewa names
   // anyway. See fuzzyFoodSearch/sql/008_add_fuzzy_food_search.sql.
+  // The shortlist is ranked by intent (preparation state, variety, dish vs ingredient), so "brown cooked
+  // rice" and "Rice, Brown, Cooked" reach the same record. A row that names a DIFFERENT state or variety
+  // than the one asked for ("Rice, soaked" for "cooked rice") is not returned as the answer here: the
+  // lookup carries on to the wider tier (USDA/Open Food Facts/FatSecret), and only if that finds nothing
+  // is the local row returned as a last resort.
+  let conflictingLocal = null;
   if (query && !skipLocal) {
-    const fuzzy = await fuzzyFoodSearch(db, query, { maxResults: 1 });
+    const fuzzy = await fuzzyFoodSearch(db, query, { maxResults: 8 });
     if (fuzzy[0]) {
-      return { food: withExternalShape(fuzzy[0], "local_fuzzy"), source: "local_fuzzy", cached: false };
+      if (!conflictsWithQuery(fuzzy[0], query)) {
+        return { food: withExternalShape(fuzzy[0], "local_fuzzy"), source: "local_fuzzy", cached: false };
+      }
+      conflictingLocal = fuzzy[0];
     }
   }
 
@@ -6220,7 +6254,11 @@ async function lookupFoodCascade(db, { query, barcode, skipLocal = false }, env)
   if (!result && query) result = await fetchFromUSDA(query, env);
   if (!result && query) result = await fetchFromFatSecret(query, env);
 
-  if (!result) return null;
+  if (!result) {
+    return conflictingLocal
+      ? { food: withExternalShape(conflictingLocal, "local_fuzzy"), source: "local_fuzzy", cached: false }
+      : null;
+  }
 
   // 4. Cache it so next time this is a step-2 hit, not a fresh API call.
   // Upsert on (source, external_id) — if this exact external food was already
@@ -6618,19 +6656,24 @@ async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 
  * have them. Pass an empty query with a category to browse that category
  * with no text match.
  */
-async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35, category = "" } = {}) {
+async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35, category = "", rankQuery = "", aliases = [] } = {}) {
   if (!query && !category) return [];
-  // A bare dish name ("nsima") leads with its everyday staple (maize). The database ranks by text
-  // similarity, so ask for a wider shortlist, put the staple's rows first, then trim to what was asked.
-  const staple = query ? defaultStapleFor(query) : null;
-  const { ok, body } = await db.rpc("fuzzy_food_search", {
-    search_term: query || null,
-    max_results: staple ? Math.min(maxResults * 3, 50) : maxResults,
-    min_similarity: minSimilarity,
-    category_filter: category || null,
-  });
-  const rows = ok && Array.isArray(body) ? body : [];
-  return staple ? preferDefaultStaple(rows, query).slice(0, maxResults) : rows;
+  const fetchRows = async (term, width) => {
+    const { ok, body } = await db.rpc("fuzzy_food_search", {
+      search_term: term || null,
+      max_results: width,
+      min_similarity: minSimilarity,
+      category_filter: category || null,
+    });
+    return ok && Array.isArray(body) ? body : [];
+  };
+  // Category browse (no text) keeps the database order.
+  if (!query) return fetchRows(null, maxResults);
+  // The database shortlists by per-word text similarity only. Ask for a wider shortlist, then rank it by
+  // intent (src/foodMatching.js): exact/keyword match, preparation state, variety, dish vs ingredient,
+  // local names, verified aliases. A bare dish name ("nsima") still leads with its everyday staple.
+  // rankQuery/aliases: when this call searches an alias term, rank against what the user actually typed.
+  return searchFoodsRanked(fetchRows, query, { maxResults, rankQuery, aliases });
 }
 
 /**
@@ -6703,13 +6746,15 @@ async function autocompletePackagedLocal(db, prefix, maxResults) {
  * Used to bridge Chichewa<->English and other local-name searches: a query
  * for "chinangwa" also re-runs the search for "cassava", and vice versa.
  */
-async function expandSynonyms(db, term) {
+async function expandSynonyms(db, term, { exact = false } = {}) {
   if (!term) return [];
   const normalized = term.trim().toLowerCase();
   if (!normalized) return [];
 
+  // exact: the whole term must equal a synonym term (used per word of a multi-word query, where a
+  // substring match would pull in groups that merely contain the word).
   const { ok: groupsOk, body: groupRows } = await db.select("food_synonyms", {
-    filters: { term: `ilike.*${escapeLikePattern(normalized)}*` },
+    filters: { term: exact ? `ilike.${escapeLikePattern(normalized)}` : `ilike.*${escapeLikePattern(normalized)}*` },
     select: "group_key",
     limit: 10,
   });

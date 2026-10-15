@@ -89,8 +89,83 @@ const ALL_ATTRIBUTE_WORDS = new Set([
   ...STATE_WORDS, ...FORM_WORDS, ...FRESHNESS_WORDS, ...VARIETY_WORDS,
 ]);
 
+// Spelling variants that are the same word (data, not logic). Both entries are already treated as the
+// same food elsewhere: "sima" is an alias of nsima in food_synonyms (sql/009); "mgayiwa" is the other
+// common spelling of mgaiwa (whole-grain maize flour). Add a variant only when it is the SAME word -
+// never to bridge two different foods.
+export const SPELLING_VARIANTS = {
+  sima: "nsima",
+  mgayiwa: "mgaiwa",
+};
+
 function tokenize(s) {
-  return (s || "").toLowerCase().match(/[a-z']+/g) || [];
+  const folded = (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return (folded.match(/[a-z']+/g) || []).map((w) => SPELLING_VARIANTS[w] || w);
+}
+
+// ── Preparation-state vocabulary ────────────────────────────────────────
+// Chichewa preparation words (verb stem + noun-class prefix: wophika / yophika / zophika / chophika ...)
+// -> the English state they mean. Lets "mpunga wophika" be understood as cooked rice. "oviika" is the
+// word in the FCT's own "Rice, soaked, (Mpunga woviika)". NEEDS A CHICHEWA SPEAKER'S REVIEW before it is
+// extended; keep it to stems that are certain.
+const CHICHEWA_STATE_STEMS = {
+  ophika: "cooked",
+  aiwisi: "raw",
+  ouma: "dried",
+  okazinga: "fried",
+  owotcha: "roasted",
+  oviika: "soaked",
+};
+const CHICHEWA_STATE_PREFIXES = ["w", "y", "z", "ch"];
+export const CHICHEWA_STATE_WORDS = Object.fromEntries(
+  Object.entries(CHICHEWA_STATE_STEMS).flatMap(([stem, state]) =>
+    CHICHEWA_STATE_PREFIXES.map((p) => [p + stem, state])
+  )
+);
+
+// Synonyms that collapse to one canonical state.
+const STATE_CANONICAL = { uncooked: "raw", "sautéed": "sauteed" };
+
+/** The canonical preparation state a single word names (English or Chichewa), or null. */
+export function stateOf(word) {
+  if (STATE_WORDS.has(word)) return STATE_CANONICAL[word] || word;
+  return CHICHEWA_STATE_WORDS[word] || null;
+}
+
+// Cooking-method families, so related states are not treated as hard conflicts: "cooked rice" is
+// closer to "Rice, boiled" than to "Rice, soaked", and "boiled" is not the opposite of "steamed".
+const MOIST_HEAT = new Set(["boiled", "steamed", "stewed", "poached", "braised"]);
+const DRY_HEAT = new Set(["fried", "roasted", "baked", "grilled", "toasted", "sauteed"]);
+
+/**
+ * How a state the query asked for relates to a state a row names:
+ *   match    - same state (or a synonym: raw / uncooked)
+ *   related  - same cooking family, or the generic "cooked" against a specific cooking method
+ *   conflict - a different preparation (cooked vs raw / soaked / dried / fermented, boiled vs fried ...)
+ * bonus is the score the relation earns.
+ */
+export function stateRelation(asked, named) {
+  if (asked === named) return { kind: "match", bonus: 18 };
+  const [a, b] = [asked, named];
+  if (a === "cooked" || b === "cooked") {
+    const other = a === "cooked" ? b : a;
+    if (MOIST_HEAT.has(other)) return { kind: "related", bonus: 10 };
+    if (DRY_HEAT.has(other)) return { kind: "related", bonus: 5 };
+    return { kind: "conflict", bonus: -25 };
+  }
+  if (MOIST_HEAT.has(a) && MOIST_HEAT.has(b)) return { kind: "related", bonus: 4 };
+  if (DRY_HEAT.has(a) && DRY_HEAT.has(b)) return { kind: "related", bonus: 2 };
+  return { kind: "conflict", bonus: -25 };
+}
+
+/** Every canonical preparation state a parsed food_name carries (main name, qualifiers, local name). */
+function statesInName(parsed) {
+  const found = [];
+  for (const w of [...parsed.allWords, ...parsed.parenWords]) {
+    const st = stateOf(w);
+    if (st && !found.includes(st)) found.push(st);
+  }
+  return found;
 }
 
 // A local dish name used on its own means a particular staple: a bare "nsima" is maize nsima, the
@@ -211,11 +286,17 @@ export function parseQueryAttributes(query) {
 
   for (const w of words) {
     let categorized = false;
-    for (const [category, wordSet] of ATTRIBUTE_CATEGORIES) {
-      if (wordSet.has(w) && !stated[category]) {
-        stated[category] = w;
-        categorized = true;
-        break;
+    const st = stateOf(w);
+    if (st && !stated.state) {
+      stated.state = st;
+      categorized = true;
+    } else {
+      for (const [category, wordSet] of ATTRIBUTE_CATEGORIES) {
+        if (category !== "state" && wordSet.has(w) && !stated[category]) {
+          stated[category] = w;
+          categorized = true;
+          break;
+        }
       }
     }
     if (!categorized) coreWords.push(w);
@@ -231,7 +312,7 @@ export function parseQueryAttributes(query) {
  * Score is a relative ranking signal only — its scale isn't meaningful on
  * its own, only in comparison to other candidates for the SAME query.
  */
-export function scoreFoodCandidate(row, queryAttrs) {
+export function scoreFoodCandidate(row, queryAttrs, ctx = {}) {
   const name = row.food_name || "";
   const parsed = parseFoodName(name);
   const reasons = [];
@@ -241,6 +322,15 @@ export function scoreFoodCandidate(row, queryAttrs) {
   if (name.trim().toLowerCase() === queryAttrs.words.join(" ")) {
     score += 100;
     reasons.push("exact_name");
+  } else if (
+    queryAttrs.words.length > 1 &&
+    parsed.allWords.length === queryAttrs.words.length &&
+    [...parsed.allWords].sort().join(" ") === [...queryAttrs.words].sort().join(" ")
+  ) {
+    // Same words in a different order or punctuation: "Brown cooked rice" / "Rice, Brown, Cooked" are
+    // the FCT entry "Rice, brown, cooked, (...)" - the local-name parenthetical is not part of the comparison.
+    score += 30;
+    reasons.push("same_words_as_main_name");
   }
 
   // Core-word overlap against the BASE segment (before the first comma) —
@@ -316,6 +406,22 @@ export function scoreFoodCandidate(row, queryAttrs) {
   // disqualifying — the FCT often has no unqualified entry at all).
   for (const [category, wordSet] of ATTRIBUTE_CATEGORIES) {
     const stated = queryAttrs.stated[category];
+    if (category === "state") {
+      // Preparation state is compared by meaning, not by spelling: a name can carry several states
+      // ("Fish, dried, smoked"), Chichewa state words count, and related states earn partial credit.
+      const named = statesInName(parsed);
+      if (stated && named.length) {
+        const best = named
+          .map((n) => stateRelation(stated, n))
+          .sort((x, y) => y.bonus - x.bonus)[0];
+        score += best.bonus;
+        reasons.push(best.kind === "match" ? "state_match" : best.kind === "related" ? "state_related" : "state_conflict");
+      } else if (!stated && named.length) {
+        score -= 4;
+        reasons.push("state_unrequested");
+      }
+      continue;
+    }
     const nameValue = parsed.allWords.find((w) => wordSet.has(w));
     if (stated && nameValue === stated) {
       score += 18;
@@ -382,6 +488,18 @@ export function scoreFoodCandidate(row, queryAttrs) {
     }
   }
 
+  // Verified aliases (food_synonyms) only fill gaps: when NO candidate carries one of the query's words
+  // (e.g. "mpunga" when no row names it), a row whose base food is that word's alias gets partial credit.
+  // They never compete with a direct name match, so "nsima ya kondowole" is not pulled toward maize
+  // just because the nsima alias group lists maize.
+  if (ctx.gapWords?.length && ctx.aliasWords?.size) {
+    const aliasHit = parsed.baseWords.some((w) => ctx.aliasWords.has(w));
+    if (aliasHit) {
+      score += 20;
+      reasons.push("alias_match_in_base");
+    }
+  }
+
   // Lightest possible tiebreak, last: shorter overall name, among
   // candidates that are otherwise about equally good. This used to be
   // the ENTIRE ranking logic; now it only nudges ties.
@@ -393,11 +511,88 @@ export function scoreFoodCandidate(row, queryAttrs) {
 /**
  * Scores and ranks every candidate row for a query, best first.
  */
-export function scoreFoodCandidates(rows, query) {
+export function scoreFoodCandidates(rows, query, opts = {}) {
   const queryAttrs = parseQueryAttributes(query);
-  const scored = rows.map((row) => scoreFoodCandidate(row, queryAttrs));
+  const ctx = aliasContext(rows, queryAttrs, opts.aliases);
+  const scored = rows.map((row) => scoreFoodCandidate(row, queryAttrs, ctx));
   scored.sort((a, b) => b.score - a.score);
   return scored;
+}
+
+// Alias credit applies only to query words that no candidate carries directly (see scoreFoodCandidate).
+function aliasContext(rows, queryAttrs, aliases) {
+  if (!Array.isArray(aliases) || !aliases.length || !queryAttrs.coreWords.length) return {};
+  const parsedRows = rows.map((r) => parseFoodName(r.food_name || ""));
+  const gapWords = queryAttrs.coreWords.filter(
+    (w) => !parsedRows.some((p) => p.baseWords.includes(w) || p.qualifierWords.includes(w) || p.parenWords.includes(w))
+  );
+  const aliasWords = new Set(aliases.flatMap(tokenize).filter((w) => !queryAttrs.words.includes(w)));
+  return { gapWords, aliasWords };
+}
+
+/** True when the query states a preparation state, physical form, freshness or variety. */
+export function hasStatedAttributes(query) {
+  const { stated } = parseQueryAttributes(query);
+  return Object.values(stated).some(Boolean);
+}
+
+/**
+ * The words that identify WHICH food is wanted - the query minus its preparation/form/variety words and
+ * Chichewa link words ("brown cooked rice" -> "rice"). Used to fetch candidates so that a state or
+ * variety word can steer the ranking without being able to hide a row from the shortlist. Returns the
+ * original text when nothing would be left.
+ */
+export function retrievalTermFor(query) {
+  const { coreWords } = parseQueryAttributes(query);
+  const kept = coreWords.filter((w) => !QUERY_FILLER_WORDS.has(w));
+  return kept.length ? kept.join(" ") : (query || "").trim();
+}
+
+/** Rows reordered best-first by the intent-aware scorer; ties keep their incoming (database) order. */
+export function rankFoodRows(rows, query, opts = {}) {
+  if (!Array.isArray(rows) || rows.length < 2) return rows;
+  return scoreFoodCandidates(rows, query, opts).map((s) => s.row);
+}
+
+/**
+ * True when the row names a preparation state or variety DIFFERENT from the one the query asked for
+ * ("cooked rice" against "Rice, soaked", "brown rice" against "Rice, white"). A list endpoint just ranks
+ * such a row lower; a single-food lookup should not silently answer with it.
+ */
+export function conflictsWithQuery(row, query) {
+  const { reasons } = scoreFoodCandidates([row], query)[0];
+  return reasons.includes("state_conflict") || reasons.includes("variety_conflict");
+}
+
+/**
+ * Shortlist + rerank, independent of the database client: fetchRows(term, width) returns candidate rows
+ * for a search term. Asks for a wider shortlist than needed, adds a second fetch on just the food's
+ * identity words when the query states an attribute and the first fetch was thin (the database's
+ * per-word similarity requires EVERY word to match, so "cooked rice" would otherwise never reach
+ * "Rice, soaked"), then ranks by intent. A bare dish name keeps its default-staple ordering.
+ */
+export async function searchFoodsRanked(fetchRows, rawQuery, { maxResults = 8, rankQuery = "", aliases = [] } = {}) {
+  // Spelling variants of the same word are folded first so the database sees the FCT's spelling.
+  const query = rawQuery.replace(/[A-Za-z']+/g, (w) => SPELLING_VARIANTS[w.toLowerCase()] || w);
+  const intent = rankQuery || query;
+  const width = Math.min(maxResults * 3, 50);
+  let rows = (await fetchRows(query, width)) || [];
+
+  if (!rankQuery && rows.length < maxResults && hasStatedAttributes(intent)) {
+    const core = retrievalTermFor(intent);
+    if (core && core.toLowerCase() !== query.trim().toLowerCase()) {
+      const seen = new Set(rows.map((r) => r.id));
+      for (const r of (await fetchRows(core, width)) || []) {
+        if (!seen.has(r.id)) {
+          seen.add(r.id);
+          rows.push(r);
+        }
+      }
+    }
+  }
+
+  const ordered = defaultStapleFor(intent) ? preferDefaultStaple(rows, intent) : rankFoodRows(rows, intent, { aliases });
+  return ordered.slice(0, maxResults);
 }
 
 // A match is flagged ambiguous when the top two candidates are close
