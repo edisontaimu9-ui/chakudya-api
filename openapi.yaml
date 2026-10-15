@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.41.0
+  version: 1.42.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -3971,6 +3971,144 @@ paths:
                             type: string
         '400':
           description: Missing or invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /activity-energy:
+    get:
+      tags:
+      - Energy
+      summary: Physical activity energy table (kcal per hour by body weight)
+      description: 'Browse or search the activity table stored in the database (Krause and Mahan, 16th ed., Appendix 10: kcal
+        per hour at 110 to 250 lb). Without a weight, each row returns its eight printed values and any printed value flagged
+        as a likely misprint (suspect_weights_lb). With weight_kg or weight_lb, each row returns kcal per hour at that weight
+        (printed value, interpolated, or scaled outside 110-250 lb) and how it was obtained.
+
+        '
+      parameters:
+      - name: q
+        in: query
+        schema:
+          type: string
+        description: Text to find in the activity or type, for example run or butterfly.
+      - name: activity
+        in: query
+        schema:
+          type: string
+        description: Exact activity name, for example Swim.
+      - name: weight_kg
+        in: query
+        schema:
+          type: number
+      - name: weight_lb
+        in: query
+        schema:
+          type: number
+      responses:
+        '200':
+          description: Matching activities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '400':
+          description: Invalid weight
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /activity-energy/calculate:
+    post:
+      tags:
+      - Energy
+      summary: Energy spent on one or more activities
+      description: 'Send body weight and a list of activities with minutes or hours. Each activity is found in the database table
+        by name (case-insensitive) and type; send type when an activity has more than one. kcal per hour is taken at the given
+        weight (printed value, linear interpolation between printed weights, or proportional scaling outside 110-250 lb,
+        which is flagged). Printed cells flagged as likely misprints are left out of the interpolation and the response says so.
+        The source does not say whether resting energy is included. The table was built for adult weights. Nothing is stored.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - activities
+              properties:
+                weight_kg:
+                  type: number
+                  description: Body weight in kg (20-250). Use this or weight_lb.
+                weight_lb:
+                  type: number
+                activities:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    properties:
+                      activity:
+                        type: string
+                      type:
+                        type: string
+                      minutes:
+                        type: number
+                      hours:
+                        type: number
+                        description: Use minutes or hours, not both.
+            example:
+              weight_kg: 68
+              activities:
+              - activity: Run
+                type: 6 mph, 10 min/mile
+                minutes: 30
+              - activity: Walk
+                type: 3 mph, 20 min/mile
+                hours: 1
+      responses:
+        '200':
+          description: kcal per activity and in total
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: object
+                      properties:
+                        weight:
+                          type: object
+                        activities:
+                          type: array
+                          items:
+                            type: object
+                            description: activity, type, minutes, kcal_per_hour, kcal, method and notes.
+                        total:
+                          type: object
+                          description: kcal, kj and minutes.
+                        warnings:
+                          type: array
+                          items:
+                            type: string
+                        notes:
+                          type: array
+                          items:
+                            type: string
+                        sources:
+                          type: array
+                          items:
+                            type: string
+        '400':
+          description: Missing or invalid input, or unknown activity
           content:
             application/json:
               schema:

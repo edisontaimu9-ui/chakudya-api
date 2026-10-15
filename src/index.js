@@ -3,7 +3,12 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.41.0
+ * Version: 1.42.0
+ * v1.42.0 changes: physical activity energy expenditure from the database (Krause 16th ed. Appendix 10, kcal per hour by body weight).
+ *   GET /activity-energy (browse, search, kcal per hour at a weight), POST /activity-energy/calculate (activities and minutes to kcal),
+ *   POST /activity-energy/bulk (admin seed). Needs sql/033_add_activity_energy_expenditure.sql and scripts/activity_energy_seed.json;
+ *   src/activityEnergy.js.
+ *
  * v1.41.0 changes: POST /energy/requirements looks up a child's BMI-for-age percentile from the WHO tables when it is not supplied
  *   (src/energyLookup.js, src/bmiPercentile.js), so the IOM overweight child equations are chosen automatically. New POST /energy/food-energy:
  *   Atwater factors (4/9/4/7 kcal/g), percent-of-weight foods and alcohol drinks (oz x proof x 0.8); src/foodEnergy.js.
@@ -598,6 +603,7 @@ import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import { enrichBmiPercentile } from "./energyLookup.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
+import { computeActivityEnergy, listActivities, parseWeight } from "./activityEnergy.js";
 import {
   CONSUMER_ROLE, MAX_KEYS_PER_USER, consumerRateLimit, validateLabel, bumpUsage, readUsage,
   verifySupabaseUser, buildConsumerKeyRow, publicKeyView,
@@ -999,7 +1005,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1143,7 +1149,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
   const isAdminKeys = resource === "admin" && (param === "keys" || param === "overview" || param === "activity" || param === "monitoring" || param === "usage");
   const isBulkInsert =
-    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm"].includes(resource) &&
+    ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm", "activity-energy"].includes(resource) &&
     param === "bulk" &&
     method === "POST";
   const isFavorites = resource === "favorites";
@@ -1260,6 +1266,10 @@ function routePolicy(resource, method, param, action) {
   // Energy requirements engine (src/energyEngine.js): pure arithmetic on the request body, no database,
   // no external calls. Any valid key. POST is a calculation, not a write.
   if (resource === "energy" && (((param === "requirements" || param === "food-energy") && method === "POST") || (param === "factors" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Activity energy calculation (src/activityEnergy.js): reads one reference table, no writes. Any valid key.
+  if (resource === "activity-energy" && param === "calculate" && method === "POST") {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   if (isFentonCompute) {
@@ -7431,6 +7441,8 @@ function handleRoot(env) {
       admin_keys: [
         "POST   /energy/requirements   (API key) → body {sex, age_years|age_months, weight_kg, height_cm, activity_factor?: minimal|moderate|strenuous, pal?|pal_category?|activities?, stress?: [{id: fever|custom, ...}], measured_ree_kcal?, pregnancy?, lactation?} → REE, stress, activity, every applicable IOM equation and one recommended figure with the reason",
         "POST   /energy/food-energy     (API key) → body {protein_g, fat_g, carbohydrate_g, alcohol_g} or {weight_g, protein_pct, fat_pct, carbohydrate_pct} or {alcohol: {volume_oz, proof|abv_percent}} → kcal, kJ, per-nutrient breakdown",
+        "GET    /activity-energy        (API key) → ?q=, ?activity=, ?weight_kg= or ?weight_lb= → activity list from the database; with a weight, kcal per hour at that weight",
+        "POST   /activity-energy/calculate (API key) → body {weight_kg|weight_lb, activities: [{activity, type?, minutes|hours}]} → kcal per activity and total (Krause 16th ed. Appendix 10)",
         "GET    /energy/factors         (API key) → activity and stress factors, PAL categories, activity table, IOM equations, reference tables",
         "GET    /admin/usage      (root key only) → calls per endpoint, daily totals and top routes from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032",
         "GET    /admin/monitoring (root key only) → failed calls and slow endpoints from request_log (?hours=, max 168); needs REQUEST_LOG_STORE=true and sql/031",
@@ -8908,6 +8920,39 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         return success(result.data, { message: "Food energy" });
       }
       return notFound();
+    }
+
+    case "activity-energy": {
+      if (param === "bulk") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        return await handleBulkInsert(request, db, "activity_energy_expenditure", {
+          requiredField: "activity",
+          label: "activity energy rows",
+        });
+      }
+      if (param === "calculate") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        const rows = await db.select("activity_energy_expenditure", { limit: 500, order: "activity.asc,type.asc" });
+        if (!rows.ok) return err("Activity table could not be read (has sql/033 been run and seeded?)", 502);
+        if (!Array.isArray(rows.body) || !rows.body.length) return err("Activity table is empty. Seed it with POST /activity-energy/bulk (admin)", 503);
+        const result = computeActivityEnergy(body, rows.body);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Activity energy estimate" });
+      }
+      if (param) return notFound();
+      if (request.method !== "GET") return err("Method not allowed. Seed rows with POST /activity-energy/bulk (admin).", 405);
+      let weightLb = null;
+      if (url.searchParams.get("weight_kg") || url.searchParams.get("weight_lb")) {
+        const w = parseWeight({ weight_kg: url.searchParams.get("weight_kg") ?? undefined, weight_lb: url.searchParams.get("weight_lb") ?? undefined });
+        if (w.error) return err(w.error);
+        weightLb = w.lb;
+      }
+      const rows = await db.select("activity_energy_expenditure", { limit: 500, order: "activity.asc,type.asc" });
+      if (!rows.ok) return err("Activity table could not be read (has sql/033 been run and seeded?)", 502);
+      const list = listActivities(Array.isArray(rows.body) ? rows.body : [], { q: url.searchParams.get("q"), activity: url.searchParams.get("activity"), weightLb });
+      return success(list, { message: `${list.length} activities`, count: list.length });
     }
 
     case "fenton-preterm": {
