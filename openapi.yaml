@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.42.0
+  version: 1.43.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -3758,6 +3758,28 @@ paths:
                         type: number
                       minutes:
                         type: number
+                activity_log:
+                  type: array
+                  maxItems: 50
+                  description: 'Activities looked up in the database (Krause Appendix 10, see GET /activity-energy). Each item has activity,
+                    type (when the activity has more than one) and minutes or hours. kcal per hour at weight_kg is converted to METs
+                    (kcal per hour / kg), then to delta PAL per hour as (METs - 1) / 17.5, the relation Table 2.4 follows, and added
+                    to the PAL used by the IOM equations. It can be combined with activities. List your everyday activities as well
+                    (Table 2.4 ids in activities), otherwise the PAL is low. weight_kg must be 20-250 for a log. The reply adds an
+                    activity_log block with every step.'
+                  items:
+                    type: object
+                    required:
+                    - activity
+                    properties:
+                      activity:
+                        type: string
+                      type:
+                        type: string
+                      minutes:
+                        type: number
+                      hours:
+                        type: number
                 bmi_for_age_percentile:
                   type: number
                   description: For children 3-18. Above 85 selects the overweight equation. Optional - when left out and the
@@ -3832,6 +3854,10 @@ paths:
                           type: object
                         activity:
                           type: object
+                        activity_log:
+                          type: object
+                          nullable: true
+                          description: Present only when activity_log was sent. Each activity with kcal, METs and delta PAL, the method, total kcal and minutes, warnings and notes.
                         estimates:
                           type: array
                           items:

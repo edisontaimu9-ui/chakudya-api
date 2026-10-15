@@ -3,7 +3,12 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.42.0
+ * Version: 1.43.0
+ * v1.43.0 changes: POST /energy/requirements takes activity_log [{activity, type?, minutes|hours}]. Each activity is looked up in the
+ *   activity_energy_expenditure table (Appendix 10, kcal per hour at the person's weight), converted to METs and delta PAL, and added to the
+ *   PAL that feeds the IOM equations. The reply carries an activity_log block with every step. No SQL: uses the v1.42.0 table.
+ *   src/activityEnergy.js (activityLogToPalEntries), src/energyLookup.js (enrichActivityLog).
+ *
  * v1.42.0 changes: physical activity energy expenditure from the database (Krause 16th ed. Appendix 10, kcal per hour by body weight).
  *   GET /activity-energy (browse, search, kcal per hour at a weight), POST /activity-energy/calculate (activities and minutes to kcal),
  *   POST /activity-energy/bulk (admin seed). Needs sql/033_add_activity_energy_expenditure.sql and scripts/activity_energy_seed.json;
@@ -601,7 +606,7 @@ import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
-import { enrichBmiPercentile } from "./energyLookup.js";
+import { enrichBmiPercentile, enrichActivityLog } from "./energyLookup.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
 import { computeActivityEnergy, listActivities, parseWeight } from "./activityEnergy.js";
 import {
@@ -8906,9 +8911,16 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         const body = await parseBody(request);
         if (body === null) return err("Invalid JSON body");
         // Children 3-18 y with weight and height but no percentile: look it up in the WHO tables first.
-        const enriched = await enrichBmiPercentile(body, db);
+        // activity_log: look the activities up in the database (Krause Appendix 10) and turn them into PAL entries.
+        const withLog = await enrichActivityLog(body, db);
+        if (withLog.error) return err(withLog.error, withLog.status || 400);
+        const enriched = await enrichBmiPercentile(withLog.body, db);
         const result = computeEnergyRequirements(enriched);
         if (!result.ok) return err(result.error);
+        if (withLog.activityLog) {
+          result.data.activity_log = withLog.activityLog;
+          for (const w of withLog.activityLog.warnings) if (!result.data.warnings.includes(w)) result.data.warnings.push(w);
+        }
         return success(result.data, { message: "Energy requirement estimate" });
       }
       if (param === "food-energy") {

@@ -12,6 +12,8 @@ export const SOURCE = "Krause and Mahan's Food and the Nutrition Care Process, 1
 export const TABLE_WEIGHTS_LB = [110, 130, 150, 170, 190, 210, 230, 250];
 export const KG_PER_LB = 0.45359237;
 export const KJ_PER_KCAL = 4.184;
+// Krause Table 2.4 follows delta PAL per hour = (METs - 1) / 17.5 (fits all 24 rows within 0.005). METs here = kcal per hour / kg (1 MET = 1 kcal/kg/h).
+export const DELTA_PAL_DIVISOR = 17.5;
 
 const round = (x, d = 0) => { const f = 10 ** d; return Math.round((x + Number.EPSILON) * f) / f; };
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
@@ -123,7 +125,7 @@ export function computeActivityEnergy(input, rows) {
     const k = kcalPerHour(f.row, w.lb);
     if (k.error) return { ok: false, error: `activities[${i}]: ${k.error}` };
     const kcal = k.kcal_per_hour * hours;
-    lines.push({ activity: f.row.activity, type: f.row.type, minutes: round(hours * 60, 1), kcal_per_hour: round(k.kcal_per_hour, 1), kcal: round(kcal, 1), kcal_unrounded: kcal, method: k.method, notes: k.notes });
+    lines.push({ activity: f.row.activity, type: f.row.type, hours, minutes: round(hours * 60, 1), kcal_per_hour: round(k.kcal_per_hour, 1), kcal: round(kcal, 1), kcal_unrounded: kcal, method: k.method, notes: k.notes });
     for (const n of k.notes) if (!warnings.includes(n)) warnings.push(n);
   }
   const totalUnrounded = lines.reduce((s, l) => s + l.kcal_unrounded, 0);
@@ -137,7 +139,7 @@ export function computeActivityEnergy(input, rows) {
     ok: true,
     data: {
       weight: { kg: round(w.kg, 1), lb: round(w.lb, 1) },
-      activities: lines.map(({ kcal_unrounded, ...rest }) => rest),
+      activities: lines.map(({ kcal_unrounded, hours, ...rest }) => rest),
       total: { kcal: Math.round(totalUnrounded), kj: Math.round(totalUnrounded * KJ_PER_KCAL), minutes: round(totalHours * 60, 1) },
       warnings,
       notes,
@@ -152,4 +154,38 @@ export function activityEnergyCatalog() {
     method: "Table value at a printed weight, linear interpolation between printed weights, proportional scaling outside 110-250 lb (flagged). Cells listed in suspect_weights_lb are left out of the interpolation.",
     source: SOURCE,
   };
+}
+
+/**
+ * Turn an activity log into entries for the energy engine's PAL calculation (POST /energy/requirements).
+ * input: { weight_kg, activity_log: [{ activity, type?, minutes | hours }] }, rows: activity_energy_expenditure rows.
+ * Each activity: kcal per hour at the person's weight -> METs (kcal per hour / kg) -> delta PAL per hour (METs - 1) / 17.5,
+ * the relation Table 2.4 follows. Returns { entries, log } or { error }.
+ */
+export function activityLogToPalEntries(input, rows) {
+  const r = computeActivityEnergy({ weight_kg: input?.weight_kg, activities: input?.activity_log }, rows);
+  if (!r.ok) return { error: String(r.error).replace(/^activities\[/, "activity_log[").replace(/^activities must/, "activity_log must").replace(/^body must/, "request body must") };
+  const kg = r.data.weight.kg;
+  const entries = []; const lines = [];
+  for (let i = 0; i < r.data.activities.length; i++) {
+    const a = r.data.activities[i];
+    const hours = input.activity_log[i].minutes !== undefined && input.activity_log[i].minutes !== null && input.activity_log[i].minutes !== "" ? Number(input.activity_log[i].minutes) / 60 : Number(input.activity_log[i].hours);
+    const mets = a.kcal_per_hour / kg;
+    const dph = Math.max(0, (mets - 1) / DELTA_PAL_DIVISOR);
+    entries.push({ label: `${a.activity} (${a.type})`, delta_pal_per_hour: round(dph, 4), mets: round(mets, 2), hours });
+    lines.push({ ...a, mets: round(mets, 2), delta_pal_per_hour: round(dph, 4), delta_pal: round(dph * hours, 3) });
+  }
+  const log = {
+    source: SOURCE,
+    method: "kcal per hour at the given weight (Appendix 10) / kg = METs; delta PAL per hour = (METs - 1) / 17.5, the relation Krause Table 2.4 follows; PAL = 1 + 0.1 (TEF) + sum of delta PAL, as in the chapter.",
+    activities: lines,
+    total_kcal: r.data.total.kcal,
+    total_minutes: r.data.total.minutes,
+    warnings: r.data.warnings,
+    notes: [
+      "The PAL counts only the activities you list. Add your everyday activities too (activities with Table 2.4 ids, see GET /energy/factors), otherwise the PAL, and the IOM estimate, will be low.",
+      ...r.data.notes,
+    ],
+  };
+  return { entries, log };
 }
