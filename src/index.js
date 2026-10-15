@@ -3,7 +3,11 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.40.0
+ * Version: 1.41.0
+ * v1.41.0 changes: POST /energy/requirements looks up a child's BMI-for-age percentile from the WHO tables when it is not supplied
+ *   (src/energyLookup.js, src/bmiPercentile.js), so the IOM overweight child equations are chosen automatically. New POST /energy/food-energy:
+ *   Atwater factors (4/9/4/7 kcal/g), percent-of-weight foods and alcohol drinks (oz x proof x 0.8); src/foodEnergy.js.
+ *
  * v1.40.0 changes: energy requirements engine. POST /energy/requirements and GET /energy/factors (any API key). REE (Mifflin-St Jeor or
  *   measured), stress factors, activity factors, PAL, every IOM EER/TEE equation in Krause ch. 2 Box 2.1 with pregnancy and lactation
  *   add-ons. Extensible activity and stress registries; src/energyEngine.js. No database, no SQL.
@@ -592,6 +596,8 @@ import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
+import { enrichBmiPercentile } from "./energyLookup.js";
+import { computeFoodEnergy } from "./foodEnergy.js";
 import {
   CONSUMER_ROLE, MAX_KEYS_PER_USER, consumerRateLimit, validateLabel, bumpUsage, readUsage,
   verifySupabaseUser, buildConsumerKeyRow, publicKeyView,
@@ -642,7 +648,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.40.0";
+const CNR_VERSION = "1.41.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1253,7 +1259,7 @@ function routePolicy(resource, method, param, action) {
   }
   // Energy requirements engine (src/energyEngine.js): pure arithmetic on the request body, no database,
   // no external calls. Any valid key. POST is a calculation, not a write.
-  if (resource === "energy" && ((param === "requirements" && method === "POST") || (param === "factors" && method === "GET"))) {
+  if (resource === "energy" && (((param === "requirements" || param === "food-energy") && method === "POST") || (param === "factors" && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   if (isFentonCompute) {
@@ -7424,6 +7430,7 @@ function handleRoot(env) {
       ],
       admin_keys: [
         "POST   /energy/requirements   (API key) → body {sex, age_years|age_months, weight_kg, height_cm, activity_factor?: minimal|moderate|strenuous, pal?|pal_category?|activities?, stress?: [{id: fever|custom, ...}], measured_ree_kcal?, pregnancy?, lactation?} → REE, stress, activity, every applicable IOM equation and one recommended figure with the reason",
+        "POST   /energy/food-energy     (API key) → body {protein_g, fat_g, carbohydrate_g, alcohol_g} or {weight_g, protein_pct, fat_pct, carbohydrate_pct} or {alcohol: {volume_oz, proof|abv_percent}} → kcal, kJ, per-nutrient breakdown",
         "GET    /energy/factors         (API key) → activity and stress factors, PAL categories, activity table, IOM equations, reference tables",
         "GET    /admin/usage      (root key only) → calls per endpoint, daily totals and top routes from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032",
         "GET    /admin/monitoring (root key only) → failed calls and slow endpoints from request_log (?hours=, max 168); needs REQUEST_LOG_STORE=true and sql/031",
@@ -8886,9 +8893,19 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         if (request.method !== "POST") return err("Method not allowed", 405);
         const body = await parseBody(request);
         if (body === null) return err("Invalid JSON body");
-        const result = computeEnergyRequirements(body);
+        // Children 3-18 y with weight and height but no percentile: look it up in the WHO tables first.
+        const enriched = await enrichBmiPercentile(body, db);
+        const result = computeEnergyRequirements(enriched);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: "Energy requirement estimate" });
+      }
+      if (param === "food-energy") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        const result = computeFoodEnergy(body);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Food energy" });
       }
       return notFound();
     }

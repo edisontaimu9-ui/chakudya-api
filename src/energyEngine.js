@@ -27,6 +27,8 @@ const round = (x, d = 0) => { const f = 10 ** d; return Math.round((x + Number.E
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
 const num = (x) => (x === null || x === undefined || x === "" ? NaN : Number(x));
 
+import { foodEnergyCatalog } from "./foodEnergy.js";
+
 // ─── Reference tables (transcribed from the chapter) ────────────────────────────────
 
 export const PAL_LEVELS = ["sedentary", "low_active", "active", "very_active"];
@@ -326,6 +328,11 @@ export function computeEnergyRequirements(input) {
   const heightCm = heightGiven ? heightM * 100 : null;
   const bmi = heightGiven ? weightKg / (heightM * heightM) : null;
 
+  const bmiPct = num(inp.bmi_for_age_percentile);
+  const bmiPctGiven = inp.bmi_for_age_percentile !== undefined && inp.bmi_for_age_percentile !== null && inp.bmi_for_age_percentile !== "";
+  if (bmiPctGiven && (!isNum(bmiPct) || bmiPct <= 0 || bmiPct >= 100)) return { ok: false, error: "'bmi_for_age_percentile' must be between 0 and 100" };
+  const bmiPctSource = bmiPctGiven ? (inp.bmi_percentile_source ? String(inp.bmi_percentile_source).slice(0, 200) : "supplied by the caller") : null;
+
   const pregnant = inp.pregnancy !== undefined && inp.pregnancy !== null;
   const lactating = inp.lactation !== undefined && inp.lactation !== null;
   if (pregnant && lactating) return { ok: false, error: "pregnancy and lactation cannot both be set" };
@@ -448,8 +455,7 @@ export function computeEnergyRequirements(input) {
       const results = [];
       for (const e of candidates) {
         if (child) {
-          const p = num(inp.bmi_for_age_percentile);
-          const status = isNum(p) ? (p > 85 ? "overweight" : "normal") : "normal";
+          const status = bmiPctGiven ? (bmiPct > 85 ? "overweight" : "normal") : "normal";
           if (e.weight_status !== status) continue;
         } else {
           if (e.bmiMin !== undefined && bmi < e.bmiMin) continue;
@@ -458,8 +464,12 @@ export function computeEnergyRequirements(input) {
         const r = applyEquation(e, { ageYears, weightKg, heightM, paIndex });
         results.push(estimate({ id: e.id, label: e.label, kcal_unrounded: r.kcal, basis: `IOM ${e.kind === "EER" ? "EER" : "weight-maintenance TEE"}`, kind: e.kind, pa_coefficient: r.pa_coefficient, energy_deposition_kcal: e.dep || 0, steps: [`${e.a} ${e.b < 0 ? "-" : "+"} ${Math.abs(e.b)} x ${round(ageYears, 2)} y + ${r.pa_coefficient} x (${e.w} x ${weightKg} kg + ${e.h} x ${round(heightM, 3)} m)${e.dep ? ` + ${e.dep}` : ""}`], source: SOURCE, evidence: "IOM DRI" }));
       }
-      if (child && !isNum(num(inp.bmi_for_age_percentile))) warnings.push("bmi_for_age_percentile was not given, so the normal-weight child equation was used. Send it (above 85 selects the overweight equation).");
-      if (child && isNum(num(inp.bmi_for_age_percentile)) && num(inp.bmi_for_age_percentile) < 5) warnings.push("BMI-for-age below the 5th percentile: the IOM child equations were built for the 5th-85th percentile.");
+      if (child && !bmiPctGiven) {
+        const why = inp.bmi_percentile_lookup_error ? ` It could not be looked up (${String(inp.bmi_percentile_lookup_error).slice(0, 160)}).` : ageYears < 3 ? "" : " It needs height and weight to be looked up from the WHO tables.";
+        warnings.push(`No BMI-for-age percentile, so the normal-weight child equation was used.${why} Send bmi_for_age_percentile (above 85 selects the overweight equation).`);
+      }
+      if (child && bmiPctGiven && bmiPct < 5) warnings.push("BMI-for-age below the 5th percentile: the IOM child equations were built for the 5th-85th percentile.");
+      if (child && bmiPctGiven && inp.bmi_percentile_source) notes.push(`BMI-for-age percentile ${round(bmiPct, 1)}: ${bmiPctSource}.`);
       if (!child && bmi < 18.5) warnings.push(`BMI ${round(bmi, 1)} is below 18.5: no IOM adult equation in the chapter applies.`);
       if (results.length) { iom = results[0]; if (results.length > 1) iom.alternatives = results.slice(1); }
       else if (!child && bmi >= 18.5) iomNotes.push("No IOM equation matched.");
@@ -511,7 +521,7 @@ export function computeEnergyRequirements(input) {
 
   const finalKcal = recommended ? recommended.kcal : null;
   const data = {
-    inputs_used: { sex, age_years: round(ageYears, 2), age_months: ageMonths, weight_kg: weightKg, height_cm: heightCm === null ? null : round(heightCm, 1), bmi: bmi === null ? null : round(bmi, 1), pal: palValue, pal_category: palCategory },
+    inputs_used: { sex, age_years: round(ageYears, 2), age_months: ageMonths, weight_kg: weightKg, height_cm: heightCm === null ? null : round(heightCm, 1), bmi: bmi === null ? null : round(bmi, 1), bmi_for_age_percentile: bmiPctGiven ? round(bmiPct, 1) : null, bmi_percentile_source: bmiPctSource, pal: palValue, pal_category: palCategory },
     ree: ree ? { ...ree, kcal: round(ree.kcal, 1) } : null,
     stress: ree ? { factors: stressFactors, multiplier: round(stressMultiplier, 4), ree_after_stress_kcal: round(stressedRee, 1) } : { factors: [], multiplier: 1, ree_after_stress_kcal: null },
     activity: { factor: activityFactor, pal: palInfo, pal_category: palCategory },
@@ -547,6 +557,7 @@ export function energyFactorCatalog() {
     dri_reference_eer: DRI_REFERENCE_EER,
     rq_reference: RQ_REFERENCE,
     ree_measurement_protocol: REE_MEASUREMENT_PROTOCOL,
+    food_energy: foodEnergyCatalog(),
     combining_rule: "REE x stress factors, then x (1 + activity fraction). IOM equations stand alone. TEF is never added separately.",
   };
 }

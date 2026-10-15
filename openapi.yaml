@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.40.0
+  version: 1.41.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -3760,7 +3760,9 @@ paths:
                         type: number
                 bmi_for_age_percentile:
                   type: number
-                  description: For children 3-18. Above 85 selects the overweight equation.
+                  description: For children 3-18. Above 85 selects the overweight equation. Optional - when left out and the
+                    child has weight_kg and height_cm, the API looks it up in the WHO tables (exact from L, M, S for 36-60 months;
+                    interpolated between the -3 to +3 SD cut-offs for 5-19 years) and reports the source in inputs_used.
                 stress:
                   type: array
                   description: 'Stress factors applied to REE. Known ids: fever (temperature_c or temperature_f) and custom (multiplier 0.5-3, label, source).'
@@ -3859,6 +3861,114 @@ paths:
                             type: string
                         disclaimer:
                           type: string
+        '400':
+          description: Missing or invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /energy/food-energy:
+    post:
+      tags:
+      - Energy
+      summary: Food energy from macronutrients or an alcoholic drink
+      description: 'Biologically available energy from the Atwater values in Krause and Mahan (16th ed., chapter 2) - protein
+        4, fat 9, carbohydrate 4 and alcohol 7 kcal per gram - with kJ at 4.184 per kcal. Send grams, or percent of the food''s
+        weight with weight_g (the chapter''s egg example - 50 g, 13% protein, 12% fat, 1% carbohydrate - gives 82 kcal), or an
+        alcoholic drink as volume in US fluid ounces with proof or abv_percent (kcal = oz x proof x 0.8; 1.5 oz of 86 proof is
+        103 kcal). Send available carbohydrate: fiber is an unavailable carbohydrate with minimal energy and is not added.
+        Nothing is stored.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                protein_g:
+                  type: number
+                fat_g:
+                  type: number
+                carbohydrate_g:
+                  type: number
+                  description: Available carbohydrate in grams.
+                alcohol_g:
+                  type: number
+                fiber_g:
+                  type: number
+                  description: Informational only. Not added to the energy.
+                weight_g:
+                  type: number
+                  description: Food weight in grams. Needed with the percent fields, and gives a per-100 g figure with grams.
+                protein_pct:
+                  type: number
+                  description: Percent of the food's weight (0-100), not percent of energy.
+                fat_pct:
+                  type: number
+                carbohydrate_pct:
+                  type: number
+                alcohol_pct:
+                  type: number
+                alcohol:
+                  type: object
+                  description: An alcoholic drink. Use this or alcohol_g, not both.
+                  properties:
+                    volume_oz:
+                      type: number
+                    proof:
+                      type: number
+                    abv_percent:
+                      type: number
+            example:
+              weight_g: 50
+              protein_pct: 13
+              fat_pct: 12
+              carbohydrate_pct: 1
+      responses:
+        '200':
+          description: Energy with a per-nutrient breakdown
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: object
+                      properties:
+                        total:
+                          type: object
+                          description: kcal, kj and kcal_unrounded.
+                        breakdown:
+                          type: array
+                          items:
+                            type: object
+                            description: nutrient, grams, kcal_per_gram, kcal, percent_of_energy and the working.
+                        per_100g:
+                          type: object
+                          nullable: true
+                        alcohol_drink:
+                          type: object
+                          nullable: true
+                        factors:
+                          type: object
+                        warnings:
+                          type: array
+                          items:
+                            type: string
+                        notes:
+                          type: array
+                          items:
+                            type: string
+                        sources:
+                          type: array
+                          items:
+                            type: string
         '400':
           description: Missing or invalid input
           content:
