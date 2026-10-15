@@ -3,7 +3,15 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.44.1
+ * Version: 1.44.2
+ * v1.44.2 changes: a bare "nsima" now resolves to maize nsima instead of cassava (kondowole) everywhere a name becomes a food: the shared
+ *   matcher in src/foodMatching.js (lookup, compare, substitutes, recipes, meals, ingredient parsing, /foods/convert, MCP) gets a default-staple
+ *   rule (DISH_DEFAULT_STAPLE: nsima -> maize), and the list endpoints (GET /foods/search, /foods/autocomplete, synonym expansion) put maize
+ *   rows first via preferDefaultStaple. Only a bare dish name is affected: "cassava nsima", "nsima ya kondowole" and "nsima ya ufa oyera"
+ *   behave as before. GET /foods?search= stays alphabetical (paginated browse). No SQL.
+ *   Also fixes a scoring gap in the same module: a query whose words split between the name and the Chichewa parenthetical ("maize nsima")
+ *   now credits both words, so it reaches "Maize thick porridge, ..., (Nsima ya ufa oyera)" instead of losing to the shorter cassava row.
+ *
  * v1.44.1 changes: GET /foods/convert tidy-up. The "100g" restatement is no longer listed as a household serving (and unit=serving no longer
  *   picks it); food.other_matches lists up to 5 other local name matches and warnings[] says when a name matched more than one food;
  *   warnings[] also flags a cooked-food cup/spoon serving applied to a food not named as cooked (rice "soaked" vs "cooked rice (150g)");
@@ -603,7 +611,7 @@ import {
   sodiumCdrrForAge,
   resolveDriLifeStage,
 } from "./dri_data.js";
-import { pickBestFoodMatch, pickBestFoodMatchDetailed } from "./foodMatching.js";
+import { pickBestFoodMatch, pickBestFoodMatchDetailed, defaultStapleFor, preferDefaultStaple } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
 import { parseHcVelocityQuery, classifyHcVelocity, normalizeSex as normalizeHcSex } from "./hcVelocity.js";
 import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVelocity.js";
@@ -679,7 +687,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.44.1";
+const CNR_VERSION = "1.44.2";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -6606,13 +6614,17 @@ async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 
  */
 async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35, category = "" } = {}) {
   if (!query && !category) return [];
+  // A bare dish name ("nsima") leads with its everyday staple (maize). The database ranks by text
+  // similarity, so ask for a wider shortlist, put the staple's rows first, then trim to what was asked.
+  const staple = query ? defaultStapleFor(query) : null;
   const { ok, body } = await db.rpc("fuzzy_food_search", {
     search_term: query || null,
-    max_results: maxResults,
+    max_results: staple ? Math.min(maxResults * 3, 50) : maxResults,
     min_similarity: minSimilarity,
     category_filter: category || null,
   });
-  return ok && Array.isArray(body) ? body : [];
+  const rows = ok && Array.isArray(body) ? body : [];
+  return staple ? preferDefaultStaple(rows, query).slice(0, maxResults) : rows;
 }
 
 /**
@@ -6642,6 +6654,14 @@ async function fuzzyPackagedSearch(db, query, { maxResults = 8, minSimilarity = 
  */
 async function autocompleteFoodsLocal(db, prefix, maxResults) {
   if (!prefix) return [];
+  // Same staple preference as fuzzyFoodSearch: widen, put maize first for a bare "nsima", trim.
+  const staple = defaultStapleFor(prefix);
+  if (!staple) return autocompleteFoodsLocalRaw(db, prefix, maxResults);
+  const rows = await autocompleteFoodsLocalRaw(db, prefix, Math.min(maxResults * 3, 30));
+  return preferDefaultStaple(rows, prefix).slice(0, maxResults);
+}
+
+async function autocompleteFoodsLocalRaw(db, prefix, maxResults) {
   const { ok, body } = await db.rpc("autocomplete_food_names", { prefix, max_results: maxResults });
   const substringMatches = ok && Array.isArray(body) ? body : [];
   if (substringMatches.length >= maxResults) return substringMatches;

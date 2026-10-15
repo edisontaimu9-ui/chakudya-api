@@ -6,6 +6,8 @@ import {
   scoreFoodCandidates,
   pickBestFoodMatch,
   pickBestFoodMatchDetailed,
+  defaultStapleFor,
+  preferDefaultStaple,
 } from "../src/foodMatching.js";
 
 // ── Real Malawi FCT rows, as actually returned by the live API during
@@ -174,16 +176,65 @@ describe("query naming a flour/ground form", () => {
 // 6. Multiple Malawi FCT candidates with similar lexical scores (real data)
 // — flagged ambiguous rather than silently guessing.
 describe("bare query with only a weak/tied match across candidates (real data)", () => {
-  test("'nsima' (Chichewa-only match on both candidates) is flagged ambiguous", () => {
-    const { ambiguous, alternates } = pickBestFoodMatchDetailed(REAL_NSIMA_ROWS, "nsima");
-    assert.equal(ambiguous, true);
-    assert.ok(alternates.length >= 1);
+  test("a bare 'nsima' resolves to maize nsima, not cassava, and is no longer a toss-up", () => {
+    const { ambiguous, match, alternates } = pickBestFoodMatchDetailed(REAL_NSIMA_ROWS, "nsima");
+    assert.equal(match.food_name, "Maize thick porridge, refined flour, (Nsima ya ufa oyera)");
+    assert.equal(ambiguous, false);
+    assert.equal(alternates[0].food_name, "Cassava thick porridge, (Nsima ya kondowole)");
+  });
+
+  test("naming the staple still wins: 'cassava nsima' is cassava", () => {
+    assert.equal(pickBestFoodMatch(REAL_NSIMA_ROWS, "cassava nsima").food_name, "Cassava thick porridge, (Nsima ya kondowole)");
+    assert.equal(pickBestFoodMatch(REAL_NSIMA_ROWS, "maize nsima").food_name, "Maize thick porridge, refined flour, (Nsima ya ufa oyera)");
   });
 
   test("a specific query resolves the same pair confidently, no longer ambiguous", () => {
     const { ambiguous, match } = pickBestFoodMatchDetailed(REAL_NSIMA_ROWS, "nsima ya kondowole");
     assert.equal(ambiguous, false);
     assert.equal(match.food_name, "Cassava thick porridge, (Nsima ya kondowole)");
+  });
+});
+
+// 6b. Default staple for a bare dish name, and the list-endpoint reorder.
+describe("default staple for a bare dish name", () => {
+  test("defaultStapleFor", () => {
+    assert.equal(defaultStapleFor("nsima"), "maize");
+    assert.equal(defaultStapleFor("  Nsima "), "maize");
+    assert.equal(defaultStapleFor("nsima ya"), "maize");
+    assert.equal(defaultStapleFor("cassava nsima"), null);
+    assert.equal(defaultStapleFor("nsima ya kondowole"), null);
+    assert.equal(defaultStapleFor("nsima ya ufa oyera"), null);
+    assert.equal(defaultStapleFor("rice"), null);
+    assert.equal(defaultStapleFor(""), null);
+  });
+
+  test("a specific Chichewa name still reaches its own row", () => {
+    assert.equal(pickBestFoodMatch(REAL_NSIMA_ROWS, "nsima ya kondowole").food_name, "Cassava thick porridge, (Nsima ya kondowole)");
+    assert.equal(pickBestFoodMatch(REAL_NSIMA_ROWS, "nsima ya ufa oyera").food_name, "Maize thick porridge, refined flour, (Nsima ya ufa oyera)");
+  });
+
+  test("with several maize and non-maize rows, maize leads a bare 'nsima'", () => {
+    const rows = [
+      { id: 9, food_name: "Cassava thick porridge, (Nsima ya kondowole)" },
+      { id: 11, food_name: "Sorghum thick porridge, (Nsima ya mapira)" },
+      { id: 12, food_name: "Maize thick porridge, whole grain, (Nsima ya mgaiwa)" },
+      { id: 10, food_name: "Maize thick porridge, refined flour, (Nsima ya ufa oyera)" },
+    ];
+    const best = pickBestFoodMatchDetailed(rows, "nsima");
+    assert.match(best.match.food_name, /^Maize thick porridge/);
+    assert.match(best.scored[1].row.food_name, /^Maize thick porridge/);
+  });
+
+  test("preferDefaultStaple is a stable reorder, and leaves other queries alone", () => {
+    const rows = [
+      { id: 9, food_name: "Cassava thick porridge, (Nsima ya kondowole)" },
+      { id: 12, food_name: "Maize thick porridge, whole grain, (Nsima ya mgaiwa)" },
+      { id: 11, food_name: "Sorghum thick porridge, (Nsima ya mapira)" },
+      { id: 10, food_name: "Maize thick porridge, refined flour, (Nsima ya ufa oyera)" },
+    ];
+    assert.deepEqual(preferDefaultStaple(rows, "nsima").map((r) => r.id), [12, 10, 9, 11]);
+    assert.deepEqual(preferDefaultStaple(rows, "cassava nsima").map((r) => r.id), [9, 12, 11, 10]);
+    assert.deepEqual(preferDefaultStaple(rows, "rice").map((r) => r.id), [9, 12, 11, 10]);
   });
 });
 

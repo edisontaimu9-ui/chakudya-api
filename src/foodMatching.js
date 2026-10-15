@@ -93,6 +93,41 @@ function tokenize(s) {
   return (s || "").toLowerCase().match(/[a-z']+/g) || [];
 }
 
+// A local dish name used on its own means a particular staple: a bare "nsima" is maize nsima, the
+// everyday one, not the cassava (kondowole), sorghum or millet versions. Applied only when the query
+// names nothing else (so "cassava nsima" or "nsima ya kondowole" are untouched). dish word -> the
+// ingredient word that should lead. Extend as real queries surface gaps; it is data, not logic.
+export const DISH_DEFAULT_STAPLE = {
+  nsima: "maize",
+};
+
+// Chichewa/English link words that carry no food meaning ("nsima ya", "a bowl of nsima").
+const QUERY_FILLER_WORDS = new Set(["ya", "la", "wa", "a", "an", "the", "of", "some"]);
+
+/**
+ * The staple a bare dish-name query implies ("nsima" -> "maize"), or null when the query says
+ * anything else about the food (any word that is not a filler or a dish word with a default).
+ */
+export function defaultStapleFor(query) {
+  const words = tokenize(query).filter((w) => !QUERY_FILLER_WORDS.has(w));
+  if (!words.length) return null;
+  const staples = words.map((w) => DISH_DEFAULT_STAPLE[w]);
+  if (staples.some((x) => !x)) return null;
+  return staples.every((x) => x === staples[0]) ? staples[0] : null;
+}
+
+/**
+ * Stable reorder for list endpoints (search, autocomplete): rows whose base food is the query's
+ * default staple go first, everything else keeps its order. Returns the rows unchanged when the
+ * query has no default staple.
+ */
+export function preferDefaultStaple(rows, query) {
+  const staple = defaultStapleFor(query);
+  if (!staple || !Array.isArray(rows) || rows.length < 2) return rows;
+  const leads = (r) => parseFoodName(r?.food_name || "").baseWords.includes(staple);
+  return [...rows.filter(leads), ...rows.filter((r) => !leads(r))];
+}
+
 /**
  * Breaks a Malawi-FCT-style food_name into its structural parts:
  *   mainPart   — the whole name minus a trailing "(...)" (if any)
@@ -228,6 +263,14 @@ export function scoreFoodCandidate(row, queryAttrs) {
     reasons.push("requested_dish_word");
   }
 
+  // A bare local dish name ("nsima") leads with its everyday staple (maize), not an alternative
+  // staple that happens to share the dish's Chichewa name in its parenthetical.
+  const impliedStaple = defaultStapleFor(queryAttrs.words.join(" "));
+  if (impliedStaple && parsed.baseWords.includes(impliedStaple)) {
+    score += 25;
+    reasons.push("default_staple");
+  }
+
   // Attribute categories: state / form / freshness / variety. Match ->
   // bonus. Explicit conflict (query said X, name says a DIFFERENT value
   // in the same category) -> strong penalty. Name has a value the query
@@ -267,15 +310,18 @@ export function scoreFoodCandidate(row, queryAttrs) {
     reasons.push("uncategorized_qualifier_unrequested");
   }
 
-  // Fallback: query core word(s) found in the trailing parenthetical (a
-  // local name or ingredient list) rather than the main name. Scaled the
-  // same way as the base-segment overlap above (just a slightly lower
-  // ceiling, since the main name is still the primary identifier) — a
-  // query that fully matches via the local name is a genuinely strong
-  // signal, not a token afterthought, particularly for Chichewa-only
-  // queries where the main (English) name will never match at all.
-  if (coreOverlapRatio === 0 && !coreInQualifiersOnly.length && queryAttrs.coreWords.length) {
-    const parenOverlapCount = queryAttrs.coreWords.filter((w) => parsed.parenWords.includes(w)).length;
+  // Query core word(s) found in the trailing parenthetical (a local name or ingredient list) rather
+  // than the main name. Credits every core word the base and qualifiers did not already account for,
+  // so "maize nsima" scores "Maize thick porridge, ..., (Nsima ya ufa oyera)" for BOTH words (maize in
+  // the name, nsima in the local name) instead of only the first. Scaled like the base-segment
+  // overlap above (a slightly lower ceiling, since the main name is still the primary identifier);
+  // a query that fully matches via the local name is a genuinely strong signal, particularly for
+  // Chichewa-only queries where the main (English) name will never match at all.
+  const unaccountedCore = queryAttrs.coreWords.filter(
+    (w) => !parsed.baseWords.includes(w) && !parsed.qualifierWords.includes(w)
+  );
+  if (unaccountedCore.length) {
+    const parenOverlapCount = unaccountedCore.filter((w) => parsed.parenWords.includes(w)).length;
     const parenOverlapRatio = parenOverlapCount / queryAttrs.coreWords.length;
     if (parenOverlapRatio > 0) {
       score += parenOverlapRatio * 35;

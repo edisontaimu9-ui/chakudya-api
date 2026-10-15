@@ -9,7 +9,8 @@ const realFetch = globalThis.fetch;
 globalThis.caches = { default: { match: async () => undefined, put: async () => {}, delete: async () => false } };
 const FOODS = [
   { id: 1, food_name: "Rice, cooked", kcal: 130, protein_g: 2.7, carbs_g: 28, fat_g: 0.3, measure: null, weight_g: null },
-  { id: 2, food_name: "Nsima (maize stiff porridge)", kcal: 110, protein_g: 2.5, carbs_g: 24, fat_g: 0.5, measure: null, weight_g: null },
+  { id: 6, food_name: "Cassava thick porridge, (Nsima ya kondowole)", kcal: 120, protein_g: 0.4, carbs_g: 28, fat_g: 0.4, measure: null, weight_g: null },
+  { id: 2, food_name: "Maize thick porridge, refined flour, (Nsima ya ufa oyera)", kcal: 110, protein_g: 2.5, carbs_g: 24, fat_g: 0.5, measure: null, weight_g: null },
   { id: 3, food_name: "Milk, whole", kcal: 61, protein_g: 3.2, carbs_g: 4.8, fat_g: 3.3, measure: null, weight_g: null },
   { id: 4, food_name: "Rice, soaked, (Mpunga woviika)", kcal: 80, protein_g: 1.3, carbs_g: 18, fat_g: 0.1, measure: "100g", weight_g: 100 },
   { id: 5, food_name: "Milk, skim", kcal: 35, protein_g: 3.4, carbs_g: 5, fat_g: 0.1, measure: null, weight_g: null },
@@ -29,6 +30,10 @@ before(() => {
         rows = rows.filter((f) => f.food_name.toLowerCase().includes(needle));
       }
       return json(rows);
+    }
+    // The database ranks by text similarity: for "nsima" it returns the cassava row first, as the live one does.
+    if (u.pathname === "/rest/v1/rpc/fuzzy_food_search" || u.pathname === "/rest/v1/rpc/autocomplete_food_names") {
+      return json([FOODS[1], FOODS[2], { id: 11, food_name: "Sorghum thick porridge, (Nsima ya mapira)" }]);
     }
     return json([]);
   };
@@ -167,5 +172,35 @@ describe("recipes use the same conversion", () => {
     assert.equal(ing[0].grams, 300);
     assert.equal(ing[1].grams, 9);
     assert.equal(ing[2].grams, 350);
+  });
+});
+
+describe("a bare 'nsima' leads with maize in every endpoint", () => {
+  test("/foods/convert", async () => {
+    const d = (await read(await call("GET", "/foods/convert?q=nsima&amount=350&unit=g"))).body.data;
+    assert.equal(d.food.id, 2);
+    assert.match(d.food.food_name, /^Maize thick porridge/);
+    assert.ok(d.food.other_matches.some((f) => f.id === 6));
+    const cassava = (await read(await call("GET", "/foods/convert?q=cassava%20nsima&amount=350&unit=g"))).body.data;
+    assert.equal(cassava.food.id, 6);
+    const named = (await read(await call("GET", "/foods/convert?q=nsima%20ya%20kondowole&amount=350&unit=g"))).body.data;
+    assert.equal(named.food.id, 6);
+  });
+  test("/foods/search puts maize first even though the database returned cassava first", async () => {
+    const r = await read(await call("GET", "/foods/search?q=nsima"));
+    assert.equal(r.status, 200);
+    assert.match(r.body.data[0].food_name, /^Maize thick porridge/);
+    const other = await read(await call("GET", "/foods/search?q=cassava%20nsima"));
+    assert.match(other.body.data[0].food_name, /^Cassava/);
+  });
+  test("/foods/autocomplete", async () => {
+    const r = await read(await call("GET", "/foods/autocomplete?q=nsima&max_results=3"));
+    assert.equal(r.status, 200);
+    assert.match(r.body.data[0].name, /^Maize thick porridge/);
+  });
+  test("/recipes/calculate resolves 'nsima' to maize", async () => {
+    const r = await read(await call("POST", "/recipes/calculate", { servings: 1, ingredients: [{ food_name: "nsima", quantity: 2, unit: "chipande" }] }));
+    assert.equal(r.status, 200);
+    assert.match(JSON.stringify(r.body.data), /Maize thick porridge/);
   });
 });
