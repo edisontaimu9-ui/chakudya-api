@@ -1,0 +1,1881 @@
+{
+  "items": [
+    {
+      "food_name": "Kashi Seven Whole Grains cereal",
+      "match_keywords": [
+        "kashi"
+      ],
+      "gi_value": 65,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 16,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's All-Bran cereal",
+      "match_keywords": [
+        "all-bran",
+        "all bran"
+      ],
+      "gi_value": 30,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 4,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's Cocoa Puffs cereal",
+      "match_keywords": [
+        "cocoa puffs"
+      ],
+      "gi_value": 77,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 20,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's Corn Flakes cereal",
+      "match_keywords": [
+        "corn flakes",
+        "cornflakes"
+      ],
+      "gi_value": 92,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 24,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's MiniWheats cereal",
+      "match_keywords": [
+        "miniwheats",
+        "mini-wheats",
+        "mini wheats"
+      ],
+      "gi_value": 58,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's Nutrigrain cereal",
+      "match_keywords": [
+        "nutrigrain",
+        "nutri-grain"
+      ],
+      "gi_value": 66,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Oatmeal, old-fashioned",
+      "match_keywords": [
+        "oatmeal",
+        "rolled oats",
+        "oat porridge"
+      ],
+      "gi_value": 42,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 9,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's Rice Krispies cereal",
+      "match_keywords": [
+        "rice krispies"
+      ],
+      "gi_value": 82,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 22,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's Special K cereal",
+      "match_keywords": [
+        "special k"
+      ],
+      "gi_value": 69,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 14,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kellogg's Raisin Bran cereal",
+      "match_keywords": [
+        "raisin bran"
+      ],
+      "gi_value": 61,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Buckwheat",
+      "match_keywords": [
+        "buckwheat"
+      ],
+      "gi_value": 54,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 16,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Bulgur",
+      "match_keywords": [
+        "bulgur",
+        "bulgar"
+      ],
+      "gi_value": 48,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Quinoa",
+      "match_keywords": [
+        "quinoa"
+      ],
+      "gi_value": 53,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 13,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Rice, basmati",
+      "match_keywords": [
+        "basmati"
+      ],
+      "gi_value": 58,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 22,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Rice, instant",
+      "match_keywords": [
+        "instant rice"
+      ],
+      "gi_value": 87,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 36,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Rice, Uncle Ben's",
+      "match_keywords": [
+        "uncle ben"
+      ],
+      "gi_value": 39,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 14,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Egg fettuccine pasta",
+      "match_keywords": [
+        "fettuccine"
+      ],
+      "gi_value": 40,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 18,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Spaghetti",
+      "match_keywords": [
+        "spaghetti"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 18,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Vermicelli",
+      "match_keywords": [
+        "vermicelli"
+      ],
+      "gi_value": 35,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 16,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Bagel",
+      "match_keywords": [
+        "bagel"
+      ],
+      "gi_value": 72,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 25,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Croissant",
+      "match_keywords": [
+        "croissant"
+      ],
+      "gi_value": 67,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 17,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Source flags this food as high in saturated fat. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Crumpet",
+      "match_keywords": [
+        "crumpet"
+      ],
+      "gi_value": 69,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 13,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Grainy breads",
+      "match_keywords": [
+        "grainy bread",
+        "multigrain bread",
+        "multi-grain bread"
+      ],
+      "gi_value": 49,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 6,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Pita bread",
+      "match_keywords": [
+        "pita"
+      ],
+      "gi_value": 57,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Pumpernickel bread",
+      "match_keywords": [
+        "pumpernickel"
+      ],
+      "gi_value": 50,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 6,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Rye bread",
+      "match_keywords": [
+        "rye bread"
+      ],
+      "gi_value": 58,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 8,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "White bread",
+      "match_keywords": [
+        "white bread"
+      ],
+      "gi_value": 70,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Whole-wheat bread",
+      "match_keywords": [
+        "whole wheat bread",
+        "whole-wheat bread",
+        "wholemeal bread"
+      ],
+      "gi_value": 77,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 9,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kavli crispbread",
+      "match_keywords": [
+        "kavli"
+      ],
+      "gi_value": 71,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Puffed crisp bread",
+      "match_keywords": [
+        "puffed crispbread",
+        "puffed crisp bread"
+      ],
+      "gi_value": 81,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 15,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Ryvita crispbread",
+      "match_keywords": [
+        "ryvita"
+      ],
+      "gi_value": 69,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 11,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Water cracker",
+      "match_keywords": [
+        "water cracker"
+      ],
+      "gi_value": 78,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 14,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Oatmeal cookie",
+      "match_keywords": [
+        "oatmeal cookie"
+      ],
+      "gi_value": 55,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Milk Arrowroot biscuit",
+      "match_keywords": [
+        "milk arrowroot",
+        "arrowroot biscuit"
+      ],
+      "gi_value": 69,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Shortbread, commercial",
+      "match_keywords": [
+        "shortbread"
+      ],
+      "gi_value": 64,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Source flags this food as high in saturated fat. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Chocolate cake, frosted (Betty Crocker)",
+      "match_keywords": [
+        "betty crocker",
+        "frosted chocolate cake"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 20,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Oat bran muffin",
+      "match_keywords": [
+        "oat bran muffin"
+      ],
+      "gi_value": 69,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 24,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Sponge cake",
+      "match_keywords": [
+        "sponge cake"
+      ],
+      "gi_value": 46,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 17,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Waffles",
+      "match_keywords": [
+        "waffle"
+      ],
+      "gi_value": 76,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Beets, canned",
+      "match_keywords": [
+        "canned beet",
+        "beets, canned",
+        "tinned beet"
+      ],
+      "gi_value": 64,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 5,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Carrots",
+      "match_keywords": [
+        "carrot"
+      ],
+      "gi_value": 47,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Parsnip",
+      "match_keywords": [
+        "parsnip"
+      ],
+      "gi_value": 97,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Peas, green",
+      "match_keywords": [
+        "green peas",
+        "garden peas"
+      ],
+      "gi_value": 48,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Potato, baked",
+      "match_keywords": [
+        "baked potato"
+      ],
+      "gi_value": 85,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 26,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Potato, French fries",
+      "match_keywords": [
+        "french fries"
+      ],
+      "gi_value": 75,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 22,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Potato, microwaved",
+      "match_keywords": [
+        "microwaved potato"
+      ],
+      "gi_value": 82,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 27,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Pumpkin",
+      "match_keywords": [
+        "pumpkin, boiled",
+        "pumpkin, raw",
+        "pumpkin flesh",
+        "pumpkin, flesh"
+      ],
+      "gi_value": 75,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Pumpkin fruit/flesh only; keywords deliberately exclude pumpkin leaves. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Sweet corn",
+      "match_keywords": [
+        "sweet corn",
+        "sweetcorn"
+      ],
+      "gi_value": 60,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 11,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Rutabaga (swede)",
+      "match_keywords": [
+        "rutabaga",
+        "swede"
+      ],
+      "gi_value": 72,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 7,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Yam",
+      "match_keywords": [
+        "yam"
+      ],
+      "gi_value": 37,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 13,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Baked beans",
+      "match_keywords": [
+        "baked beans"
+      ],
+      "gi_value": 48,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 7,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Broad beans",
+      "match_keywords": [
+        "broad bean"
+      ],
+      "gi_value": 79,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 9,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Butter beans",
+      "match_keywords": [
+        "butter bean"
+      ],
+      "gi_value": 31,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 6,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Chickpeas",
+      "match_keywords": [
+        "chickpea",
+        "chick pea"
+      ],
+      "gi_value": 28,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 8,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Cannellini beans",
+      "match_keywords": [
+        "cannellini"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kidney beans",
+      "match_keywords": [
+        "kidney bean"
+      ],
+      "gi_value": 28,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 7,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Lentils",
+      "match_keywords": [
+        "lentils"
+      ],
+      "gi_value": 29,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 5,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Soy beans",
+      "match_keywords": [
+        "soy bean",
+        "soya bean",
+        "soybean"
+      ],
+      "gi_value": 18,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 1,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Apple",
+      "match_keywords": [
+        "apples, raw",
+        "apple, raw",
+        "raw apple",
+        "fresh apple"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 6,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Apricot, dried",
+      "match_keywords": [
+        "dried apricot",
+        "apricots, dried",
+        "apricot, dried"
+      ],
+      "gi_value": 31,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 9,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Banana",
+      "match_keywords": [
+        "banana"
+      ],
+      "gi_value": 51,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 13,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Cherries",
+      "match_keywords": [
+        "cherries"
+      ],
+      "gi_value": 22,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Grapefruit",
+      "match_keywords": [
+        "grapefruit"
+      ],
+      "gi_value": 25,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Grapes",
+      "match_keywords": [
+        "grapes"
+      ],
+      "gi_value": 46,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 8,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kiwi fruit",
+      "match_keywords": [
+        "kiwi"
+      ],
+      "gi_value": 53,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 6,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Mango",
+      "match_keywords": [
+        "mango"
+      ],
+      "gi_value": 51,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 8,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Orange",
+      "match_keywords": [
+        "oranges",
+        "orange, raw",
+        "raw orange",
+        "fresh orange"
+      ],
+      "gi_value": 48,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 5,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Papaya (pawpaw)",
+      "match_keywords": [
+        "papaya",
+        "pawpaw"
+      ],
+      "gi_value": 59,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Peach, canned in natural juice",
+      "match_keywords": [
+        "canned peach",
+        "peaches, canned",
+        "peach, canned"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 4,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Peach, fresh",
+      "match_keywords": [
+        "fresh peach",
+        "peach, raw",
+        "peaches, raw",
+        "peach, fresh",
+        "peaches, fresh"
+      ],
+      "gi_value": 42,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 5,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Pear",
+      "match_keywords": [
+        "pears",
+        "pear, raw",
+        "raw pear",
+        "fresh pear"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 4,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Pineapple",
+      "match_keywords": [
+        "pineapple"
+      ],
+      "gi_value": 59,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 7,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Plum",
+      "match_keywords": [
+        "plums",
+        "plum, raw",
+        "raw plum",
+        "fresh plum"
+      ],
+      "gi_value": 39,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 5,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Raisins",
+      "match_keywords": [
+        "raisins"
+      ],
+      "gi_value": 64,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 28,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Cantaloupe",
+      "match_keywords": [
+        "cantaloupe"
+      ],
+      "gi_value": 65,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 4,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Watermelon",
+      "match_keywords": [
+        "watermelon"
+      ],
+      "gi_value": 72,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 4,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Milk, full-fat",
+      "match_keywords": [
+        "full-fat milk",
+        "full fat milk",
+        "whole milk",
+        "full cream milk"
+      ],
+      "gi_value": 27,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Milk, skim",
+      "match_keywords": [
+        "skim milk",
+        "skimmed milk"
+      ],
+      "gi_value": 32,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 4,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Milk, chocolate-flavored",
+      "match_keywords": [
+        "chocolate milk"
+      ],
+      "gi_value": 42,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 13,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Milk, condensed",
+      "match_keywords": [
+        "condensed milk"
+      ],
+      "gi_value": 61,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 33,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Custard",
+      "match_keywords": [
+        "custard"
+      ],
+      "gi_value": 43,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 7,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Ice cream, regular",
+      "match_keywords": [
+        "ice cream"
+      ],
+      "gi_value": 61,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 8,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Ice cream, low-fat",
+      "match_keywords": [
+        "low-fat ice cream",
+        "low fat ice cream"
+      ],
+      "gi_value": 50,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Yogurt, low-fat",
+      "match_keywords": [
+        "low-fat yogurt",
+        "low fat yogurt",
+        "low-fat yoghurt",
+        "low fat yoghurt"
+      ],
+      "gi_value": 33,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Apple juice",
+      "match_keywords": [
+        "apple juice"
+      ],
+      "gi_value": 40,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Coca Cola",
+      "match_keywords": [
+        "coca cola",
+        "coca-cola"
+      ],
+      "gi_value": 63,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 16,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Lemonade",
+      "match_keywords": [
+        "lemonade"
+      ],
+      "gi_value": 66,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 13,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Fanta",
+      "match_keywords": [
+        "fanta"
+      ],
+      "gi_value": 68,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 23,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Orange juice",
+      "match_keywords": [
+        "orange juice"
+      ],
+      "gi_value": 52,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 12,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Tortilla chips",
+      "match_keywords": [
+        "tortilla chip"
+      ],
+      "gi_value": 63,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 17,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Source flags this food as high in saturated fat. Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Fish sticks",
+      "match_keywords": [
+        "fish stick",
+        "fish finger"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 7,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Peanuts (groundnuts)",
+      "match_keywords": [
+        "peanuts",
+        "groundnuts"
+      ],
+      "gi_value": 14,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 1,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Source flags this food as high in saturated fat. Listed as an average (avg) of published values in the source. Peanuts = groundnuts (Malawi usage). Whole nuts only, not peanut butter. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Popcorn",
+      "match_keywords": [
+        "popcorn"
+      ],
+      "gi_value": 72,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 8,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Potato chips (crisps)",
+      "match_keywords": [
+        "potato chips",
+        "potato crisps"
+      ],
+      "gi_value": 57,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Source flags this food as high in saturated fat. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Macaroni and cheese",
+      "match_keywords": [
+        "macaroni and cheese",
+        "macaroni cheese"
+      ],
+      "gi_value": 64,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 32,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Lentil soup",
+      "match_keywords": [
+        "lentil soup"
+      ],
+      "gi_value": 44,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 9,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Split-pea soup",
+      "match_keywords": [
+        "split-pea soup",
+        "split pea soup"
+      ],
+      "gi_value": 60,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 16,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Tomato soup",
+      "match_keywords": [
+        "tomato soup"
+      ],
+      "gi_value": 38,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 6,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Sushi",
+      "match_keywords": [
+        "sushi"
+      ],
+      "gi_value": 52,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 19,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Pizza, cheese",
+      "match_keywords": [
+        "pizza"
+      ],
+      "gi_value": 60,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 16,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Chocolate",
+      "match_keywords": [
+        "chocolate bar",
+        "milk chocolate",
+        "dark chocolate",
+        "plain chocolate"
+      ],
+      "gi_value": 44,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 13,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Source flags this food as high in saturated fat. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Jelly beans",
+      "match_keywords": [
+        "jelly bean"
+      ],
+      "gi_value": 78,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 22,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Life Savers candy",
+      "match_keywords": [
+        "life savers",
+        "lifesavers"
+      ],
+      "gi_value": 70,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 21,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Mars Bar",
+      "match_keywords": [
+        "mars bar"
+      ],
+      "gi_value": 68,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 27,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Kudo whole-grain chocolate-chip bar",
+      "match_keywords": [
+        "kudo whole-grain",
+        "kudos"
+      ],
+      "gi_value": 62,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 20,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Name printed as 'Kudo' in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Honey",
+      "match_keywords": [
+        "honey"
+      ],
+      "gi_value": 55,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Fructose",
+      "match_keywords": [
+        "fructose"
+      ],
+      "gi_value": 19,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 2,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Glucose (reference food)",
+      "match_keywords": [
+        "glucose"
+      ],
+      "gi_value": 100,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 10,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Reference food; source footnote: values are compared to pure glucose = 100. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Lactose",
+      "match_keywords": [
+        "lactose"
+      ],
+      "gi_value": 46,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 5,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Sucrose (table sugar)",
+      "match_keywords": [
+        "sucrose",
+        "white sugar",
+        "table sugar",
+        "sugar, white"
+      ],
+      "gi_value": 68,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "medium",
+      "gl_value": 7,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Listed as an average (avg) of published values in the source. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Clif bar, cookies and cream",
+      "match_keywords": [
+        "clif bar"
+      ],
+      "gi_value": 101,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 3,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "Values entered exactly as printed; GL 3 looks low for a GI of 101, so verify against the original table before relying on it. GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "PowerBar, chocolate",
+      "match_keywords": [
+        "powerbar"
+      ],
+      "gi_value": 83,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "high",
+      "gl_value": 35,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    },
+    {
+      "food_name": "Zone Perfect bar, chocolate",
+      "match_keywords": [
+        "zone perfect"
+      ],
+      "gi_value": 44,
+      "gi_low": null,
+      "gi_high": null,
+      "gi_category": "low",
+      "gl_value": 8,
+      "reference_carb_g": null,
+      "population": "general/international",
+      "method": "International tables compilation (Atkinson 2008); glucose = 100 reference",
+      "source": "Atkinson FS, Foster-Powell K, Brand-Miller JC. 2008. \"International tables of glycemic index and glycemic load values: 2008.\" Diabetes Care 31(12):2281-2283; as reproduced in Krause and Mahan's Food & the Nutrition Care Process, 16th ed., Appendix 29, pp. 1159-1160.",
+      "notes": "GL is for a 'typical portion' as defined by the source (portion size not stated in the appendix)."
+    }
+  ]
+}
