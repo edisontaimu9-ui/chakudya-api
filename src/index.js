@@ -4,6 +4,7 @@
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
  * Version: 1.45.0
+ * (1.45.0 also: a bare food name's everyday form (rice -> cooked, mango -> ripe) is inferred once per food by Groq and cached 30 days in KV (resolveImpliedForm), used as a soft ranking signal only; falls back to a tiny built-in map when unavailable.
  * (1.45.0 also: when the ranking is unsure on a query that states a state/variety, /foods/search asks Groq to reorder the same rows - src/foodIntentLlm.js,
  *   reorder-only, 2.5 s timeout, KV-cached, silently skipped without GROQ_API_KEY.)
  * v1.45.0 changes: intent-aware food search. No new endpoints, no contract, SQL or data changes. GET /foods/search, /foods/autocomplete (via its fuzzy
@@ -629,7 +630,8 @@ import {
   resolveDriLifeStage,
 } from "./dri_data.js";
 import { pickBestFoodMatch, pickBestFoodMatchDetailed, defaultStapleFor, preferDefaultStaple, searchFoodsRanked, hasStatedAttributes, retrievalTermFor, conflictsWithQuery, rankingNeedsHelp } from "./foodMatching.js";
-import { llmRerankFoods } from "./foodIntentLlm.js";
+import { llmRerankFoods, inferDefaultForm } from "./foodIntentLlm.js";
+import { parseQueryAttributes } from "./foodMatching.js";
 import { parseBmiForAgeQuery, classifyBmiForAge } from "./bmiForAge.js";
 import { parseHcVelocityQuery, classifyHcVelocity, normalizeSex as normalizeHcSex } from "./hcVelocity.js";
 import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVelocity.js";
@@ -2300,7 +2302,7 @@ async function handleFoodSubstitutes(request, url, db, env) {
     filters: { food_name: `ilike.*${escapeLikePattern(foodName)}*` },
     limit: 25,
   });
-  let food = local.ok ? pickBestFoodMatch(local.body, foodName) : null;
+  let food = local.ok ? pickBestFoodMatch(local.body, foodName, { implied: await resolveImpliedForm(env, foodName) }) : null;
   let matchedSource = food ? "local" : null;
   if (!food) {
     const cascade = await lookupFoodCascade(db, { query: foodName }, env);
@@ -2465,7 +2467,7 @@ async function handleFoodsCompare(request, url, db, env) {
       filters: { food_name: `ilike.*${escapeLikePattern(requestedName)}*` },
       limit: 25,
     });
-    let food = local.ok ? pickBestFoodMatch(local.body, requestedName) : null;
+    let food = local.ok ? pickBestFoodMatch(local.body, requestedName, { implied: await resolveImpliedForm(env, requestedName) }) : null;
     let matchedSource = food ? "local" : null;
     if (!food) {
       const cascade = await lookupFoodCascade(db, { query: requestedName }, env);
@@ -4521,7 +4523,7 @@ async function findFoodForIngredient(item, db, env) {
       filters: { food_name: `ilike.*${escapeLikePattern(item.food_name)}*` },
       limit: 25,
     });
-    const bestLocal = local.ok ? pickBestFoodMatch(local.body, item.food_name) : null;
+    const bestLocal = local.ok ? pickBestFoodMatch(local.body, item.food_name, { implied: await resolveImpliedForm(env, item.food_name) }) : null;
     if (bestLocal) {
       const alternatives = (local.body || [])
         .filter((f) => f.id !== bestLocal.id)
@@ -5799,7 +5801,7 @@ async function handleFoodsSearch(request, url, db, env) {
   let expandedTerms = [];
 
   if (q || category) {
-    const primary = await fuzzyFoodSearch(db, q, { maxResults, minSimilarity, category });
+    const primary = await fuzzyFoodSearch(db, q, { maxResults, minSimilarity, category, env });
     for (const row of primary) results.push({ ...row, _source: "foods", _match_type: q ? "fuzzy" : "category" });
 
     if (q && results.length < maxResults) {
@@ -5822,6 +5824,7 @@ async function handleFoodsSearch(request, url, db, env) {
           maxResults: maxResults - results.length,
           minSimilarity,
           category,
+          env,
           ...(viaWords ? { rankQuery: q, aliases: expandedTerms } : {}),
         });
         for (const row of synRows) {
@@ -6227,7 +6230,7 @@ async function lookupFoodCascade(db, { query, barcode, skipLocal = false }, env)
       limit: 25,
     });
     if (local.ok && local.body?.length) {
-      const { match, ambiguous, alternates } = pickBestFoodMatchDetailed(local.body, query);
+      const { match, ambiguous, alternates } = pickBestFoodMatchDetailed(local.body, query, { implied: await resolveImpliedForm(env, query) });
       if (match) {
         return {
           food: withExternalShape(match, "local"),
@@ -6264,7 +6267,7 @@ async function lookupFoodCascade(db, { query, barcode, skipLocal = false }, env)
   // is the local row returned as a last resort.
   let conflictingLocal = null;
   if (query && !skipLocal) {
-    const fuzzy = await fuzzyFoodSearch(db, query, { maxResults: 8 });
+    const fuzzy = await fuzzyFoodSearch(db, query, { maxResults: 8, env });
     if (fuzzy[0]) {
       if (!conflictsWithQuery(fuzzy[0], query)) {
         return { food: withExternalShape(fuzzy[0], "local_fuzzy"), source: "local_fuzzy", cached: false };
@@ -6682,6 +6685,33 @@ async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 
 }
 
 /**
+ * The form a bare food name most likely means ("rice" -> cooked, "mango" -> ripe, raw), inferred once per
+ * food by the LLM and cached in KV for 30 days (a "no default" answer is cached too). Returns
+ * { state?, freshness? }, null for "no clear default", or undefined when it cannot be determined (no key,
+ * timeout, query already states a state): the matcher then uses its small built-in fallback. Never blocks a
+ * search for longer than the model's 2.5 s timeout, and only the first search of a new food name pays it.
+ */
+async function resolveImpliedForm(env, query) {
+  try {
+    if (!env?.GROQ_API_KEY || !query) return undefined;
+    const attrs = parseQueryAttributes(query);
+    if (attrs.stated.state) return undefined;
+    const term = retrievalTermFor(query).toLowerCase();
+    if (!term || term.split(" ").length > 3 || term.length < 3) return undefined;
+    const cached = await getQueryCache(env, "foodform", [term]).catch(() => null);
+    if (cached && "form" in cached) return cached.form;
+    const out = await inferDefaultForm({ env, term });
+    if (!out.ok) return undefined;
+    await env.RATE_LIMIT_KV?.put(`foodform:${await sha256Hex(term)}`, JSON.stringify({ form: out.form }), {
+      expirationTtl: 30 * 24 * 3600,
+    }).catch(() => {});
+    return out.form;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Typo-tolerant + category-filterable search over public.foods (Malawi FCT)
  * — see sql/008_add_fuzzy_food_search.sql and
  * sql/009_add_advanced_food_search.sql for the fuzzy_food_search() Postgres
@@ -6694,7 +6724,7 @@ async function multiKeywordFoodSearch(searchFn, db, rawQuery, keywords, limit = 
  * have them. Pass an empty query with a category to browse that category
  * with no text match.
  */
-async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35, category = "", rankQuery = "", aliases = [] } = {}) {
+async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35, category = "", rankQuery = "", aliases = [], env = null } = {}) {
   if (!query && !category) return [];
   const fetchRows = async (term, width) => {
     const { ok, body } = await db.rpc("fuzzy_food_search", {
@@ -6711,7 +6741,8 @@ async function fuzzyFoodSearch(db, query, { maxResults = 8, minSimilarity = 0.35
   // intent (src/foodMatching.js): exact/keyword match, preparation state, variety, dish vs ingredient,
   // local names, verified aliases. A bare dish name ("nsima") still leads with its everyday staple.
   // rankQuery/aliases: when this call searches an alias term, rank against what the user actually typed.
-  return searchFoodsRanked(fetchRows, query, { maxResults, rankQuery, aliases });
+  const implied = env ? await resolveImpliedForm(env, rankQuery || query) : undefined;
+  return searchFoodsRanked(fetchRows, query, { maxResults, rankQuery, aliases, implied });
 }
 
 /**

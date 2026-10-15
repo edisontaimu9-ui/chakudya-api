@@ -205,6 +205,18 @@ export function impliedStateFor(queryAttrs) {
   return states.every((x) => x && x === states[0]) ? states[0] : null;
 }
 
+// The form a bare name implies as { state?, freshness? }. The caller normally supplies it (inferred once per
+// food by the LLM and cached, see foodIntentLlm.js); the small DEFAULT_STATE_FOR_BARE map above is only the
+// fallback when no inference is available (no key, timeout). An inferred form never overrides a state or
+// freshness the query states itself.
+function impliedFormFor(queryAttrs, supplied) {
+  const base = supplied === undefined ? { state: impliedStateFor(queryAttrs) } : supplied || {};
+  const form = {};
+  if (base.state && !queryAttrs.stated.state) form.state = base.state;
+  if (base.freshness && !queryAttrs.stated.freshness) form.freshness = base.freshness;
+  return form;
+}
+
 // Chichewa/English link words that carry no food meaning ("nsima ya", "a bowl of nsima").
 const QUERY_FILLER_WORDS = new Set(["ya", "la", "wa", "a", "an", "the", "of", "some"]);
 
@@ -436,7 +448,7 @@ export function scoreFoodCandidate(row, queryAttrs, ctx = {}) {
         score += best.bonus;
         reasons.push(best.kind === "match" ? "state_match" : best.kind === "related" ? "state_related" : "state_conflict");
       } else if (!stated && named.length) {
-        const implied = impliedStateFor(queryAttrs);
+        const implied = ctx.form?.state;
         if (implied) {
           const best = named.map((n) => stateRelation(implied, n)).sort((x, y) => y.bonus - x.bonus)[0];
           if (best.kind === "match") { score += 14; reasons.push("default_state_match"); }
@@ -450,6 +462,15 @@ export function scoreFoodCandidate(row, queryAttrs, ctx = {}) {
       continue;
     }
     const nameValue = parsed.allWords.find((w) => wordSet.has(w));
+    if (category === "freshness" && !stated && nameValue && ctx.form?.freshness) {
+      // A bare "mango" most likely means ripe mango: ripe rows lead, green/unripe rows rank lower (not hidden).
+      const want = ctx.form.freshness;
+      const RIPE_LIKE = new Set(["ripe", "fresh", "mature"]);
+      if (nameValue === want) { score += 14; reasons.push("default_freshness_match"); }
+      else if (RIPE_LIKE.has(nameValue) && RIPE_LIKE.has(want)) { score += 6; reasons.push("default_freshness_related"); }
+      else { score -= 10; reasons.push("default_freshness_other"); }
+      continue;
+    }
     if (stated && nameValue === stated) {
       score += 18;
       reasons.push(`${category}_match`);
@@ -542,21 +563,22 @@ export function scoreFoodCandidate(row, queryAttrs, ctx = {}) {
  */
 export function scoreFoodCandidates(rows, query, opts = {}) {
   const queryAttrs = parseQueryAttributes(query);
-  const ctx = aliasContext(rows, queryAttrs, opts.aliases);
+  const ctx = aliasContext(rows, queryAttrs, opts.aliases, opts.implied);
   const scored = rows.map((row) => scoreFoodCandidate(row, queryAttrs, ctx));
   scored.sort((a, b) => b.score - a.score);
   return scored;
 }
 
 // Alias credit applies only to query words that no candidate carries directly (see scoreFoodCandidate).
-function aliasContext(rows, queryAttrs, aliases) {
-  if (!Array.isArray(aliases) || !aliases.length || !queryAttrs.coreWords.length) return {};
+function aliasContext(rows, queryAttrs, aliases, implied) {
+  const form = impliedFormFor(queryAttrs, implied);
+  if (!Array.isArray(aliases) || !aliases.length || !queryAttrs.coreWords.length) return { form };
   const parsedRows = rows.map((r) => parseFoodName(r.food_name || ""));
   const gapWords = queryAttrs.coreWords.filter(
     (w) => !parsedRows.some((p) => p.baseWords.includes(w) || p.qualifierWords.includes(w) || p.parenWords.includes(w))
   );
   const aliasWords = new Set(aliases.flatMap(tokenize).filter((w) => !queryAttrs.words.includes(w)));
-  return { gapWords, aliasWords };
+  return { gapWords, aliasWords, form };
 }
 
 /** True when the query states a preparation state, physical form, freshness or variety. */
@@ -600,7 +622,7 @@ export function conflictsWithQuery(row, query) {
  * per-word similarity requires EVERY word to match, so "cooked rice" would otherwise never reach
  * "Rice, soaked"), then ranks by intent. A bare dish name keeps its default-staple ordering.
  */
-export async function searchFoodsRanked(fetchRows, rawQuery, { maxResults = 8, rankQuery = "", aliases = [] } = {}) {
+export async function searchFoodsRanked(fetchRows, rawQuery, { maxResults = 8, rankQuery = "", aliases = [], implied } = {}) {
   // Spelling variants of the same word are folded first so the database sees the FCT's spelling.
   const query = rawQuery.replace(/[A-Za-z']+/g, (w) => SPELLING_VARIANTS[w.toLowerCase()] || w);
   const intent = rankQuery || query;
@@ -620,7 +642,7 @@ export async function searchFoodsRanked(fetchRows, rawQuery, { maxResults = 8, r
     }
   }
 
-  const ordered = defaultStapleFor(intent) ? preferDefaultStaple(rows, intent) : rankFoodRows(rows, intent, { aliases });
+  const ordered = defaultStapleFor(intent) ? preferDefaultStaple(rows, intent) : rankFoodRows(rows, intent, { aliases, implied });
   return ordered.slice(0, maxResults);
 }
 
@@ -643,8 +665,8 @@ const AMBIGUITY_SCORE_GAP = 10;
  * rows) — for ambiguity info alongside the pick, use
  * pickBestFoodMatchDetailed instead.
  */
-export function pickBestFoodMatch(rows, query) {
-  return pickBestFoodMatchDetailed(rows, query).match;
+export function pickBestFoodMatch(rows, query, opts = {}) {
+  return pickBestFoodMatchDetailed(rows, query, opts).match;
 }
 
 /**
@@ -656,14 +678,14 @@ export function pickBestFoodMatch(rows, query) {
  *                them (e.g. a "did you mean" prompt)
  *   scored     — the full ranked list with scores/reasons, for tests
  */
-export function pickBestFoodMatchDetailed(rows, query) {
+export function pickBestFoodMatchDetailed(rows, query, opts = {}) {
   if (!rows || !rows.length) return { match: null, ambiguous: false, alternates: [], scored: [] };
 
   const q = query.trim().toLowerCase();
   const exact = rows.find((r) => (r.food_name || "").trim().toLowerCase() === q);
   if (exact) return { match: exact, ambiguous: false, alternates: [], scored: [] };
 
-  const scored = scoreFoodCandidates(rows, query);
+  const scored = scoreFoodCandidates(rows, query, opts);
   const [top, second] = scored;
   const ambiguous = !!(second && top.score - second.score < AMBIGUITY_SCORE_GAP);
 
