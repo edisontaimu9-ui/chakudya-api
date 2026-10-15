@@ -186,6 +186,25 @@ export const DISH_PREFERRED_VARIANT = {
 // not the plain staple: it still counts as maize but ranks behind every plain maize row.
 const COMPOSITE_MARKERS = new Set(["and", "with"]);
 
+// What a bare food name means when the query states no preparation state: a bare "rice" is cooked rice
+// (that is how it is searched and eaten), not the dry grain. Only a soft preference: a row in another state
+// is ranked lower, never excluded, and any stated state ("raw rice") overrides it. Applied only when every
+// food word in the query is listed (so "rice pudding" and "rice porridge" are untouched). Data, not logic:
+// add a staple only when its everyday form is certain.
+export const DEFAULT_STATE_FOR_BARE = {
+  rice: "cooked",
+  mpunga: "cooked",
+};
+
+/** The preparation state a bare food name implies ("rice" -> "cooked"), or null. */
+export function impliedStateFor(queryAttrs) {
+  if (queryAttrs.stated.state || !queryAttrs.coreWords.length) return null;
+  const words = queryAttrs.coreWords.filter((w) => !QUERY_FILLER_WORDS.has(w));
+  if (!words.length) return null;
+  const states = words.map((w) => DEFAULT_STATE_FOR_BARE[w]);
+  return states.every((x) => x && x === states[0]) ? states[0] : null;
+}
+
 // Chichewa/English link words that carry no food meaning ("nsima ya", "a bowl of nsima").
 const QUERY_FILLER_WORDS = new Set(["ya", "la", "wa", "a", "an", "the", "of", "some"]);
 
@@ -417,8 +436,16 @@ export function scoreFoodCandidate(row, queryAttrs, ctx = {}) {
         score += best.bonus;
         reasons.push(best.kind === "match" ? "state_match" : best.kind === "related" ? "state_related" : "state_conflict");
       } else if (!stated && named.length) {
-        score -= 4;
-        reasons.push("state_unrequested");
+        const implied = impliedStateFor(queryAttrs);
+        if (implied) {
+          const best = named.map((n) => stateRelation(implied, n)).sort((x, y) => y.bonus - x.bonus)[0];
+          if (best.kind === "match") { score += 14; reasons.push("default_state_match"); }
+          else if (best.kind === "related") { score += 8; reasons.push("default_state_related"); }
+          else { score -= 10; reasons.push("default_state_other"); }
+        } else {
+          score -= 4;
+          reasons.push("state_unrequested");
+        }
       }
       continue;
     }

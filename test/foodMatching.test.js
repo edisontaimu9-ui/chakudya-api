@@ -386,11 +386,26 @@ describe("rice: state, variety and word order (the examples from the brief)", ()
     assert.ok(["901", "902"].includes(String(rankFoodRows(ALL_RICE, "cooked rice")[0].id)));
   });
 
-  test("a bare 'rice' prefers the plain base food over a dish or a specific variant", () => {
+  test("a bare 'rice' means cooked rice: cooked rows lead, then other states, then the dishes", () => {
     const order = rankFoodRows(ALL_RICE, "Rice").map((r) => r.id);
-    assert.equal(order[0], 101); // REAL "Rice, soaked, (Mpunga woviika)": nothing but the base food and one state
-    assert.ok(order.indexOf(102) > order.indexOf(902), "pudding after plain rice rows");
-    assert.ok(order.indexOf(103) > order.indexOf(902));
+    assert.ok([901, 902].includes(order[0]), "a cooked row first");
+    assert.ok(order.indexOf(101) > order.indexOf(902), "soaked/raw after cooked");
+    assert.ok(order.indexOf(102) > order.indexOf(101), "pudding after plain rice rows");
+    assert.ok(order.indexOf(103) > order.indexOf(101));
+  });
+
+  test("the cooked default is soft: stated state overrides it, dishes and other foods are untouched", () => {
+    assert.equal(rankFoodRows(ALL_RICE, "raw rice")[0].id, 903);
+    assert.equal(rankFoodRows(ALL_RICE, "soaked rice")[0].id, 101);
+    assert.equal(rankFoodRows(ALL_RICE, "rice porridge")[0].id, 104);
+    assert.equal(rankFoodRows(ALL_RICE, "rice pudding")[0].id, 102);
+    assert.equal(rankFoodRows(ALL_RICE, "mpunga")[0].id === 901 || rankFoodRows(ALL_RICE, "mpunga")[0].id === 902, true);
+    // brown rice (variety only) still defaults to cooked
+    assert.equal(rankFoodRows(ALL_RICE, "brown rice")[0].id, 901);
+  });
+
+  test("without any cooked row, a bare 'rice' still returns the plain base row, not the pudding", () => {
+    assert.equal(pickBestFoodMatch(REAL_RICE_ROWS, "rice").id, 101);
   });
 
   test("a state conflict ranks lower but is still listed", () => {
