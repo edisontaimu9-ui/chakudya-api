@@ -3,7 +3,11 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.39.0
+ * Version: 1.40.0
+ * v1.40.0 changes: energy requirements engine. POST /energy/requirements and GET /energy/factors (any API key). REE (Mifflin-St Jeor or
+ *   measured), stress factors, activity factors, PAL, every IOM EER/TEE equation in Krause ch. 2 Box 2.1 with pregnancy and lactation
+ *   add-ons. Extensible activity and stress registries; src/energyEngine.js. No database, no SQL.
+ *
  * v1.39.0 changes: GET /admin/usage (root key only) - which endpoints get called most. One counter row per UTC day, method
  *   and route in route_usage, bumped by bump_route_usage() when ROUTE_USAGE_STORE=true. Requires sql/032_add_route_usage.sql;
  *   src/routeUsage.js. Counts only. Skips OPTIONS, / , /health and /admin/*.
@@ -587,6 +591,7 @@ import { handleAdminOverview } from "./adminOverview.js";
 import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
+import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import {
   CONSUMER_ROLE, MAX_KEYS_PER_USER, consumerRateLimit, validateLabel, bumpUsage, readUsage,
   verifySupabaseUser, buildConsumerKeyRow, publicKeyView,
@@ -637,7 +642,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.39.0";
+const CNR_VERSION = "1.40.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -988,7 +993,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1245,6 +1250,11 @@ function routePolicy(resource, method, param, action) {
   // classify call.
   if (resource === "growth" && param === "assess" && method === "GET") {
     return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+  }
+  // Energy requirements engine (src/energyEngine.js): pure arithmetic on the request body, no database,
+  // no external calls. Any valid key. POST is a calculation, not a write.
+  if (resource === "energy" && ((param === "requirements" && method === "POST") || (param === "factors" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   if (isFentonCompute) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
@@ -7413,6 +7423,8 @@ function handleRoot(env) {
         "Send your Supabase login access token as 'Authorization: Bearer <token>' on these three routes only. Consumer keys then go on every other route the same way and get 3x the standard rate limit.",
       ],
       admin_keys: [
+        "POST   /energy/requirements   (API key) → body {sex, age_years|age_months, weight_kg, height_cm, activity_factor?: minimal|moderate|strenuous, pal?|pal_category?|activities?, stress?: [{id: fever|custom, ...}], measured_ree_kcal?, pregnancy?, lactation?} → REE, stress, activity, every applicable IOM equation and one recommended figure with the reason",
+        "GET    /energy/factors         (API key) → activity and stress factors, PAL categories, activity table, IOM equations, reference tables",
         "GET    /admin/usage      (root key only) → calls per endpoint, daily totals and top routes from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032",
         "GET    /admin/monitoring (root key only) → failed calls and slow endpoints from request_log (?hours=, max 168); needs REQUEST_LOG_STORE=true and sql/031",
         "GET    /admin/activity   (root key only) → recent admin actions: keys created/revoked, packaged foods approved/rejected (?limit=, max 100)",
@@ -8863,6 +8875,22 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "growth": {
       return await handleGrowth(request, url, db, param || null);
+    }
+
+    case "energy": {
+      if (param === "factors") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        return success(energyFactorCatalog(), { message: "Energy engine factors, equations and reference tables" });
+      }
+      if (param === "requirements") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        const result = computeEnergyRequirements(body);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Energy requirement estimate" });
+      }
+      return notFound();
     }
 
     case "fenton-preterm": {

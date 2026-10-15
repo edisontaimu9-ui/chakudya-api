@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.39.0
+  version: 1.40.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -62,6 +62,7 @@ tags:
 - name: BMI for age under 5
 - name: HC for age
 - name: Growth assessment
+- name: Energy
 - name: Fenton Preterm
 - name: FHIR
 - name: Packaged
@@ -3663,6 +3664,231 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/BulkSuccess'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /energy/requirements:
+    post:
+      tags:
+      - Energy
+      summary: Energy requirement estimate (REE, stress, activity, IOM equations)
+      description: 'Estimates daily energy needs from the equations in Krause and Mahan''s Food and the Nutrition Care Process
+        (16th ed., chapter 2). Pure calculation, nothing is stored. Steps: (1) resting energy expenditure, by Mifflin-St Jeor
+        for adults or a measured value you supply; (2) stress factors multiply REE (fever, or a clinician-set custom factor);
+        (3) an activity factor multiplies the result (minimal 10-20%, moderate 25-40%, strenuous 45-60%, expert-opinion ranges);
+        (4) every IOM EER or weight-maintenance TEE equation that fits the person is calculated from a PAL category, a PAL
+        value or an activity log, with pregnancy and lactation add-ons. The reply lists every estimate with its steps, one
+        recommended figure with the reason, warnings and notes. TEF is already inside the activity factors and IOM equations,
+        so it is never added again. Mifflin-St Jeor is not predicted under 18. Harris-Benedict is not offered because the
+        chapter does not recommend it. Estimates only: individual variation can be wide, and critically ill patients need
+        measured REE or chapter 39 methods.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - sex
+              properties:
+                sex:
+                  type: string
+                  description: male or female (m, f, man, woman, boy, girl also accepted)
+                age_years:
+                  type: number
+                  description: Age in years. Give this or age_months.
+                age_months:
+                  type: integer
+                  description: Age in whole months (needed for infants under 3 years if age_years is not given)
+                weight_kg:
+                  type: number
+                  description: Weight in KILOGRAMS (0.5-500)
+                height_cm:
+                  type: number
+                  description: Height or length in CENTIMETRES (30-260). height_m also accepted. Needed for adults and for the IOM equations.
+                measured_ree_kcal:
+                  type: number
+                  description: REE measured by indirect calorimetry. Replaces the predicted REE.
+                rq:
+                  description: Respiratory quotient, as a number or {vo2, vco2}. Interpreted only.
+                  oneOf:
+                  - type: number
+                  - type: object
+                    properties:
+                      vo2:
+                        type: number
+                      vco2:
+                        type: number
+                activity_factor:
+                  type: string
+                  description: A registered activity level from GET /energy/factors (minimal, moderate, strenuous).
+                activity_position:
+                  description: Where in the factor's range to sit - low, mid (default), high, or a number 0-1.
+                  oneOf:
+                  - type: string
+                    enum:
+                    - low
+                    - mid
+                    - high
+                  - type: number
+                pal:
+                  type: number
+                  description: Physical activity level, 1-2.5. Selects the PA coefficient for the IOM equations.
+                pal_category:
+                  type: string
+                  enum:
+                  - sedentary
+                  - low_active
+                  - active
+                  - very_active
+                activities:
+                  type: array
+                  description: Daily activity log. PAL = 1 + 0.1 (TEF) + the sum of delta PAL. Each item has an id from the Table 2.4 list in GET /energy/factors, or its own delta_pal_per_hour, plus hours or minutes.
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      delta_pal_per_hour:
+                        type: number
+                      hours:
+                        type: number
+                      minutes:
+                        type: number
+                bmi_for_age_percentile:
+                  type: number
+                  description: For children 3-18. Above 85 selects the overweight equation.
+                stress:
+                  type: array
+                  description: 'Stress factors applied to REE. Known ids: fever (temperature_c or temperature_f) and custom (multiplier 0.5-3, label, source).'
+                  items:
+                    type: object
+                    required:
+                    - id
+                    properties:
+                      id:
+                        type: string
+                      temperature_c:
+                        type: number
+                      temperature_f:
+                        type: number
+                      multiplier:
+                        type: number
+                      label:
+                        type: string
+                      source:
+                        type: string
+                pregnancy:
+                  type: object
+                  properties:
+                    trimester:
+                      type: integer
+                      enum:
+                      - 1
+                      - 2
+                      - 3
+                lactation:
+                  type: object
+                  properties:
+                    months_postpartum:
+                      type: number
+                prefer:
+                  type: string
+                  enum:
+                  - iom
+                  - ree
+                  description: Force which estimate is recommended.
+            example:
+              sex: female
+              age_years: 30
+              weight_kg: 65
+              height_cm: 177
+              pal_category: active
+              activity_factor: moderate
+      responses:
+        '200':
+          description: Estimate with every step
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: object
+                      properties:
+                        inputs_used:
+                          type: object
+                        ree:
+                          type: object
+                          nullable: true
+                        stress:
+                          type: object
+                        activity:
+                          type: object
+                        estimates:
+                          type: array
+                          items:
+                            type: object
+                            description: id, label, kcal, kcal_unrounded, basis, steps, source, evidence (IOM items also have pa_coefficient and may list alternatives).
+                        recommended:
+                          type: object
+                          nullable: true
+                          description: id, kcal and the reason it was chosen. Null when only REE could be calculated.
+                        components:
+                          type: object
+                          nullable: true
+                        rq:
+                          type: object
+                          nullable: true
+                        warnings:
+                          type: array
+                          items:
+                            type: string
+                        notes:
+                          type: array
+                          items:
+                            type: string
+                        sources:
+                          type: array
+                          items:
+                            type: string
+                        disclaimer:
+                          type: string
+        '400':
+          description: Missing or invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /energy/factors:
+    get:
+      tags:
+      - Energy
+      summary: Energy engine factors and reference tables
+      description: Everything needed to build an input form for POST /energy/requirements - registered activity factors (with
+        their ranges and evidence level), registered stress factors and their inputs, PAL categories (Table 2.3), the activity
+        table (Table 2.4, METs and delta PAL), every IOM equation with its coefficients, infant energy deposition, pregnancy
+        and lactation add-ons, the DRI reference EER table (Table 2.2), respiratory quotient reference values and the REE
+        measurement protocol (Table 2.1). New factors registered in the engine appear here without any change to this route.
+      responses:
+        '200':
+          description: Factor catalogue
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
   /growth/assess:
