@@ -6137,6 +6137,11 @@ Rules:
 - Micronutrients (calcium, iron, zinc, magnesium, potassium, folate, vitamins A/C/D/B12, iodine) are frequently printed as "% Daily Value" / "%NRV" rather than an absolute amount — if ONLY a percentage is printed with no absolute mg/mcg figure alongside it, leave that field null rather than guessing a reference value to convert from.
 - If a field is not visible or not printed in ANY photo, use null. Do not guess or invent numbers.
 - If none of the photos show a legible nutrition label, set "label_detected": false and set numeric fields to null (a barcode-only or front-of-pack-only photo does not count as a legible label).
+- Copy printed numbers EXACTLY as they appear (e.g. printed "3.10g" -> 3.1, "4.60g" -> 4.6). Never round, average, or substitute a "typical" value for the product type.
+- Energy: only fill energy_kcal if an energy/calorie/kJ line is actually printed. If the panel shows no energy line, set energy_kcal to null — do NOT compute it from the macros.
+- Units: keep the basis exactly as printed. "per 100 ml" -> "per": "100ml" (liquids such as milk, juice, oil); "per 100 g" -> "per": "100g". Never convert ml to g or relabel one as the other.
+- Amounts printed as grams for a mineral (e.g. calcium "0.10g") must be converted to mg for the *_mg fields (0.10 g = 100 mg). Do not invent a different mg value.
+- Read the digits character by character; if a digit is blurred or unreadable, return null for that field rather than a best guess.
 - Output valid JSON only.`;
 
 async function extractNutritionLabel(imageInputs, env) {
@@ -8455,7 +8460,7 @@ async function handlePackagedScan(request, env, db) {
     barcode: payload.barcode || (isValidGs1Barcode(String(extracted.barcode || "").replace(/\D/g, "")) ? String(extracted.barcode).replace(/\D/g, "") : null),
     product_name: productName || "Unknown product (from photo)",
     brand: extracted.brand ?? null,
-    serving_size: extracted.serving_size ?? null,
+    serving_size: extracted.serving_size ?? (extracted.per === "100ml" ? "100 ml" : extracted.per === "100g" ? "100 g" : null),
     energy_kcal: scaled.energy_kcal ?? null,
     protein_g: scaled.protein_g ?? null,
     fat_g: scaled.fat_g ?? null,
