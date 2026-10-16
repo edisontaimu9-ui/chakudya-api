@@ -8436,6 +8436,18 @@ async function handlePackagedScan(request, env, db) {
 
   const scaled = scaleNutrientsToPer100(extracted, extracted.per, extracted.serving_size);
 
+  // Many local labels (e.g. UHT milk) print macros but no energy line. Estimate kcal from the macros
+  // with the standard Atwater factors (4/4/9) and mark it as an estimate so it is never mistaken
+  // for a printed value. Only when protein, carbs and fat are all present.
+  let energyEstimated = false;
+  if (scaled.energy_kcal == null) {
+    const p = Number(scaled.protein_g), c = Number(scaled.carbs_g), f = Number(scaled.fat_g);
+    if ([scaled.protein_g, scaled.carbs_g, scaled.fat_g].every((v) => v != null && Number.isFinite(Number(v)))) {
+      scaled.energy_kcal = Math.round(p * 4 + c * 4 + f * 9);
+      energyEstimated = true;
+    }
+  }
+
   const productName = extracted.product_name?.trim();
   if (!productName && scaled.energy_kcal == null) {
     return json(
@@ -8486,7 +8498,7 @@ async function handlePackagedScan(request, env, db) {
     iodine_mcg: scaled.iodine_mcg ?? null,
     ingredients_text: extracted.ingredients_text ?? null,
     allergens: extracted.allergens ?? null,
-    ocr_raw: extracted,
+    ocr_raw: energyEstimated ? { ...extracted, energy_estimated: true } : extracted,
   };
 
   // packaged_foods.barcode has a UNIQUE constraint, so — same as
@@ -8546,6 +8558,8 @@ async function handlePackagedScan(request, env, db) {
   } else {
     message = "Submitted for review. Thanks for contributing to Chakudya!";
   }
+
+  if (energyEstimated) message += " Energy was not printed on the label, so kcal is estimated from protein/carbs/fat.";
 
   return success(body, {
     message,
