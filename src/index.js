@@ -5936,11 +5936,11 @@ async function handleFoodsCategories(request, env) {
 // deploy; check https://console.groq.com/docs/vision and
 // https://console.groq.com/docs/deprecations for the current list if
 // extraction starts failing with a "model decommissioned"/"model not found"
-// error. qwen/qwen3.6-27b (current default below) is a PREVIEW model on
+// error. qwen/qwen3.8-27b (current default below) is a PREVIEW model on
 // Groq's side — fine for testing, but re-check before leaning on it hard for
 // production, since preview models can be pulled without much notice.
 
-const DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.6-27b";
+const DEFAULT_GROQ_VISION_MODEL = "qwen/qwen3.8-27b"; // qwen3.6-27b was removed from Groq (model_not_found, Oct 2026)
 
 // Keep this well under Groq's 20MB request cap and under Cloudflare Workers'
 // memory/CPU budget — a phone camera photo re-encoded as base64 JPEG at
@@ -6185,6 +6185,7 @@ async function extractNutritionLabel(imageInputs, env) {
 
   if (!res.ok) {
     const e = await res.json().catch(() => ({}));
+    console.error("Groq vision request failed:", res.status, model, JSON.stringify(e).slice(0, 500));
     throw new Error(`Groq vision request failed: ${e.error?.message || res.status}`);
   }
 
