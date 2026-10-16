@@ -8368,6 +8368,14 @@ async function handleDrugInteractionsSearch(request, url, db) {
 //   alter table packaged_foods add column if not exists source text;
 //   alter table packaged_foods add column if not exists ai_confidence numeric;
 //   alter table packaged_foods add column if not exists ocr_raw jsonb;
+// GS1 check-digit validation for EAN-8 / UPC-A / EAN-13 / GTIN-14.
+function isValidGs1Barcode(digits) {
+  if (!/^\d+$/.test(digits || "") || ![8, 12, 13, 14].includes(digits.length)) return false;
+  let sum = 0;
+  for (let i = digits.length - 2, w = 3; i >= 0; i--, w = w === 3 ? 1 : 3) sum += Number(digits[i]) * w;
+  return (10 - (sum % 10)) % 10 === Number(digits[digits.length - 1]);
+}
+
 async function handlePackagedScan(request, env, db) {
   if (request.method !== "POST") return err("Method not allowed", 405);
 
@@ -8442,7 +8450,9 @@ async function handlePackagedScan(request, env, db) {
     submitted_at: new Date().toISOString(),
     source: "ocr_ai",
     ai_confidence: typeof extracted.confidence === "number" ? extracted.confidence : null,
-    barcode: payload.barcode || extracted.barcode || null,
+    // payload.barcode comes from the client (already decoded/validated there); extracted.barcode is
+    // a vision-model read of printed digits, so only trust it if its GS1 check digit adds up.
+    barcode: payload.barcode || (isValidGs1Barcode(String(extracted.barcode || "").replace(/\D/g, "")) ? String(extracted.barcode).replace(/\D/g, "") : null),
     product_name: productName || "Unknown product (from photo)",
     brand: extracted.brand ?? null,
     serving_size: extracted.serving_size ?? null,
