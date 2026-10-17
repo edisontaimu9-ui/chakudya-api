@@ -1123,6 +1123,40 @@ paths:
           description: The two units are of different kinds (volume vs weight).
         '429':
           $ref: '#/components/responses/RateLimited'
+  /foods/local-categories:
+    get:
+      tags:
+      - Foods
+      summary: Categories used by the local food table (API key, rate-limited)
+      description: 'The category values the local Malawi food composition table actually uses (for example `Staples`, `Animal`,
+        `Baby foods`), each with the number of foods in it. Pass these to `/foods/by-category` or to `category=` on `/foods` and
+        `/foods/search`. This is a different list from `GET /foods/categories`, which returns FatSecret''s taxonomy and does not
+        match the local table.
+
+        '
+      responses:
+        '200':
+          description: Local categories, sorted by name
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                            example: Staples
+                          count:
+                            type: integer
+                            example: 42
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /foods/by-category:
     get:
       tags:
@@ -1135,10 +1169,10 @@ paths:
       - name: category
         in: query
         required: true
-        description: Food category to list.
+        description: Food category to list, a value from GET /foods/local-categories (matched case-insensitively).
         schema:
           type: string
-          example: Cereals
+          example: Staples
       - name: max_results
         in: query
         description: Maximum rows to return (1-100, default 20).

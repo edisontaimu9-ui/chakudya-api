@@ -1184,6 +1184,7 @@ function routePolicy(resource, method, param, action) {
   const isFoodsConvert = resource === "foods" && (param === "convert" || action === "convert") && method === "GET";
   const isFoodsSearch = resource === "foods" && param === "search" && method === "GET";
   const isFoodsByCategory = resource === "foods" && param === "by-category" && method === "GET";
+  const isFoodsLocalCategories = resource === "foods" && param === "local-categories" && method === "GET";
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
   const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
   const isFoodSubstitutes = resource === "foods" && param === "substitutes" && method === "GET";
@@ -1295,7 +1296,7 @@ function routePolicy(resource, method, param, action) {
   // Fuzzy search — a single indexed Postgres RPC call (pg_trgm + levenshtein),
   // no external API cost, so it gets the same generous headroom as autocomplete.
   // by-category is the same cost profile (one local RPC call), same limit.
-  if (isFoodsSearch || isFoodsByCategory) {
+  if (isFoodsSearch || isFoodsByCategory || isFoodsLocalCategories) {
     return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -5913,6 +5914,32 @@ async function handleFoodsByCategory(request, url, db) {
   );
 }
 
+// GET /foods/local-categories
+// The category values public.foods really uses (e.g. "Staples", "Animal", "Baby foods"), each with a
+// food count. These are the values to pass to /foods/by-category and to category= on /foods and
+// /foods/search. GET /foods/categories below is a different list (FatSecret's taxonomy) and its names
+// do not match the local table, so don't mix the two.
+async function handleFoodsLocalCategories(request, db) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const PAGE = 1000; // PostgREST's default row cap per request
+  const MAX_PAGES = 10;
+  const counts = new Map();
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { ok, body } = await db.select("foods", { select: "category", order: "id.asc", limit: PAGE, offset: page * PAGE });
+    if (!ok || !Array.isArray(body)) return err("Could not read food categories", 502);
+    for (const row of body) {
+      const name = typeof row.category === "string" ? row.category.trim() : "";
+      if (name) counts.set(name, (counts.get(name) || 0) + 1);
+    }
+    if (body.length < PAGE) break;
+  }
+  const categories = [...counts]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return success(categories, { count: categories.length });
+}
+
 // GET /foods/categories
 async function handleFoodsCategories(request, env) {
   if (request.method !== "GET") return err("Method not allowed", 405);
@@ -7581,8 +7608,9 @@ function handleRoot(env) {
         "GET  /foods/lookup?q=...|barcode=...&with_servings=true&tier=wider   (API key, rate-limited) → CNR's wider data tier: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. ?tier=wider skips the local/fuzzy steps and forces USDA/OFF/FatSecret directly — for when the local Malawi FCT entry is a different preparation than what was actually asked for (e.g. 'rice, cooked' vs. the local 'Rice, soaked' entry). All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
         "GET  /foods/search?q=&max_results=&min_similarity=&category=&brand=&ingredient=  (API key, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql + sql/009_add_advanced_food_search.sql), expanded through food_synonyms (Chichewa<->English + local-name aliases — a search for 'chinangwa' also searches 'cassava'). category= filters/narrows the q search (or, with no q, browses that category). brand= and ingredient= search packaged_foods.brand/.ingredients_text instead (brand search, search-by-ingredient) and merge into the same results array. Every result is tagged _source ('foods'|'packaged_foods') and _match_type ('fuzzy'|'synonym'|'category'|'brand'|'ingredient'). No external API calls, never caches an external result — purely local. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
         "GET  /foods/by-category?category=...&max_results=  (API key, rate-limited) → plain category browse over public.foods, no query text needed",
+        "GET  /foods/local-categories           (API key, rate-limited) → the category values public.foods actually uses, each with a count; use these with /foods/by-category and category=",
         "GET  /foods/autocomplete?q=...&max_results=  (API key, rate-limited) → local-first as-you-type suggestions: Malawi FCT + packaged foods (brand/product) substring match, backfilled with fuzzy search for typo tolerance ('nsim' -> Nsima, Nsima ya chimanga, Nsima ya kondowole, ...), then food_synonyms expansion, then FatSecret Premier suggestions last for anything with no local coverage (skipped, not fatal, if FatSecret isn't configured)",
-        "GET  /foods/categories                 (API key, rate-limited, cached 24h) → FatSecret Premier food category list",
+        "GET  /foods/categories                 (API key, rate-limited, cached 24h) → FatSecret Premier food category list (a different taxonomy from the local table; see /foods/local-categories)",
         "GET  /foods/substitutes?food_name=chicken&limit=  (API key, rate-limited, cached 1h) → Malawi-specific substitution suggestions, ranked by nutritional closeness, with a full nutrient comparison vs the original — see SUBSTITUTION_GROUP_OVERRIDES",
         "GET  /foods/convert?q=rice&amount=2&unit=cup   (API key, rate-limited, cached 1h; also GET /foods/:id/convert?amount=&unit= and ?id=) → one food, one amount, either way round. Give a household measure (tsp, tbsp, dsp, h dsp, cup, us cup, scoop 16, chipande, piece, slice ...) and get the standard weight; give a standard measure (g, kg, oz, lb, ml, l, fl oz) and get the household equivalents. Always returns standard {grams, kilograms, milliliters, other_weight_units}, household {servings[] (the food's own chipande/cup/piece as fractional counts), volume {suggested, all[]} (spoons and cups, only when the food has a density from its own cup/spoon serving)}, nutrients for that amount, density_g_per_ml, and assumptions[] (1 g/ml is assumed and flagged for a volume with no density on file). Same food matching and gram conversion as POST /recipes/calculate. 'cup' is the 250 ml metric household cup (UCT guide); 'us cup' is 240 ml (Krause). amount accepts 2, 0.5, 1/2, 1 1/2",
         "GET  /foods/compare?foods=nsima,rice,potatoes  (API key, rate-limited, cached 1h) → 2-6 foods side by side: per-100g energy/protein/carbs/fiber/fat/full micronutrient panel + nutrient_comparison (highest/lowest flagged per nutrient) + glycaemic block from glycaemic_index_data where a sourced GI/GL value exists (never estimated)",
@@ -9062,6 +9090,9 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       }
       if (param === "by-category") {
         return await handleFoodsByCategory(request, url, db);
+      }
+      if (param === "local-categories") {
+        return await handleFoodsLocalCategories(request, db);
       }
       if (param === "substitutes") {
         return await handleFoodSubstitutes(request, url, db, env);
