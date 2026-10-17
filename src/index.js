@@ -1185,6 +1185,7 @@ function routePolicy(resource, method, param, action) {
   const isFoodsSearch = resource === "foods" && param === "search" && method === "GET";
   const isFoodsByCategory = resource === "foods" && param === "by-category" && method === "GET";
   const isFoodsLocalCategories = resource === "foods" && param === "local-categories" && method === "GET";
+  const isFoodsBabyFoods = resource === "foods" && param === "baby-foods" && method === "GET";
   const isFoodsAutocomplete = resource === "foods" && param === "autocomplete" && method === "GET";
   const isFoodsCategories = resource === "foods" && param === "categories" && method === "GET";
   const isFoodSubstitutes = resource === "foods" && param === "substitutes" && method === "GET";
@@ -1296,7 +1297,7 @@ function routePolicy(resource, method, param, action) {
   // Fuzzy search — a single indexed Postgres RPC call (pg_trgm + levenshtein),
   // no external API cost, so it gets the same generous headroom as autocomplete.
   // by-category is the same cost profile (one local RPC call), same limit.
-  if (isFoodsSearch || isFoodsByCategory || isFoodsLocalCategories) {
+  if (isFoodsSearch || isFoodsByCategory || isFoodsLocalCategories || isFoodsBabyFoods) {
     return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
   }
 
@@ -7608,6 +7609,7 @@ function handleRoot(env) {
         "GET  /foods/lookup?q=...|barcode=...&with_servings=true&tier=wider   (API key, rate-limited) → CNR's wider data tier: local cache → USDA FDC → Open Food Facts → FatSecret; ?with_servings=true adds serving_sizes[] as above. ?tier=wider skips the local/fuzzy steps and forces USDA/OFF/FatSecret directly — for when the local Malawi FCT entry is a different preparation than what was actually asked for (e.g. 'rice, cooked' vs. the local 'Rice, soaked' entry). All sources now include fiber + the same micronutrient panel as public.foods where available — FatSecret is the exception for vitamin_a/vitamin_c/calcium/iron specifically (its API only gives %DV for those four, not absolute values, so they're left null rather than guessed; see raw_data.*_pct_dv on fatsecret-sourced results)",
         "GET  /foods/search?q=&max_results=&min_similarity=&category=&brand=&ingredient=  (API key, rate-limited) → typo-tolerant local search over public.foods (pg_trgm word_similarity + levenshtein ranking, see sql/008_add_fuzzy_food_search.sql + sql/009_add_advanced_food_search.sql), expanded through food_synonyms (Chichewa<->English + local-name aliases — a search for 'chinangwa' also searches 'cassava'). category= filters/narrows the q search (or, with no q, browses that category). brand= and ingredient= search packaged_foods.brand/.ingredients_text instead (brand search, search-by-ingredient) and merge into the same results array. Every result is tagged _source ('foods'|'packaged_foods') and _match_type ('fuzzy'|'synonym'|'category'|'brand'|'ingredient'). No external API calls, never caches an external result — purely local. Also used internally as a fallback tier in lookupFoodCascade (/foods/lookup and everything built on it) when the exact ilike match misses.",
         "GET  /foods/by-category?category=...&max_results=  (API key, rate-limited) → plain category browse over public.foods, no query text needed",
+        "GET  /foods/baby-foods?search=&limit=&cursor=  (API key, rate-limited) → only the \"Baby foods\" rows (infant cereals, jarred baby food). GET /foods?search= leaves these out unless the query has a baby word, category=Baby foods, or include_baby_foods=true",
         "GET  /foods/local-categories           (API key, rate-limited) → the category values public.foods actually uses, each with a count; use these with /foods/by-category and category=",
         "GET  /foods/autocomplete?q=...&max_results=  (API key, rate-limited) → local-first as-you-type suggestions: Malawi FCT + packaged foods (brand/product) substring match, backfilled with fuzzy search for typo tolerance ('nsim' -> Nsima, Nsima ya chimanga, Nsima ya kondowole, ...), then food_synonyms expansion, then FatSecret Premier suggestions last for anything with no local coverage (skipped, not fatal, if FatSecret isn't configured)",
         "GET  /foods/categories                 (API key, rate-limited, cached 24h) → FatSecret Premier food category list (a different taxonomy from the local table; see /foods/local-categories)",
@@ -8083,6 +8085,36 @@ function handleMeasures(request, url, param) {
   return notFound("Measures route");
 }
 
+// Baby and infant products (branded infant cereals, jarred baby food) are a separate group of rows in
+// public.foods, category "Baby foods". They sort alphabetically ahead of ordinary foods ("Baby food (jar), banana"
+// before "Banana"), so a plain name search is kept free of them. Use GET /foods/baby-foods to search them, or
+// pass category=Baby foods, or include_baby_foods=true.
+const BABY_FOODS_CATEGORY = "Baby foods";
+const BABY_INTENT_RE = /\b(baby|babies|infant|infants|toddler|weaning|nestum|cerelac|lactogen|formula|puree|purée)\b/i;
+
+/** True when a free-text search should leave "Baby foods" rows out: no explicit category, no baby wording, not opted back in. */
+function shouldExcludeBabyFoods(url, search, category) {
+  if (!search || category) return false;
+  if (isTruthyParam(url.searchParams.get("include_baby_foods"))) return false;
+  return !BABY_INTENT_RE.test(search);
+}
+
+// GET /foods/baby-foods?search=...&limit=...&cursor=...
+// Browse or search only the "Baby foods" rows. Same paging and row shape as GET /foods.
+async function handleBabyFoods(request, url, db) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+  const search = (url.searchParams.get("search") || "").trim();
+  const filters = { category: `eq.${BABY_FOODS_CATEGORY}` };
+  if (search) filters.food_name = `ilike.*${escapeLikePattern(search)}*`;
+  const withServings = isTruthyParam(url.searchParams.get("with_servings"));
+  return await paginatedList(db, "foods", url, {
+    filters,
+    order: "food_name.asc",
+    select: FOODS_SEARCH_FIELDS,
+    enrichRow: withServings ? (row) => ({ ...row, serving_sizes: buildServingSizes(row) }) : undefined,
+  });
+}
+
 async function handleFoods(request, url, db, id) {
   const method = request.method;
 
@@ -8103,6 +8135,16 @@ async function handleFoods(request, url, db, id) {
     const filters = {};
     if (category) filters["category"] = `eq.${category}`;
     if (search) filters["food_name"] = `ilike.*${escapeLikePattern(search)}*`;
+
+    // Keep baby-food products out of an ordinary name search (see BABY_FOODS_CATEGORY). The "or" keeps rows with no
+    // category. If the search would then find nothing (e.g. "nestum" without a baby word), fall back to including them.
+    if (shouldExcludeBabyFoods(url, search, category)) {
+      const withoutBaby = { ...filters, or: `(category.is.null,category.neq.${BABY_FOODS_CATEGORY})` };
+      const probe = await db.select("foods", { filters: withoutBaby, limit: 1, select: "id" });
+      if (probe.ok && Array.isArray(probe.body) && probe.body.length > 0) {
+        filters.or = withoutBaby.or;
+      }
+    }
 
     const withServings = isTruthyParam(url.searchParams.get("with_servings"));
     return await paginatedList(db, "foods", url, {
@@ -9093,6 +9135,9 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       }
       if (param === "local-categories") {
         return await handleFoodsLocalCategories(request, db);
+      }
+      if (param === "baby-foods") {
+        return await handleBabyFoods(request, url, db);
       }
       if (param === "substitutes") {
         return await handleFoodSubstitutes(request, url, db, env);

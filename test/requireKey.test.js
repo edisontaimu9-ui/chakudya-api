@@ -45,7 +45,7 @@ const call = (method, path, token, body, extraHeaders = {}, envOverride = env) =
   body: body && method !== "GET" ? JSON.stringify(body) : undefined }), envOverride, ctx);
 
 const OPERATIONAL = [
-  ["GET", "/foods"], ["GET", "/foods/1"], ["GET", "/foods/lookup?q=nsima"], ["GET", "/foods/search?q=nsima"], ["GET", "/foods/categories"], ["GET", "/foods/local-categories"],
+  ["GET", "/foods"], ["GET", "/foods/1"], ["GET", "/foods/lookup?q=nsima"], ["GET", "/foods/search?q=nsima"], ["GET", "/foods/categories"], ["GET", "/foods/local-categories"], ["GET", "/foods/baby-foods"],
   ["GET", "/foods/compare?foods=nsima,rice"], ["GET", "/exchange"], ["GET", "/renal"], ["GET", "/formulas"], ["GET", "/glycaemic-index"],
   ["GET", "/drug-interactions"], ["GET", "/dri/life-stages"], ["POST", "/dri/compare"], ["GET", "/growth/assess"],
   ["GET", "/muac/classify?age_months=18&muac_cm=11.8"], ["GET", "/bmi-for-age/classify"], ["GET", "/weight-for-age/classify"],

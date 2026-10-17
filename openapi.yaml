@@ -721,12 +721,23 @@ paths:
       tags:
       - Foods
       summary: List foods
+      description: 'With `search`, rows in the "Baby foods" category are left out (they sort ahead of ordinary foods, e.g.
+        "Baby food (jar), banana" before "Banana"). They come back if the query has a baby word (baby, infant, toddler,
+        weaning, nestum, cerelac, formula, puree), if `category=Baby foods`, if `include_baby_foods=true`, or if nothing
+        else matches. To search only baby foods use `GET /foods/baby-foods`.
+
+        '
       parameters:
       - $ref: '#/components/parameters/Search'
       - name: category
         in: query
         schema:
           type: string
+      - name: include_baby_foods
+        in: query
+        description: Set to true to include "Baby foods" rows in a name search.
+        schema:
+          type: boolean
       - $ref: '#/components/parameters/Limit'
       - $ref: '#/components/parameters/Offset'
       - $ref: '#/components/parameters/Cursor'
@@ -1121,6 +1132,25 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '422':
           description: The two units are of different kinds (volume vs weight).
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /foods/baby-foods:
+    get:
+      tags:
+      - Foods
+      summary: Baby and infant foods (API key, rate-limited)
+      description: 'Only the "Baby foods" rows (infant cereals, jarred baby food). Same paging (`limit`, `offset`, `cursor`) and
+        row shape as `GET /foods`, with an optional `search` on the food name.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/Search'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Offset'
+      - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          $ref: '#/components/responses/ListOrCursor'
         '429':
           $ref: '#/components/responses/RateLimited'
   /foods/local-categories:
