@@ -5,7 +5,7 @@
 
 import { normalizeSexMF } from "./energyEngine.js";
 import { percentileFromLms, percentileFromSdCutoffs } from "./bmiPercentile.js";
-import { activityLogToPalEntries } from "./activityEnergy.js";
+import { activityLogToPalEntries, computeActivityEnergy } from "./activityEnergy.js";
 
 const present = (v) => v !== undefined && v !== null && v !== "";
 
@@ -71,4 +71,25 @@ export async function enrichActivityLog(body, db) {
   if (out.error) return { error: out.error, status: 400 };
   const existing = Array.isArray(body.activities) ? body.activities : [];
   return { body: { ...body, activities: [...existing, ...out.entries] }, activityLog: out.log };
+}
+
+/**
+ * activity_log [{ activity, type?, minutes|hours }] for the sports routes: the same Appendix 10 lookup, returned as kcal
+ * (computeActivityEnergy) instead of PAL entries. Returns { activityLog } (null when the body has no activity_log) or { error, status }.
+ */
+export async function lookupActivityLogEnergy(body, db) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || !present(body.activity_log)) return { activityLog: null };
+  if (!Array.isArray(body.activity_log) || !body.activity_log.length) return { error: "activity_log must be a non-empty array of { activity, type?, minutes | hours }", status: 400 };
+  let rows;
+  try {
+    const r = await db.select("activity_energy_expenditure", { limit: 500, order: "activity.asc,type.asc" });
+    if (!r.ok) return { error: "Activity table could not be read (has sql/033 been run and seeded?)", status: 502 };
+    rows = Array.isArray(r.body) ? r.body : [];
+  } catch (_) {
+    return { error: "Activity table could not be read", status: 502 };
+  }
+  if (!rows.length) return { error: "Activity table is empty. Seed it with POST /activity-energy/bulk (admin)", status: 503 };
+  const out = computeActivityEnergy({ weight_kg: body.weight_kg, activities: body.activity_log }, rows);
+  if (!out.ok) return { error: String(out.error).replace(/^activities\[/, "activity_log[").replace(/^activities must/, "activity_log must"), status: 400 };
+  return { activityLog: out.data };
 }

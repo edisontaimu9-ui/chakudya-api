@@ -3,7 +3,13 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.45.0
+ * Version: 1.46.0
+ * v1.46.0 changes: sports nutrition calculators from Krause 16th ed. chapter 23 (any API key, no SQL). New resource /sports:
+ *   GET /sports/reference, POST /sports/energy (Cunningham REE, Box 23.2 activity factors, METs, TEF; Appendix 10 via activity_log),
+ *   /sports/macros (g/kg by training profile, AMDR check), /sports/fuel-timing (pre, during, after), /sports/hydration (body-mass loss,
+ *   rehydration, sodium, urine specific gravity), /sports/body-composition (lowest safe weight, weekly rates), /sports/supplement-dose
+ *   (caffeine, creatine, beta-alanine, HMB, beetroot; withheld under 18, pregnant, nursing) and /sports/plan (all of them for one athlete).
+ *   src/sportsNutrition.js; the Appendix 10 lookup is shared with /energy via src/energyLookup.js. No change to /energy or /activity-energy.
  * (1.45.0 also: a bare food name's everyday form (rice -> cooked, mango -> ripe) is inferred once per food by Groq and cached 30 days in KV (resolveImpliedForm), used as a soft ranking signal only; falls back to a tiny built-in map when unavailable.
  * (1.45.0 also: when the ranking is unsure on a query that states a state/variety, /foods/search asks Groq to reorder the same rows - src/foodIntentLlm.js,
  *   reorder-only, 2.5 s timeout, KV-cached, silently skipped without GROQ_API_KEY.)
@@ -650,7 +656,8 @@ import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
-import { enrichBmiPercentile, enrichActivityLog } from "./energyLookup.js";
+import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
+import { computeSportsEnergy, computeSportsMacros, computeFuelTiming, computeHydration, computeBodyComposition, computeSupplementDoses, computeSportsPlan, sportsReferenceCatalog } from "./sportsNutrition.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
 import { computeActivityEnergy, listActivities, parseWeight } from "./activityEnergy.js";
 import {
@@ -707,7 +714,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.45.0";
+const CNR_VERSION = "1.46.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1061,7 +1068,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1336,6 +1343,11 @@ function routePolicy(resource, method, param, action) {
   // Energy requirements engine (src/energyEngine.js): pure arithmetic on the request body, no database,
   // no external calls. Any valid key. POST is a calculation, not a write.
   if (resource === "energy" && (((param === "requirements" || param === "food-energy") && method === "POST") || (param === "factors" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Sports nutrition calculators (src/sportsNutrition.js): arithmetic on the request body. Only activity_log reads one reference
+  // table (activity_energy_expenditure). No writes, so POST is a calculation. Any valid key.
+  if (resource === "sports" && ((["energy", "macros", "fuel-timing", "hydration", "body-composition", "supplement-dose", "plan"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Activity energy calculation (src/activityEnergy.js): reads one reference table, no writes. Any valid key.
@@ -7593,6 +7605,14 @@ function handleRoot(env) {
         "POST   /energy/food-energy     (API key) → body {protein_g, fat_g, carbohydrate_g, alcohol_g} or {weight_g, protein_pct, fat_pct, carbohydrate_pct} or {alcohol: {volume_oz, proof|abv_percent}} → kcal, kJ, per-nutrient breakdown",
         "GET    /activity-energy        (API key) → ?q=, ?activity=, ?weight_kg= or ?weight_lb= → activity list from the database; with a weight, kcal per hour at that weight",
         "POST   /activity-energy/calculate (API key) → body {weight_kg|weight_lb, activities: [{activity, type?, minutes|hours}]} → kcal per activity and total (Krause 16th ed. Appendix 10)",
+        "GET    /sports/reference        (API key) → chapter 23 tables: activity factors, kcal/kg tiers, macro targets, fuel timing, hydration, body-fat standards, known chapter issues",
+        "POST   /sports/energy           (API key) → body {weight_kg, lean_body_mass_kg | body_fat_percent, activity_level (sedentary|lightly_active|moderately_active|very_active|extra_active) | activity_multiplier, exercise?: [{mets, minutes}], activity_log?: [{activity, type?, minutes|hours}], tef?, sex?, age_years?, height_cm?} → Cunningham REE, activity, TEF, total kcal, kcal/kg check",
+        "POST   /sports/macros           (API key) → body {weight_kg, profile: general_fitness|general_training|endurance|elite_endurance|resistance_hypertrophy, energy_kcal?, age_years?, intake?: {carbohydrate_g, protein_g, fat_g}} → g and g/kg ranges, protein per meal, AMDR and intake checks",
+        "POST   /sports/fuel-timing      (API key) → body {weight_kg, duration_min?, hours_before_event?, recovery_hours?, drink?: {carbohydrate_g, serving_g|serving_ml}} → pre-event, during-exercise and recovery carbohydrate, drink concentration check",
+        "POST   /sports/hydration        (API key) → body {weight_before_kg, weight_after_kg, fluid_intake_ml?, urine_ml?, duration_min?, urine_specific_gravity?, age_years?, ambient_c?, hours_to_next_session?} → body-mass loss %, rehydration volume, sweat estimate, in-exercise fluid and sodium, urine SG band",
+        "POST   /sports/body-composition (API key) → body {sex, weight_kg, body_fat_percent, age_years?, target_weight_kg?} → fat and lean mass, lowest safe and highest optimal weight, weekly loss/gain rates, weeks to target",
+        "POST   /sports/supplement-dose  (API key) → body {weight_kg, age_years, supplements?: [caffeine|creatine|beta_alanine|hmb|beetroot_juice], pregnant?, lactating?} → chapter doses; withheld under 18, pregnant or nursing",
+        "POST   /sports/plan             (API key) → one athlete: top-level body and activity fields plus optional profile, event, hydration, weight_goal, supplements objects → each section as its own endpoint would return it",
         "GET    /energy/factors         (API key) → activity and stress factors, PAL categories, activity table, IOM equations, reference tables",
         "GET    /admin/usage      (root key only) → calls per endpoint, daily totals and top routes from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032",
         "GET    /admin/monitoring (root key only) → failed calls and slow endpoints from request_log (?hours=, max 168); needs REQUEST_LOG_STORE=true and sql/031",
@@ -9321,6 +9341,30 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         const result = computeFoodEnergy(body);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: "Food energy" });
+      }
+      return notFound();
+    }
+
+    case "sports": {
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        return success(sportsReferenceCatalog(), { message: "Sports nutrition reference tables, factors and known chapter issues" });
+      }
+      const sportsCalc = { energy: computeSportsEnergy, macros: computeSportsMacros, "fuel-timing": computeFuelTiming, hydration: computeHydration, "body-composition": computeBodyComposition, "supplement-dose": computeSupplementDoses, plan: computeSportsPlan };
+      if (param && sportsCalc[param]) {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        // activity_log (energy and plan): look the activities up in the database (Krause Appendix 10).
+        let activityLog = null;
+        if (param === "energy" || param === "plan") {
+          const looked = await lookupActivityLogEnergy(body, db);
+          if (looked.error) return err(looked.error, looked.status || 400);
+          activityLog = looked.activityLog;
+        }
+        const result = sportsCalc[param](body, { activityLog });
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: param === "plan" ? "Sports nutrition plan" : `Sports nutrition: ${param}` });
       }
       return notFound();
     }

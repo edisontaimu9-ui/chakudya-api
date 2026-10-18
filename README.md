@@ -35,6 +35,7 @@ It is built for:
 | **Packaged foods** | `/packaged`, `/packaged/scan`, `/packaged/submit` | Barcode lookup, photo-based label reading, community submissions and an admin review queue |
 | **Clinical tools** | `/exchange`, `/renal`, `/formulas`, `/drug-interactions`, `/glycaemic-index`, `/dri` | Exchange lists, renal data, enteral formulas, drug-nutrient interactions, sourced GI/GL values and dietary reference intakes |
 | **Energy and measures** | `/energy`, `/activity-energy`, `/measures` | Energy requirement engine, activity energy table, unit and household-measure conversion |
+| **Sports nutrition** | `/sports/energy`, `/sports/macros`, `/sports/fuel-timing`, `/sports/hydration`, `/sports/body-composition`, `/sports/supplement-dose`, `/sports/plan` | Athlete energy (Cunningham), macros per kg, fuel timing, hydration, body composition and supplement doses from Krause chapter 23 |
 | **Growth** | `/growth/assess`, `/weight-for-age`, `/length-height-for-age`, `/weight-for-length-height`, `/bmi-for-age`, `/hc-for-age`, `/muac`, `/fenton-preterm` | WHO child growth indicators from birth to 19 years in one call, MUAC screening and preterm (Fenton) charts |
 | **Meals** | `/recipes/calculate`, `/meals/analyze`, `/ingredients/parse` | Recipe and meal nutrition from plain ingredient lists or free text |
 | **AI and memory** | `/rag/ask`, `/rag/retrieve`, `/memory/*` | Cited answers over ingested clinical documents, and per-session memory for assistants |

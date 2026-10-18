@@ -1367,6 +1367,32 @@ Scopes are `system/<ResourceType|*>.<read|write|*>`. An operation that produces 
 
 **CapabilityStatement.** `rest.security` (API key as a Bearer token, the scope model, the requirement that every operation except conformance reads needs a key), system-level `validate`, `supportedProfile`s, and the `AuditEvent`, `ConceptMap`, `Composition`, `Provenance`, `CareTeam`, `StructureDefinition`, `CodeSystem`, `OperationDefinition` and `Questionnaire` resources.
 
+### Sports nutrition (`/sports`) — `v1.46.0+`
+
+Calculators from Krause and Mahan's *Food and the Nutrition Care Process*, 16th ed., chapter 23 (Nutrition in Exercise and Sports Performance). Any API key, 100 requests/minute, nothing stored, no SQL. Every result returns its steps, warnings and sources. Where the chapter gives a range, you get the range; where the chapter contradicts itself or has an arithmetic slip, `GET /sports/reference` lists it under `known_issues` and the result says which figure it used.
+
+| Route | What it calculates |
+|---|---|
+| `GET /sports/reference` | Activity factors, kcal/kg tiers, macro targets, fuel timing, hydration, body-fat standards, sweat electrolytes, known chapter issues |
+| `POST /sports/energy` | Cunningham REE (500 + 22 x lean body mass), Box 23.2 activity factor or custom multiplier, exercise by METs (0.0175 kcal/kg/min per MET) and/or `activity_log` (Appendix 10 table), TEF as a separate 10% step, kcal/kg cross-check, optional Mifflin-St Jeor cross-check |
+| `POST /sports/macros` | Carbohydrate, protein and fat in g/kg and grams by `profile` (`general_fitness`, `general_training`, `endurance`, `elite_endurance`, `resistance_hypertrophy`), protein per meal, optional energy split with AMDR check, optional `intake` comparison |
+| `POST /sports/fuel-timing` | Carbohydrate 1-4 hours before, during (25-30 g per 30 min over 60 min) and after (1.2 g/kg/h), Box 23.4 meal tiers, drink concentration check |
+| `POST /sports/hydration` | Body-mass loss %, rehydration volume, 80% rule before a second session, in-exercise fluid and sodium, urine specific gravity band, child and master-athlete rules, heat warning |
+| `POST /sports/body-composition` | Fat and lean mass, lowest safe and highest optimal weight, weekly loss/gain rates, weeks to a target |
+| `POST /sports/supplement-dose` | Caffeine, creatine, beta-alanine, HMB, beetroot doses. `age_years` required. Withheld under 18, in pregnancy and when breastfeeding |
+| `POST /sports/plan` | All of the above for one athlete; each section as its own endpoint returns it, a bad value only errors its section |
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/sports/energy \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"weight_kg":79.5,"lean_body_mass_kg":71.6,"activity_level":"extra_active"}'
+# REE 2075, x 1.9 = 3943, TEF 394, total 4337 kcal (Box 23.2 prints 4336: the chapter rounds as it goes)
+```
+
+**Not the same as `/energy/requirements`.** Box 23.2 adds the thermic effect of food as its own step; the chapter 2 engine treats TEF as already inside its activity multipliers. The two methods are not interchangeable. Use `/energy/requirements` for healthy people, children and clinical stress; use `/sports/energy` for athletes with a body-composition measurement.
+
+**Related routes reused, not repeated:** `POST /activity-energy/calculate` (named exercise), `POST /energy/food-energy` (grams to kcal), `GET /dri` (AMDR, water and electrolytes), `POST /meals/analyze` (what was eaten). Not implemented because the chapter gives no formula: the De Lorenzo equation, energy availability and RED-S thresholds.
+
 ### Recipes
 
 **`POST /recipes/calculate`** *(API key, rate-limited)* — give it a list of ingredients, get back the recipe's total and per-serving nutrition. Builds directly on Serving-Size Intelligence above.

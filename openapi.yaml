@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.43.0
+  version: 1.46.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -63,6 +63,7 @@ tags:
 - name: HC for age
 - name: Growth assessment
 - name: Energy
+- name: Sports Nutrition
 - name: Fenton Preterm
 - name: FHIR
 - name: Packaged
@@ -7342,6 +7343,434 @@ paths:
           $ref: '#/components/responses/MutationSuccess'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /sports/reference:
+    get:
+      tags:
+      - Sports Nutrition
+      summary: Sports nutrition reference tables and known chapter issues
+      description: Activity factors, kcal/kg tiers, macronutrient targets by training profile, fuel timing, hydration guidance,
+        body-fat standards (Table 23.1), sweat electrolytes (Table 23.3), pre-event meal tiers (Box 23.4) and the places where
+        Krause chapter 23 contradicts itself. Any API key.
+      responses:
+        '200':
+          description: Reference catalog
+        '401':
+          description: Missing or invalid API key
+  /sports/energy:
+    post:
+      tags:
+      - Sports Nutrition
+      summary: Athlete energy requirement (Cunningham REE, Box 23.2)
+      description: 'REE = 500 + 22 x lean body mass, times a Box 23.2 activity factor (or a custom multiplier), plus exercise
+        energy from METs (0.0175 kcal/kg/min per MET) and/or an activity_log looked up in the Appendix 10 table, plus the thermic
+        effect of food as its own 10% step. Returns every step, a kcal/kg cross-check against the chapter tiers and an optional
+        Mifflin-St Jeor cross-check. This is the chapter 23 method: do not add its TEF to a /energy/requirements result.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weight_kg:
+                  type: number
+                  description: 30-250
+                lean_body_mass_kg:
+                  type: number
+                  description: Use this or body_fat_percent
+                body_fat_percent:
+                  type: number
+                  description: 2-60
+                activity_level:
+                  type: string
+                  enum:
+                  - sedentary
+                  - lightly_active
+                  - moderately_active
+                  - very_active
+                  - extra_active
+                activity_multiplier:
+                  type: number
+                  description: 1-2.5, instead of activity_level
+                exercise:
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: object
+                    properties:
+                      mets:
+                        type: number
+                      minutes:
+                        type: number
+                      label:
+                        type: string
+                activity_log:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      activity:
+                        type: string
+                      type:
+                        type: string
+                      minutes:
+                        type: number
+                      hours:
+                        type: number
+                tef:
+                  type: boolean
+                  default: true
+                sex:
+                  type: string
+                  enum:
+                  - male
+                  - female
+                age_years:
+                  type: number
+                height_cm:
+                  type: number
+              required:
+              - weight_kg
+            example:
+              weight_kg: 79.5
+              lean_body_mass_kg: 71.6
+              activity_level: extra_active
+      responses:
+        '200':
+          description: Calculation with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /sports/macros:
+    post:
+      tags:
+      - Sports Nutrition
+      summary: Athlete macronutrient targets (g/kg by training profile)
+      description: Carbohydrate, protein and fat ranges in g/kg and grams, protein per meal, an optional energy split with an
+        AMDR check (the table behind GET /dri), and an optional intake comparison.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weight_kg:
+                  type: number
+                profile:
+                  type: string
+                  enum:
+                  - general_fitness
+                  - general_training
+                  - endurance
+                  - elite_endurance
+                  - resistance_hypertrophy
+                energy_kcal:
+                  type: number
+                age_years:
+                  type: number
+                intake:
+                  type: object
+                  properties:
+                    carbohydrate_g:
+                      type: number
+                    protein_g:
+                      type: number
+                    fat_g:
+                      type: number
+              required:
+              - weight_kg
+              - profile
+            example:
+              weight_kg: 79
+              profile: general_training
+              intake:
+                carbohydrate_g: 249
+                protein_g: 216
+                fat_g: 130
+      responses:
+        '200':
+          description: Calculation with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /sports/fuel-timing:
+    post:
+      tags:
+      - Sports Nutrition
+      summary: Carbohydrate before, during and after exercise
+      description: 4 g/kg 4 hours before and 1 g/kg 1 hour before (never above 4 g/kg), Box 23.4 meal tiers, 25-30 g per 30
+        minutes during exercise over 60 minutes, recovery 1.2 g/kg/h with 5-9 g protein per 100 g carbohydrate, and a drink
+        concentration check (under 5% unlikely to help, over 10% GI distress).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weight_kg:
+                  type: number
+                duration_min:
+                  type: number
+                hours_before_event:
+                  type: number
+                recovery_hours:
+                  type: number
+                drink:
+                  type: object
+                  properties:
+                    carbohydrate_g:
+                      type: number
+                    serving_g:
+                      type: number
+                    serving_ml:
+                      type: number
+              required:
+              - weight_kg
+            example:
+              weight_kg: 70
+              duration_min: 120
+              hours_before_event: 4
+              recovery_hours: 4
+      responses:
+        '200':
+          description: Calculation with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /sports/hydration:
+    post:
+      tags:
+      - Sports Nutrition
+      summary: 'Hydration: body-mass loss, rehydration, in-exercise fluid and sodium'
+      description: 'Body-mass loss % (2% can impair endurance, 3-4% team sports), rehydration at 25-50% more than the loss (450-675
+        mL per lb), 80% before a second session, in-exercise fluid and sodium (0.5-0.7 g/L over 1 hour), urine specific gravity
+        band, child and master-athlete rules, heat warning. The sweat estimate is a standard mass balance, not a chapter formula.
+        Daily needs: GET /dri?nutrient=water_l.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weight_before_kg:
+                  type: number
+                weight_after_kg:
+                  type: number
+                fluid_intake_ml:
+                  type: number
+                urine_ml:
+                  type: number
+                duration_min:
+                  type: number
+                urine_specific_gravity:
+                  type: number
+                age_years:
+                  type: number
+                ambient_c:
+                  type: number
+                hours_to_next_session:
+                  type: number
+            example:
+              weight_before_kg: 70
+              weight_after_kg: 68.6
+              duration_min: 90
+              hours_to_next_session: 3
+      responses:
+        '200':
+          description: Calculation with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /sports/body-composition:
+    post:
+      tags:
+      - Sports Nutrition
+      summary: Fat mass, lean mass, lowest safe weight and weekly rates
+      description: Fat and lean mass, lowest safe weight (lean mass / (1 - minimum body fat), 5% males / 12% females, 7% / 14%
+        under 18, Table 23.1), highest optimal weight, healthy range, weekly loss (1-2 lb) and lean gain (0.5-1.0 lb males,
+        0.25-0.75 lb females) rates, and weeks to a target. No timeline is given for a target below the lowest safe weight.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sex:
+                  type: string
+                  enum:
+                  - male
+                  - female
+                weight_kg:
+                  type: number
+                body_fat_percent:
+                  type: number
+                age_years:
+                  type: number
+                target_weight_kg:
+                  type: number
+              required:
+              - sex
+              - weight_kg
+              - body_fat_percent
+            example:
+              sex: male
+              weight_kg: 79.5
+              body_fat_percent: 10
+              target_weight_kg: 76
+      responses:
+        '200':
+          description: Calculation with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /sports/supplement-dose:
+    post:
+      tags:
+      - Sports Nutrition
+      summary: Weight-based supplement doses from Table 23.4
+      description: Caffeine (up to 3 mg/kg), creatine (loading and non-loading regimens), beta-alanine (65 mg/kg), HMB and beetroot
+        juice. age_years is required. No doses are returned under 18, in pregnancy or when breastfeeding because the chapter
+        gives none; creatine is specifically advised against for those groups. Not a substitute for clinical advice; check products
+        against the WADA list.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weight_kg:
+                  type: number
+                age_years:
+                  type: number
+                supplements:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - caffeine
+                    - creatine
+                    - beta_alanine
+                    - hmb
+                    - beetroot_juice
+                pregnant:
+                  type: boolean
+                lactating:
+                  type: boolean
+              required:
+              - weight_kg
+              - age_years
+            example:
+              weight_kg: 68
+              age_years: 25
+              supplements:
+              - caffeine
+              - creatine
+      responses:
+        '200':
+          description: Calculation with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /sports/plan:
+    post:
+      tags:
+      - Sports Nutrition
+      summary: One-athlete sports nutrition plan
+      description: Runs every calculator the body has inputs for and returns each as its own section, exactly as its own endpoint
+        would. The macro section uses the energy section total unless energy_kcal is given. A bad value in one section only
+        errors that section (see errors and not_assessed).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sex:
+                  type: string
+                age_years:
+                  type: number
+                height_cm:
+                  type: number
+                weight_kg:
+                  type: number
+                body_fat_percent:
+                  type: number
+                lean_body_mass_kg:
+                  type: number
+                activity_level:
+                  type: string
+                activity_multiplier:
+                  type: number
+                exercise:
+                  type: array
+                  items:
+                    type: object
+                activity_log:
+                  type: array
+                  items:
+                    type: object
+                profile:
+                  type: string
+                energy_kcal:
+                  type: number
+                intake:
+                  type: object
+                event:
+                  type: object
+                  description: duration_min, hours_before_event, recovery_hours, drink
+                hydration:
+                  type: object
+                  description: weight_before_kg, weight_after_kg, ...
+                weight_goal:
+                  type: object
+                  description: target_weight_kg
+                supplements:
+                  type: object
+                  description: supplements?, pregnant?, lactating?
+            example:
+              sex: male
+              age_years: 30
+              weight_kg: 79.5
+              body_fat_percent: 10
+              activity_level: very_active
+              profile: endurance
+              event:
+                duration_min: 120
+                hours_before_event: 4
+      responses:
+        '200':
+          description: Calculation with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+
 components:
   securitySchemes:
     bearerAuth:
