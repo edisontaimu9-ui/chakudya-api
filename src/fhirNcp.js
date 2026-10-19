@@ -196,7 +196,7 @@ const WEIGHT_LOSS_INTERVALS = [
   { label: "6 months", days: 182, tol: 30, significant: 10, severe: 10 },
 ];
 
-function weightLossSignificance(lossPct, periodDays) {
+export function weightLossSignificance(lossPct, periodDays) {
   if (!isNum(periodDays) || lossPct <= 0) return null;
   const iv = WEIGHT_LOSS_INTERVALS.find((i) => Math.abs(periodDays - i.days) <= i.tol);
   if (!iv) return { interval: null, level: "no-standard-threshold" };

@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.46.0
+  version: 1.47.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -64,6 +64,7 @@ tags:
 - name: Growth assessment
 - name: Energy
 - name: Sports Nutrition
+- name: Weight Management
 - name: Fenton Preterm
 - name: FHIR
 - name: Packaged
@@ -7766,6 +7767,454 @@ paths:
           description: Calculation with steps, warnings and sources
         '400':
           description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /weight-management/reference:
+    get:
+      tags:
+      - Weight Management
+      summary: Weight management reference tables
+      description: 'Krause chapter 21 tables: BMI classes, Table 21.3 disease risk, metabolic syndrome, rate bands, energy floors,
+        AMDR, diet adequacy, activity targets, Table 21.11 and 21.12, and the places the chapter contradicts itself. Optional
+        section filter.'
+      parameters:
+      - name: section
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - bmi_classes
+          - disease_risk
+          - body_fat
+          - metabolic_syndrome
+          - rates
+          - energy_floors
+          - macronutrients
+          - diets
+          - activity
+          - treatment
+          - unintentional_loss
+          - energy_boosters
+          - bariatric
+          - known_issues
+      responses:
+        '200':
+          description: Reference
+        '400':
+          description: Unknown section
+        '401':
+          description: Missing or invalid API key
+  /weight-management/bariatric:
+    get:
+      tags:
+      - Weight Management
+      summary: Bariatric diet stages and supplementation (Tables 21.9 and 21.10)
+      description: 'Diet progression (sleeve gastrectomy and Roux-en-Y bypass) and vitamin/mineral supplementation by procedure.
+        Misprinted values in Table 21.10 are returned as printed with suspect: true, not corrected.'
+      parameters:
+      - name: procedure
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - lagb
+          - lsg
+          - rygb
+          - bpd_ds
+      - name: sex
+        in: query
+        schema:
+          type: string
+          enum:
+          - male
+          - female
+      - name: childbearing_age
+        in: query
+        schema:
+          type: boolean
+      - name: pregnant
+        in: query
+        schema:
+          type: boolean
+      responses:
+        '200':
+          description: Guidance
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+  /weight-management/assess:
+    post:
+      tags:
+      - Weight Management
+      summary: 'Assess weight status: BMI class, disease risk, metabolic syndrome, treatment options'
+      description: 'Adults (19 and over): BMI class, Table 21.3 disease risk with waist circumference, waist-hip ratio, body-fat
+        obesity, metabolic syndrome (3 of 5), older-adult flags, unintentional weight-loss significance (the same Blackburn
+        rule as $assess-nutrition) and treatment-option eligibility flags. Children and adolescents (2 to under 19): BMI-for-age
+        percentile band (looked up in the WHO tables for ages 3-18 when weight and height are given) and the chapter''s age-based
+        goals. Eligibility flags are screening aids, not prescriptions.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sex:
+                  type: string
+                  enum:
+                  - male
+                  - female
+                age_years:
+                  type: number
+                weight_kg:
+                  type: number
+                height_cm:
+                  type: number
+                waist_cm:
+                  type: number
+                hip_cm:
+                  type: number
+                body_fat_percent:
+                  type: number
+                usual_weight_kg:
+                  type: number
+                period_days:
+                  type: number
+                comorbidity_count:
+                  type: number
+                systolic_mmhg:
+                  type: number
+                diastolic_mmhg:
+                  type: number
+                triglycerides_mg_dl:
+                  type: number
+                hdl_mg_dl:
+                  type: number
+                fasting_glucose_mg_dl:
+                  type: number
+                bmi_for_age_percentile:
+                  type: number
+                  description: Children
+                secondary_complications:
+                  type: boolean
+                  description: Children
+              required:
+              - sex
+              - age_years
+            example:
+              sex: female
+              age_years: 45
+              weight_kg: 88.45
+              height_cm: 162.56
+              waist_cm: 100
+              systolic_mmhg: 160
+              diastolic_mmhg: 90
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input, or a request the chapter does not support (below 800 kcal, age 65+ deficit, BMI under
+            25 for loss, 25 or more for gain, pregnancy)
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /weight-management/loss-plan:
+    post:
+      tags:
+      - Weight Management
+      summary: 'Weight-loss plan: intake, expected rate, goal weights'
+      description: 'Maintenance energy from POST /energy/requirements (or maintenance_kcal), minus a 500-1000 kcal deficit (or
+        a chosen intake). Returns the chapter''s rate band by BMI beside the static expectation (deficit x 7 / 3500), 5% and
+        10% goal weights with timelines, protein at 1.2 g/kg, a macro split checked against the AMDR, supplement flag (below
+        1200 kcal women, 1800 kcal men), maintenance energy at the goal weight and treatment options. Refuses: intake below
+        800 kcal (VLCD is medically supervised), BMI under 25, under 19 years, pregnancy or lactation. From age 65 only maintenance
+        is returned.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sex:
+                  type: string
+                  enum:
+                  - male
+                  - female
+                age_years:
+                  type: number
+                weight_kg:
+                  type: number
+                height_cm:
+                  type: number
+                pal_category:
+                  type: string
+                  enum:
+                  - sedentary
+                  - low_active
+                  - active
+                  - very_active
+                pal:
+                  type: number
+                activities:
+                  type: array
+                  items:
+                    type: object
+                activity_log:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      activity:
+                        type: string
+                      type:
+                        type: string
+                      minutes:
+                        type: number
+                      hours:
+                        type: number
+                activity_factor:
+                  type: string
+                  enum:
+                  - minimal
+                  - moderate
+                  - strenuous
+                maintenance_kcal:
+                  type: number
+                  description: Replaces the energy engine estimate (800-8000)
+                deficit_kcal:
+                  type: number
+                  description: 500-1000, default 500
+                intake_kcal:
+                  type: number
+                  description: Alternative to deficit_kcal, 800 or more
+                target_weight_kg:
+                  type: number
+                comorbidity_count:
+                  type: number
+              required:
+              - sex
+              - age_years
+              - weight_kg
+              - height_cm
+            example:
+              sex: female
+              age_years: 35
+              weight_kg: 81.8
+              height_cm: 165.1
+              pal_category: sedentary
+              target_weight_kg: 72
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input, or a request the chapter does not support (below 800 kcal, age 65+ deficit, BMI under
+            25 for loss, 25 or more for gain, pregnancy)
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /weight-management/gain-plan:
+    post:
+      tags:
+      - Weight Management
+      summary: Weight-gain plan for underweight adults
+      description: 'Maintenance energy (POST /energy/requirements, or maintenance_kcal) plus 500-1000 kcal a day (the chapter''s
+        example: 2400 maintains, 2900-3400 gains), protein 12-15% and fat about 30% of energy, expected rate (derived from the
+        3500 kcal/lb rule), the target weight range (BMI 18.5-24.9, or 23-24.9 in older adults) and the Table 21.12 foods for
+        the +500 and +1000 tiers. Below BMI 18.5 no IOM equation applies, so send activity_factor or maintenance_kcal. Refuses
+        BMI 25 or more and ages under 19.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sex:
+                  type: string
+                  enum:
+                  - male
+                  - female
+                age_years:
+                  type: number
+                weight_kg:
+                  type: number
+                height_cm:
+                  type: number
+                pal_category:
+                  type: string
+                  enum:
+                  - sedentary
+                  - low_active
+                  - active
+                  - very_active
+                pal:
+                  type: number
+                activities:
+                  type: array
+                  items:
+                    type: object
+                activity_log:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      activity:
+                        type: string
+                      type:
+                        type: string
+                      minutes:
+                        type: number
+                      hours:
+                        type: number
+                activity_factor:
+                  type: string
+                  enum:
+                  - minimal
+                  - moderate
+                  - strenuous
+                maintenance_kcal:
+                  type: number
+                  description: Replaces the energy engine estimate (800-8000)
+                surplus_kcal:
+                  type: number
+                  description: 500-1000; omit for the whole range
+                target_weight_kg:
+                  type: number
+              required:
+              - sex
+              - age_years
+              - weight_kg
+              - height_cm
+            example:
+              sex: male
+              age_years: 30
+              weight_kg: 50
+              height_cm: 175
+              maintenance_kcal: 2400
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input, or a request the chapter does not support (below 800 kcal, age 65+ deficit, BMI under
+            25 for loss, 25 or more for gain, pregnancy)
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /weight-management/progress:
+    post:
+      tags:
+      - Weight Management
+      summary: Track progress from weigh-ins
+      description: 'Stateless: send the weigh-ins. Returns total and recent rate, whether the rate is inside the guideline band,
+        5% and 10% milestones, a plateau flag (derived from the lowest guideline rate), target progress, a National Weight Control
+        Registry check for maintenance, and Blackburn significance when weight falls while the goal is not loss.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                goal:
+                  type: string
+                  enum:
+                  - loss
+                  - gain
+                  - maintain
+                weigh_ins:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                      weight_kg:
+                        type: number
+                height_cm:
+                  type: number
+                start_weight_kg:
+                  type: number
+                target_weight_kg:
+                  type: number
+                recent_days:
+                  type: number
+                  description: 14-90, default 28
+                weight_before_loss_kg:
+                  type: number
+                  description: Maintain goal
+              required:
+              - goal
+              - weigh_ins
+            example:
+              goal: loss
+              height_cm: 170
+              weigh_ins:
+              - date: '2026-01-01'
+                weight_kg: 100
+              - date: '2026-02-05'
+                weight_kg: 97.5
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input, or a request the chapter does not support (below 800 kcal, age 65+ deficit, BMI under
+            25 for loss, 25 or more for gain, pregnancy)
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /weight-management/diet-pattern:
+    post:
+      tags:
+      - Weight Management
+      summary: Classify a daily macronutrient pattern
+      description: 'From daily grams: energy, comparison with the AMDR (the chapter''s own ranges for children), pattern tags
+        (very low fat, low fat below AMDR, ketogenic under 50 g carbohydrate, low carbohydrate, high-protein low-carbohydrate),
+        nutrients at risk and metabolic effects from Table 21.6, alcohol share of energy and protein g/kg (1.2 g/kg during energy
+        restriction, 0.8-1.5 for a VLCD).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                carbohydrate_g:
+                  type: number
+                protein_g:
+                  type: number
+                fat_g:
+                  type: number
+                alcohol_g:
+                  type: number
+                weight_kg:
+                  type: number
+                age_years:
+                  type: number
+                energy_restriction:
+                  type: boolean
+                vlcd:
+                  type: boolean
+            example:
+              carbohydrate_g: 30
+              protein_g: 100
+              fat_g: 140
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input, or a request the chapter does not support (below 800 kcal, age 65+ deficit, BMI under
+            25 for loss, 25 or more for gain, pregnancy)
         '401':
           description: Missing or invalid API key
         '429':

@@ -1393,6 +1393,33 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/sports/energy \
 
 **Related routes reused, not repeated:** `POST /activity-energy/calculate` (named exercise), `POST /energy/food-energy` (grams to kcal), `GET /dri` (AMDR, water and electrolytes), `POST /meals/analyze` (what was eaten). Not implemented because the chapter gives no formula: the De Lorenzo equation, energy availability and RED-S thresholds.
 
+### Weight management (`/weight-management`) — `v1.47.0+`
+
+Calculators from Krause and Mahan's *Food and the Nutrition Care Process*, 16th ed., chapter 21 (Nutrition in Weight Management), for weight loss and weight gain. Any API key, 100 requests/minute, nothing stored, no SQL. Maintenance energy comes from `POST /energy/requirements` (not a second copy); BMI class and weight-loss significance reuse the `$assess-nutrition` code; AMDR comes from `GET /dri`. Every result returns its steps, warnings and sources. Where the chapter contradicts itself or looks misprinted, `GET /weight-management/reference?section=known_issues` lists it and the result says which figure it used.
+
+| Route | What it does |
+|---|---|
+| `GET /weight-management/reference` | Chapter tables; `?section=` one of `bmi_classes`, `disease_risk`, `body_fat`, `metabolic_syndrome`, `rates`, `energy_floors`, `macronutrients`, `diets`, `activity`, `treatment`, `unintentional_loss`, `energy_boosters`, `bariatric`, `known_issues` |
+| `GET /weight-management/bariatric` | `?procedure=lagb\|lsg\|rygb\|bpd_ds` (+ `sex`, `childbearing_age`, `pregnant`): diet stages (Table 21.9) and supplementation (Table 21.10). Misprinted values come back as printed with `suspect: true` |
+| `POST /weight-management/assess` | Adults: BMI class, Table 21.3 risk with waist, waist-hip ratio, body-fat obesity, metabolic syndrome (3 of 5), older-adult flags, unintentional-loss significance, treatment-option eligibility flags. Children 2 to under 19: BMI-for-age percentile band (WHO lookup for ages 3-18) and the age-based goal |
+| `POST /weight-management/loss-plan` | Maintenance minus a 500-1000 kcal deficit (or a chosen intake), rate band by BMI beside the static `deficit x 7 / 3500` expectation, 5% and 10% goal weights with timelines, protein 1.2 g/kg, macro split, supplement flag, maintenance at goal weight |
+| `POST /weight-management/gain-plan` | Maintenance plus 500-1000 kcal, protein 12-15% and fat about 30%, expected rate, target weight range, Table 21.12 foods |
+| `POST /weight-management/progress` | Stateless weigh-in tracking: rate vs guideline, 5%/10% milestones, plateau flag, target progress, National Weight Control Registry check |
+| `POST /weight-management/diet-pattern` | Daily grams to energy, AMDR comparison, pattern tags (very low fat, ketogenic, high-protein low-carbohydrate), nutrients at risk, protein g/kg |
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/weight-management/loss-plan \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"sex":"female","age_years":35,"weight_kg":81.8,"height_cm":165.1,"pal_category":"sedentary"}'
+# maintenance 2124 kcal (IOM overweight equation), intake 1624 kcal, guideline 0.5-1 lb/week
+```
+
+**What it refuses.** An intake below 800 kcal (the very-low-calorie diet range is medically supervised only), a loss plan for BMI under 25, under 19 years, or in pregnancy or breastfeeding, and a gain plan at BMI 25 or more. From age 65 a loss request returns the maintenance estimate and the chapter's advice, with no deficit.
+
+**Chapter examples.** The gain example reproduces exactly (2400 kcal maintains, 2900-3400 gains). The loss example (about 1400 kcal at BMI 30) does not: the IOM equation gives 2124 kcal maintenance, so about 1624 after the deficit. See `known_issues`.
+
+**Related routes reused:** `POST /energy/requirements`, `POST /energy/food-energy`, `GET /dri`, `GET /bmi-for-age`, `GET /growth/assess`. Athlete weight work (body-fat based) stays in `POST /sports/body-composition`.
+
 ### Recipes
 
 **`POST /recipes/calculate`** *(API key, rate-limited)* — give it a list of ingredients, get back the recipe's total and per-serving nutrition. Builds directly on Serving-Size Intelligence above.

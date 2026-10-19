@@ -3,7 +3,14 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.46.0
+ * Version: 1.47.0
+ * v1.47.0 changes: weight management calculators from Krause 16th ed. chapter 21 (any API key, no SQL). New resource /weight-management:
+ *   GET /weight-management/reference?section=, GET /weight-management/bariatric?procedure=, POST /weight-management/assess (adult BMI class,
+ *   Table 21.3 risk with waist, waist-hip ratio, body fat, metabolic syndrome, treatment-option flags, unintentional-loss significance;
+ *   children by BMI-for-age percentile), /loss-plan (maintenance from /energy/requirements minus 500-1000 kcal, rate bands, 5%/10% goals,
+ *   protein 1.2 g/kg; refuses below 800 kcal, age 65+, BMI under 25, pregnancy), /gain-plan (maintenance plus 500-1000 kcal, Table 21.12
+ *   boosters), /progress (rate, milestones, plateau, maintenance), /diet-pattern (AMDR, very-low-fat, ketogenic, nutrient gaps).
+ *   src/weightManagement.js. Reuses the /energy engine, fhirNcp BMI class and Blackburn significance (now exported), foodEnergy, dri_data.
  * v1.46.0 changes: sports nutrition calculators from Krause 16th ed. chapter 23 (any API key, no SQL). New resource /sports:
  *   GET /sports/reference, POST /sports/energy (Cunningham REE, Box 23.2 activity factors, METs, TEF; Appendix 10 via activity_log),
  *   /sports/macros (g/kg by training profile, AMDR check), /sports/fuel-timing (pre, during, after), /sports/hydration (body-mass loss,
@@ -657,6 +664,7 @@ import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
+import { computeWeightAssessment, computeLossPlan, computeGainPlan, computeWeightProgress, computeDietPattern, computeBariatricGuidance, weightReferenceCatalog } from "./weightManagement.js";
 import { computeSportsEnergy, computeSportsMacros, computeFuelTiming, computeHydration, computeBodyComposition, computeSupplementDoses, computeSportsPlan, sportsReferenceCatalog } from "./sportsNutrition.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
 import { computeActivityEnergy, listActivities, parseWeight } from "./activityEnergy.js";
@@ -714,7 +722,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.46.0";
+const CNR_VERSION = "1.47.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1068,7 +1076,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1343,6 +1351,12 @@ function routePolicy(resource, method, param, action) {
   // Energy requirements engine (src/energyEngine.js): pure arithmetic on the request body, no database,
   // no external calls. Any valid key. POST is a calculation, not a write.
   if (resource === "energy" && (((param === "requirements" || param === "food-energy") && method === "POST") || (param === "factors" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Weight management calculators (src/weightManagement.js): arithmetic on the request body and static chapter tables. loss-plan and
+  // gain-plan call the energy engine; activity_log (loss-plan, gain-plan) and a child's BMI percentile (assess) read existing tables.
+  // No writes, so POST is a calculation. Any valid key.
+  if (resource === "weight-management" && ((["assess", "loss-plan", "gain-plan", "progress", "diet-pattern"].includes(param) && method === "POST") || (["reference", "bariatric"].includes(param) && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Sports nutrition calculators (src/sportsNutrition.js): arithmetic on the request body. Only activity_log reads one reference
@@ -7605,6 +7619,13 @@ function handleRoot(env) {
         "POST   /energy/food-energy     (API key) → body {protein_g, fat_g, carbohydrate_g, alcohol_g} or {weight_g, protein_pct, fat_pct, carbohydrate_pct} or {alcohol: {volume_oz, proof|abv_percent}} → kcal, kJ, per-nutrient breakdown",
         "GET    /activity-energy        (API key) → ?q=, ?activity=, ?weight_kg= or ?weight_lb= → activity list from the database; with a weight, kcal per hour at that weight",
         "POST   /activity-energy/calculate (API key) → body {weight_kg|weight_lb, activities: [{activity, type?, minutes|hours}]} → kcal per activity and total (Krause 16th ed. Appendix 10)",
+        "GET    /weight-management/reference   (API key) → chapter 21 tables: BMI classes, Table 21.3 risk, metabolic syndrome, rate bands, energy floors, AMDR, diet adequacy, activity targets, Table 21.11/21.12, known issues. Optional ?section=",
+        "GET    /weight-management/bariatric   (API key) ?procedure=lagb|lsg|rygb|bpd_ds [&sex=&childbearing_age=true&pregnant=true] → diet stages (Table 21.9) and vitamin/mineral supplementation (Table 21.10, misprints flagged)",
+        "POST   /weight-management/assess      (API key) → adult {sex, age_years, weight_kg, height_cm, waist_cm?, hip_cm?, body_fat_percent?, usual_weight_kg+period_days?, comorbidity_count?, systolic_mmhg?, diastolic_mmhg?, triglycerides_mg_dl?, hdl_mg_dl?, fasting_glucose_mg_dl?} or child (2-18 y) {sex, age_years, weight_kg, height_cm | bmi_for_age_percentile, secondary_complications?} → BMI class, risk, metabolic syndrome, treatment options or age-based goal",
+        "POST   /weight-management/loss-plan   (API key) → {sex, age_years, weight_kg, height_cm, pal_category|pal|activities|activity_log|activity_factor | maintenance_kcal, deficit_kcal? (500-1000) | intake_kcal?, target_weight_kg?, comorbidity_count?} → intake, rate, 5%/10% goals, protein 1.2 g/kg, macros, maintenance at goal; refuses under 800 kcal, age 65+, BMI under 25, pregnancy",
+        "POST   /weight-management/gain-plan   (API key) → {sex, age_years, weight_kg, height_cm, activity inputs | maintenance_kcal, surplus_kcal? (500-1000), target_weight_kg?} → maintenance + 500-1000 kcal, protein 12-15% and fat 30%, rate, target range, Table 21.12 boosters; refuses BMI 25 or more",
+        "POST   /weight-management/progress    (API key) → {goal: loss|gain|maintain, weigh_ins: [{date, weight_kg}], height_cm?, start_weight_kg?, target_weight_kg?, recent_days?, weight_before_loss_kg?} → % change, rate vs guideline, 5%/10% milestones, plateau, maintenance check",
+        "POST   /weight-management/diet-pattern (API key) → {carbohydrate_g, protein_g, fat_g, alcohol_g?, weight_kg?, age_years?, energy_restriction?, vlcd?} → energy, AMDR comparison, pattern tags, nutrients at risk, protein g/kg",
         "GET    /sports/reference        (API key) → chapter 23 tables: activity factors, kcal/kg tiers, macro targets, fuel timing, hydration, body-fat standards, known chapter issues",
         "POST   /sports/energy           (API key) → body {weight_kg, lean_body_mass_kg | body_fat_percent, activity_level (sedentary|lightly_active|moderately_active|very_active|extra_active) | activity_multiplier, exercise?: [{mets, minutes}], activity_log?: [{activity, type?, minutes|hours}], tef?, sex?, age_years?, height_cm?} → Cunningham REE, activity, TEF, total kcal, kcal/kg check",
         "POST   /sports/macros           (API key) → body {weight_kg, profile: general_fitness|general_training|endurance|elite_endurance|resistance_hypertrophy, energy_kcal?, age_years?, intake?: {carbohydrate_g, protein_g, fat_g}} → g and g/kg ranges, protein per meal, AMDR and intake checks",
@@ -9341,6 +9362,37 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         const result = computeFoodEnergy(body);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: "Food energy" });
+      }
+      return notFound();
+    }
+
+    case "weight-management": {
+      if (param === "reference" || param === "bariatric") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const q = Object.fromEntries(url.searchParams);
+        const result = param === "reference" ? weightReferenceCatalog(q.section) : computeBariatricGuidance(q);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: param === "reference" ? "Weight management reference tables" : "Bariatric surgery diet stages and supplementation" });
+      }
+      const weightCalc = { assess: computeWeightAssessment, "loss-plan": computeLossPlan, "gain-plan": computeGainPlan, progress: computeWeightProgress, "diet-pattern": computeDietPattern };
+      if (param && weightCalc[param]) {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        let input = body; let activityLog = null;
+        if (param === "loss-plan" || param === "gain-plan") {
+          // activity_log: look the activities up (Krause Appendix 10) and turn them into PAL entries for the energy engine, as /energy does.
+          const withLog = await enrichActivityLog(body, db);
+          if (withLog.error) return err(withLog.error, withLog.status || 400);
+          input = withLog.body; activityLog = withLog.activityLog;
+        } else if (param === "assess") {
+          // Children 3-18 y with weight and height but no percentile: look it up in the WHO tables, as /energy does.
+          input = await enrichBmiPercentile(body, db);
+        }
+        const result = weightCalc[param](input);
+        if (!result.ok) return err(input && input.bmi_percentile_lookup_error && !input.bmi_for_age_percentile ? `${result.error} (lookup: ${input.bmi_percentile_lookup_error})` : result.error);
+        if (activityLog) result.data.activity_log = activityLog;
+        return success(result.data, { message: `Weight management: ${param}` });
       }
       return notFound();
     }
