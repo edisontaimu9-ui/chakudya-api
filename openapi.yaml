@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.47.0
+  version: 1.48.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -65,6 +65,7 @@ tags:
 - name: Energy
 - name: Sports Nutrition
 - name: Weight Management
+- name: Pregnancy
 - name: Fenton Preterm
 - name: FHIR
 - name: Packaged
@@ -8215,6 +8216,332 @@ paths:
         '400':
           description: Invalid input, or a request the chapter does not support (below 800 kcal, age 65+ deficit, BMI under
             25 for loss, 25 or more for gain, pregnancy)
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /pregnancy/reference:
+    get:
+      tags:
+      - Pregnancy
+      summary: Pregnancy and lactation reference tables
+      description: 'Krause chapter 14 tables: IOM weight gain (Table 14.11), energy add-ons, protein, twins (Table 14.12), lab
+        ranges (14.4), anemia cut-points with altitude and smoking (14.5), GDM glucose criteria (14.14), preeclampsia criteria
+        (Box 14.4), adolescent risk factors (Box 14.3), lactation, and the places the chapter contradicts itself. Optional section
+        filter.'
+      parameters:
+      - name: section
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - weight_gain
+          - energy
+          - protein
+          - twins
+          - lab_ranges
+          - anemia
+          - gdm
+          - preeclampsia
+          - nutrients
+          - adolescent
+          - lactation
+          - known_issues
+      responses:
+        '200':
+          description: Reference
+        '400':
+          description: Unknown section
+        '401':
+          description: Missing or invalid API key
+  /pregnancy/gestational-age:
+    post:
+      tags:
+      - Pregnancy
+      summary: Gestational age, trimester and due date
+      description: 'From the last menstrual period, a due date, or weeks (and days) as at a reference date (default today, UTC).
+        Returns weeks and days, trimester, due date and chapter-anchored milestones (protein phase, GDM screening window 24-28
+        weeks, preeclampsia criteria after 20 weeks). The chapter gives no dating rules: 280 days from the LMP, and trimesters
+        at under 14, 14 to under 28, and 28 weeks or more, are conventions and are stated as such.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lmp:
+                  type: string
+                  format: date
+                  description: Last menstrual period
+                edd:
+                  type: string
+                  format: date
+                  description: Due date
+                ga_weeks:
+                  type: number
+                  description: Whole weeks, as at reference_date
+                ga_days:
+                  type: number
+                  description: 0-6
+                reference_date:
+                  type: string
+                  format: date
+                  description: 'Default: today (UTC)'
+            example:
+              lmp: '2026-04-01'
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /pregnancy/weight-gain:
+    post:
+      tags:
+      - Pregnancy
+      summary: Pre-pregnancy BMI category and gestational weight gain
+      description: IOM totals and weekly rates by pre-pregnancy BMI (Table 14.11, Appendix 3), first-trimester allowance (1-3
+        kg, 0.5-2 kg if obese), twin totals (provisional; none for underweight), notes for triplets and quadruplets. With current_weight_kg
+        and a gestational age, returns below/within/above against an approximate expected range (a straight line from the first-trimester
+        allowance at 13 weeks to the printed total at 40 weeks). weigh_ins gives a series and the recent weekly rate. Pregnant
+        adolescents get the Box 14.3 risk factors.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pre_pregnancy_weight_kg:
+                  type: number
+                height_cm:
+                  type: number
+                prepregnancy_bmi:
+                  type: number
+                  description: Instead of weight and height
+                multiples:
+                  type: number
+                  description: 1-4, default 1
+                age_years:
+                  type: number
+                current_weight_kg:
+                  type: number
+                lmp:
+                  type: string
+                  format: date
+                  description: Last menstrual period
+                edd:
+                  type: string
+                  format: date
+                  description: Due date
+                ga_weeks:
+                  type: number
+                  description: Whole weeks, as at reference_date
+                ga_days:
+                  type: number
+                  description: 0-6
+                reference_date:
+                  type: string
+                  format: date
+                  description: 'Default: today (UTC)'
+                weigh_ins:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                      weight_kg:
+                        type: number
+            example:
+              pre_pregnancy_weight_kg: 60
+              height_cm: 165
+              current_weight_kg: 66
+              lmp: '2026-04-01'
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /pregnancy/plan:
+    post:
+      tags:
+      - Pregnancy
+      summary: Pregnancy or lactation nutrition plan
+      description: 'Pregnant: works the trimester out from gestational age and takes energy from POST /energy/requirements (add-ons
+        0, +340, +452 kcal), protein at 0.8 g/kg before 20 weeks and 1.1 g/kg after (on current weight), DRI pregnancy targets
+        with percent of the non-pregnant value (GET /dri), nutrient notes, the weight-gain goal, and for twins the Table 14.12
+        targets. Lactating: +330 kcal (0-6 months) or +400 (7-12), the 1800 kcal minimum, +25 g protein and the weight-loss
+        rule. No deficit advice.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                  - pregnant
+                  - lactating
+                age_years:
+                  type: number
+                  description: 14-50
+                pre_pregnancy_weight_kg:
+                  type: number
+                height_cm:
+                  type: number
+                pal_category:
+                  type: string
+                  enum:
+                  - sedentary
+                  - low_active
+                  - active
+                  - very_active
+                pal:
+                  type: number
+                activities:
+                  type: array
+                  items:
+                    type: object
+                activity_factor:
+                  type: string
+                  enum:
+                  - minimal
+                  - moderate
+                  - strenuous
+                maintenance_kcal:
+                  type: number
+                  description: Pre-pregnancy requirement; replaces the engine estimate
+                lmp:
+                  type: string
+                  format: date
+                  description: Last menstrual period
+                edd:
+                  type: string
+                  format: date
+                  description: Due date
+                ga_weeks:
+                  type: number
+                  description: Whole weeks, as at reference_date
+                ga_days:
+                  type: number
+                  description: 0-6
+                reference_date:
+                  type: string
+                  format: date
+                  description: 'Default: today (UTC)'
+                current_weight_kg:
+                  type: number
+                multiples:
+                  type: number
+                  description: 1-4
+                months_postpartum:
+                  type: number
+                  description: 'Lactating: 0-24'
+              required:
+              - status
+              - age_years
+              - pre_pregnancy_weight_kg
+              - height_cm
+            example:
+              status: pregnant
+              age_years: 28
+              pre_pregnancy_weight_kg: 60
+              height_cm: 162
+              pal_category: low_active
+              lmp: '2026-04-01'
+              current_weight_kg: 66
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /pregnancy/assess:
+    post:
+      tags:
+      - Pregnancy
+      summary: Pregnancy lab and clinical screens
+      description: 'Sections, each independent (a bad value only errors its own): anemia from hemoglobin or hematocrit by trimester
+        with altitude and smoking adjustments (Table 14.5); Table 14.4 lab ranges by trimester; GDM glucose tests (50 g screen
+        at 130/135/140, 100 g Carpenter-Coustan and NDDG, 75 g IADPSG and WHO, random glucose); preeclampsia blood pressure,
+        proteinuria and organ-feature criteria (Box 14.4). Screening aids, not diagnoses.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lmp:
+                  type: string
+                  format: date
+                  description: Last menstrual period
+                edd:
+                  type: string
+                  format: date
+                  description: Due date
+                ga_weeks:
+                  type: number
+                  description: Whole weeks, as at reference_date
+                ga_days:
+                  type: number
+                  description: 0-6
+                reference_date:
+                  type: string
+                  format: date
+                  description: 'Default: today (UTC)'
+                trimester:
+                  type: number
+                  description: 1-3, instead of a gestational age
+                hemoglobin_g_dl:
+                  type: number
+                hematocrit_percent:
+                  type: number
+                altitude_m:
+                  type: number
+                smoker:
+                  type: boolean
+                cigarettes_per_day:
+                  type: number
+                labs:
+                  type: object
+                  description: 'for example { ferritin_ng_ml: 9, albumin_g_dl: 3.0 }'
+                glucose:
+                  type: object
+                  description: '{ test: screen_50g | ogtt_100g | ogtt_75g | random, fasting_mg_dl, one_hour_mg_dl, two_hour_mg_dl,
+                    three_hour_mg_dl, random_mg_dl, symptoms }'
+                blood_pressure:
+                  type: object
+                  description: '{ systolic_mmhg, diastolic_mmhg, bp_confirmed, urine_protein_24h_mg, protein_creatinine_ratio,
+                    dipstick_plus, previously_normal, pulmonary_edema, cerebral_or_visual_symptoms, labs: { platelets_per_ul,
+                    creatinine_mg_dl } }'
+            example:
+              lmp: '2026-04-01'
+              hemoglobin_g_dl: 10.4
+              glucose:
+                test: screen_50g
+                one_hour_mg_dl: 142
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
         '401':
           description: Missing or invalid API key
         '429':

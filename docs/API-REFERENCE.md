@@ -1420,6 +1420,31 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/weight-management/los
 
 **Related routes reused:** `POST /energy/requirements`, `POST /energy/food-energy`, `GET /dri`, `GET /bmi-for-age`, `GET /growth/assess`. Athlete weight work (body-fat based) stays in `POST /sports/body-composition`.
 
+### Pregnancy and lactation (`/pregnancy`) — `v1.48.0+`
+
+Calculators from Krause and Mahan's *Food and the Nutrition Care Process*, 16th ed., chapter 14 (Nutrition in Pregnancy and Lactation) and Appendix 3. Any API key, 100 requests/minute, nothing stored, no SQL. Energy comes from `POST /energy/requirements` (its pregnancy and lactation add-ons are the chapter's figures, so there is no second copy), and nutrient targets from the DRI tables behind `GET /dri`. Every result returns its steps, warnings and sources. Where the chapter contradicts itself or leaves a gap, `GET /pregnancy/reference?section=known_issues` lists it and the result says which figure it used.
+
+| Route | What it does |
+|---|---|
+| `GET /pregnancy/reference` | Chapter tables; `?section=` one of `weight_gain`, `energy`, `protein`, `twins`, `lab_ranges`, `anemia`, `gdm`, `preeclampsia`, `nutrients`, `adolescent`, `lactation`, `known_issues` |
+| `POST /pregnancy/gestational-age` | From `lmp`, `edd` or `ga_weeks` (+`ga_days`) at `reference_date` (default today, UTC): weeks and days, trimester, due date, milestones |
+| `POST /pregnancy/weight-gain` | Pre-pregnancy BMI category (18.5 / 25 / 30), IOM totals and weekly rates, first-trimester allowance, twins, status at a gestational age, weigh-in series and recent rate |
+| `POST /pregnancy/plan` | `status: pregnant`: energy (trimester worked out from gestational age), protein 0.8 / 1.1 g/kg, DRI targets, twin table, weight-gain goal. `status: lactating`: +330 / +400 kcal, 1800 kcal floor, protein, weight-loss rule |
+| `POST /pregnancy/assess` | Independent sections: anemia by trimester with altitude and smoking, Table 14.4 labs, GDM glucose tests, preeclampsia criteria |
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/pregnancy/plan \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"status":"pregnant","age_years":28,"pre_pregnancy_weight_kg":60,"height_cm":162,"pal_category":"low_active","lmp":"2026-04-01","current_weight_kg":66}'
+# trimester 3: energy 2559 kcal (2107 + 452), protein 73 g (1.1 g/kg), iron 27 mg, folate 600 µg DFE
+```
+
+**Not from the chapter (stated in every result that uses them).** The chapter gives no dating rules: pregnancy is counted as 280 days from the last menstrual period, trimester 1 is under 14 weeks, trimester 2 is 14 to under 28 weeks, trimester 3 is 28 weeks and over, and the "second half" for protein starts at 20 weeks. The expected gain at a given week is an approximate straight line from the first-trimester allowance at 13 weeks to the printed total at 40 weeks, because the chapter prints no weekly curve.
+
+**What it will not do.** It gives no weight-loss or deficit advice in pregnancy, no twin gain range for underweight women (the chapter has none), and no diagnosis: the assessment sections are screening aids.
+
+**Related routes reused:** `POST /energy/requirements`, `GET /dri`, `GET /dri/compare`, `POST /fhir/Observation/$assess-nutrition` (pre-pregnancy BMI and MUAC), `POST /meals/analyze`.
+
 ### Recipes
 
 **`POST /recipes/calculate`** *(API key, rate-limited)* — give it a list of ingredients, get back the recipe's total and per-serving nutrition. Builds directly on Serving-Size Intelligence above.

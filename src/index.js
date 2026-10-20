@@ -3,7 +3,13 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.47.0
+ * Version: 1.48.0
+ * v1.48.0 changes: pregnancy and lactation calculators from Krause 16th ed. chapter 14 and Appendix 3 (any API key, no SQL). New resource /pregnancy:
+ *   GET /pregnancy/reference?section=, POST /pregnancy/gestational-age (LMP | due date | weeks -> weeks+days, trimester, EDD, milestones),
+ *   /weight-gain (pre-pregnancy BMI category, IOM totals and weekly rates, twins, status at a gestational age, weigh-in series),
+ *   /plan (pregnant: energy from /energy/requirements with the trimester worked out, protein 0.8/1.1 g/kg, DRI pregnancy targets, twin table;
+ *   lactating: add-on, 1800 kcal floor, protein, weight-loss rule), /assess (anemia by trimester with altitude/smoking, Table 14.4 labs,
+ *   GDM glucose tests, preeclampsia criteria). src/pregnancy.js. Reuses the /energy engine and the DRI tables; no engine change.
  * v1.47.0 changes: weight management calculators from Krause 16th ed. chapter 21 (any API key, no SQL). New resource /weight-management:
  *   GET /weight-management/reference?section=, GET /weight-management/bariatric?procedure=, POST /weight-management/assess (adult BMI class,
  *   Table 21.3 risk with waist, waist-hip ratio, body fat, metabolic syndrome, treatment-option flags, unintentional-loss significance;
@@ -664,6 +670,7 @@ import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
+import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
 import { computeWeightAssessment, computeLossPlan, computeGainPlan, computeWeightProgress, computeDietPattern, computeBariatricGuidance, weightReferenceCatalog } from "./weightManagement.js";
 import { computeSportsEnergy, computeSportsMacros, computeFuelTiming, computeHydration, computeBodyComposition, computeSupplementDoses, computeSportsPlan, sportsReferenceCatalog } from "./sportsNutrition.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
@@ -722,7 +729,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.47.0";
+const CNR_VERSION = "1.48.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1076,7 +1083,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management", "pregnancy"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1351,6 +1358,11 @@ function routePolicy(resource, method, param, action) {
   // Energy requirements engine (src/energyEngine.js): pure arithmetic on the request body, no database,
   // no external calls. Any valid key. POST is a calculation, not a write.
   if (resource === "energy" && (((param === "requirements" || param === "food-energy") && method === "POST") || (param === "factors" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Pregnancy and lactation calculators (src/pregnancy.js): arithmetic on the request body, static chapter tables, the energy engine and the
+  // static DRI tables. No database reads or writes, so POST is a calculation. Any valid key.
+  if (resource === "pregnancy" && ((["gestational-age", "weight-gain", "plan", "assess"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Weight management calculators (src/weightManagement.js): arithmetic on the request body and static chapter tables. loss-plan and
@@ -7619,6 +7631,11 @@ function handleRoot(env) {
         "POST   /energy/food-energy     (API key) → body {protein_g, fat_g, carbohydrate_g, alcohol_g} or {weight_g, protein_pct, fat_pct, carbohydrate_pct} or {alcohol: {volume_oz, proof|abv_percent}} → kcal, kJ, per-nutrient breakdown",
         "GET    /activity-energy        (API key) → ?q=, ?activity=, ?weight_kg= or ?weight_lb= → activity list from the database; with a weight, kcal per hour at that weight",
         "POST   /activity-energy/calculate (API key) → body {weight_kg|weight_lb, activities: [{activity, type?, minutes|hours}]} → kcal per activity and total (Krause 16th ed. Appendix 10)",
+        "GET    /pregnancy/reference     (API key) → chapter 14 tables: weight gain (Table 14.11), energy add-ons, protein, twins (14.12), lab ranges (14.4), anemia (14.5), GDM (14.14), preeclampsia (Box 14.4), adolescent risks, lactation, known issues. Optional ?section=",
+        "POST   /pregnancy/gestational-age (API key) → body one of {lmp | edd | ga_weeks (+ga_days)} [+reference_date, default today UTC] → weeks+days, trimester, EDD, milestones (dating conventions are not from the chapter)",
+        "POST   /pregnancy/weight-gain   (API key) → body {pre_pregnancy_weight_kg + height_cm | prepregnancy_bmi, multiples?, age_years?, current_weight_kg + lmp|edd|ga_weeks?, weigh_ins?: [{date, weight_kg}] + lmp|edd} → category, IOM total and weekly rate, twins, status at the gestational age",
+        "POST   /pregnancy/plan          (API key) → body {status: pregnant|lactating, age_years (14-50), pre_pregnancy_weight_kg, height_cm, pal_category|pal|activities|activity_factor | maintenance_kcal, pregnant: lmp|edd|ga_weeks, current_weight_kg?, multiples?; lactating: months_postpartum} → energy from /energy/requirements, protein, DRI targets, twin table, lactation rules",
+        "POST   /pregnancy/assess        (API key) → body {lmp|edd|ga_weeks|trimester, hemoglobin_g_dl?, hematocrit_percent?, altitude_m?, smoker?, labs?: {...}, glucose?: {test, ...}, blood_pressure?: {systolic_mmhg, diastolic_mmhg, ...}} → anemia, Table 14.4 labs, GDM test, preeclampsia criteria (each section independent)",
         "GET    /weight-management/reference   (API key) → chapter 21 tables: BMI classes, Table 21.3 risk, metabolic syndrome, rate bands, energy floors, AMDR, diet adequacy, activity targets, Table 21.11/21.12, known issues. Optional ?section=",
         "GET    /weight-management/bariatric   (API key) ?procedure=lagb|lsg|rygb|bpd_ds [&sex=&childbearing_age=true&pregnant=true] → diet stages (Table 21.9) and vitamin/mineral supplementation (Table 21.10, misprints flagged)",
         "POST   /weight-management/assess      (API key) → adult {sex, age_years, weight_kg, height_cm, waist_cm?, hip_cm?, body_fat_percent?, usual_weight_kg+period_days?, comorbidity_count?, systolic_mmhg?, diastolic_mmhg?, triglycerides_mg_dl?, hdl_mg_dl?, fasting_glucose_mg_dl?} or child (2-18 y) {sex, age_years, weight_kg, height_cm | bmi_for_age_percentile, secondary_complications?} → BMI class, risk, metabolic syndrome, treatment options or age-based goal",
@@ -9362,6 +9379,26 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         const result = computeFoodEnergy(body);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: "Food energy" });
+      }
+      return notFound();
+    }
+
+    case "pregnancy": {
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const result = pregnancyReferenceCatalog(url.searchParams.get("section") ?? undefined);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Pregnancy and lactation reference tables" });
+      }
+      const pregCalc = { "gestational-age": computeGestationalAge, "weight-gain": computePregnancyWeightGain, plan: computePregnancyPlan, assess: computePregnancyAssessment };
+      if (param && pregCalc[param]) {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        // Gestational age is counted to reference_date, which defaults to today's date on the server (UTC).
+        const result = pregCalc[param](body, { today: new Date().toISOString().slice(0, 10) });
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: `Pregnancy: ${param}` });
       }
       return notFound();
     }
