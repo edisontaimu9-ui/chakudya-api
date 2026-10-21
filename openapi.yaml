@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.48.0
+  version: 1.49.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -66,6 +66,7 @@ tags:
 - name: Sports Nutrition
 - name: Weight Management
 - name: Pregnancy
+- name: Renal Nutrition
 - name: Fenton Preterm
 - name: FHIR
 - name: Packaged
@@ -8547,6 +8548,298 @@ paths:
         '429':
           description: Rate limited
 
+  /renal-nutrition/reference:
+    get:
+      tags:
+      - Renal Nutrition
+      summary: Renal nutrition reference tables
+      description: 'KDOQI 2020 statements with grades, the older Krause Table 35.9 as legacy figures, Table 35.10 blood-value ranges, adequacy targets, the body-weight adjustment rules, monitoring, CKD stage categories, Box 35.3 and the places the two sources disagree. Optional section filter.'
+      parameters:
+      - name: section
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - kdoqi_2020
+          - legacy_krause
+          - labs
+          - adequacy
+          - weight_adjustment
+          - monitoring
+          - ckd_stages
+          - emergency_diet
+          - known_issues
+      responses:
+        '200':
+          description: Result
+        '400':
+          description: Unknown section
+        '401':
+          description: Missing or invalid API key
+  /renal-nutrition/emergency-diet:
+    get:
+      tags:
+      - Renal Nutrition
+      summary: Emergency dialysis diet plan
+      description: 'Box 35.3: for 5 days or less when dialysis is not possible. Choices per day by food group, the emergency kit and storage tips. The foods are US products and units; the source gives no local equivalents.'
+      responses:
+        '200':
+          description: Result
+        '401':
+          description: Missing or invalid API key
+  /renal-nutrition/stage:
+    post:
+      tags:
+      - Renal Nutrition
+      summary: eGFR and CKD stage
+      description: 'CKD-EPI 2021 creatinine equation (race-free) and KDIGO G categories, with an optional A category from the urine albumin-creatinine ratio. Returns the status and ckd_stage to send to /renal-nutrition/requirements. These equations are not in the KDOQI or Krause documents. Adults only; a single value is a screen, not a diagnosis.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sex:
+                  type: string
+                  description: 'male or female'
+                age_years:
+                  type: number
+                  description: '18 or more'
+                creatinine_mg_dl:
+                  type: number
+                  description: 'Serum creatinine, mg/dL'
+                creatinine_umol_l:
+                  type: number
+                  description: 'Serum creatinine, umol/L (used if mg/dL is not sent)'
+                acr_mg_g:
+                  type: number
+                  description: 'Urine albumin-creatinine ratio, mg/g'
+            example:
+              sex: male
+              age_years: 67
+              creatinine_mg_dl: 3.3
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /renal-nutrition/requirements:
+    post:
+      tags:
+      - Renal Nutrition
+      summary: Nutrient targets by CKD status
+      description: 'KDOQI 2020 targets for metabolically stable adults: protein (0.55-0.60 g/kg in CKD 3-5, 0.6-0.8 with diabetes, 1.0-1.2 on dialysis), energy 25-35 kcal/kg, sodium under 2.3 g/day, calcium 800-1000 mg in CKD 3-4, bicarbonate 24-26 mmol/L, and the potassium and phosphorus rules (adjust to serum, no numeric intake target). Amounts per day use the actual weight when it is 95-115% of Hamwi ideal weight, otherwise the adjusted weight. The older Krause Table 35.9 figures come back separately as legacy_krause. Gaps in the 2020 guideline are returned as null with the reason.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  description: 'ckd_1_2, ckd_3_5, hd, pd or transplant'
+                weight_kg:
+                  type: number
+                  description: 'Actual weight'
+                edema_free_weight_kg:
+                  type: number
+                  description: 'Used instead of weight_kg when sent'
+                height_cm:
+                  type: number
+                  description: 'With sex, gives ideal body weight (Hamwi)'
+                sex:
+                  type: string
+                  description: 'male or female'
+                frame:
+                  type: string
+                  description: 'small, medium or large (Hamwi -10% or +10%)'
+                diabetes:
+                  type: boolean
+                  description: 'Changes the CKD 3-5 and dialysis protein statement'
+                ckd_stage:
+                  type: number
+                  description: '3-5; the calcium statement covers stages 3-4 only'
+                weeks_post_transplant:
+                  type: number
+                  description: 'Picks the legacy Krause transplant row'
+                weight_basis:
+                  type: string
+                  description: 'auto (default), actual, ibw or adjusted'
+                metabolically_stable:
+                  type: boolean
+                  description: 'Default true; false adds a warning'
+            example:
+              status: hd
+              weight_kg: 60
+              height_cm: 165
+              sex: female
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /renal-nutrition/labs:
+    post:
+      tags:
+      - Renal Nutrition
+      summary: Blood values with diet actions
+      description: 'Krause Table 35.10: each value is flagged low, in range or high against the dialysis column (default) or the normal-kidney column, with the diet action. Accepts mg/dL, mEq/L and SI units (umol/L, mmol/L, g/L). Also the calcium x phosphorus product (limit 59). Where KDOQI 2020 differs (phosphate, bicarbonate) the row carries kdoqi_2020_target. Albumin, prealbumin and nPCR are not read alone.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labs:
+                  type: object
+                  description: 'Keys such as sodium_meq_l, potassium_meq_l, bun_mg_dl or urea_mmol_l, creatinine_mg_dl or creatinine_umol_l, albumin_g_dl or albumin_g_l, calcium_mg_dl or calcium_mmol_l, phosphorus_mg_dl or phosphate_mmol_l, pth_pg_ml, aluminum_mcg_l, magnesium_mg_dl, ferritin_mcg_l, co2_meq_l, glucose_mg_dl or glucose_mmol_l'
+                context:
+                  type: string
+                  description: 'dialysis (default) or general'
+                diabetes:
+                  type: boolean
+                  description: 'Changes the dialysis glucose limit'
+                on_epo:
+                  type: boolean
+                  description: 'Changes the dialysis ferritin range (default true)'
+                sex:
+                  type: string
+                  description: 'Used for the female ferritin range in the general context'
+            example:
+              labs: {potassium_meq_l: 6.1, phosphorus_mg_dl: 6.7, calcium_mg_dl: 9.0}
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /renal-nutrition/adequacy:
+    post:
+      tags:
+      - Renal Nutrition
+      summary: Dialysis adequacy
+      description: 'URR from pre and post BUN or urea (65% or more), Kt/V and eKt/V against 1.2, weekly Kt/V of 2 on peritoneal dialysis, nPNA (nPCR) against 0.8-1.4 g/kg/day, and interdialytic weight gain against 4% of dry weight. With session_hours, uf_litres and post_weight_kg it also computes the Daugirdas second-generation spKt/V and rate-adjusted eKt/V, which are not in the supplied sources.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                modality:
+                  type: string
+                  description: 'hd or pd'
+                pre_bun_mg_dl:
+                  type: number
+                  description: 'Pre-dialysis BUN'
+                post_bun_mg_dl:
+                  type: number
+                  description: 'Post-dialysis BUN'
+                pre_urea_mmol_l:
+                  type: number
+                  description: 'Pre-dialysis urea, used if BUN is not sent'
+                post_urea_mmol_l:
+                  type: number
+                  description: 'Post-dialysis urea'
+                session_hours:
+                  type: number
+                  description: 'Session length'
+                uf_litres:
+                  type: number
+                  description: 'Ultrafiltration volume'
+                post_weight_kg:
+                  type: number
+                  description: 'Post-dialysis weight'
+                kt_v:
+                  type: number
+                  description: 'Reported Kt/V (hemodialysis)'
+                ekt_v:
+                  type: number
+                  description: 'Reported eKt/V'
+                weekly_kt_v:
+                  type: number
+                  description: 'Peritoneal dialysis'
+                npna:
+                  type: number
+                  description: 'Also accepted as npcr'
+                pre_dialysis_weight_kg:
+                  type: number
+                  description: 'With dry_weight_kg, gives interdialytic gain'
+                dry_weight_kg:
+                  type: number
+                  description: 'Previous post-dialysis weight'
+            example:
+              modality: hd
+              pre_bun_mg_dl: 60
+              post_bun_mg_dl: 20
+              session_hours: 4
+              uf_litres: 2.5
+              post_weight_kg: 70
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /renal-nutrition/plan:
+    post:
+      tags:
+      - Renal Nutrition
+      summary: Renal nutrition plan in one call
+      description: 'Runs stage (from creatinine), requirements, labs and adequacy for the parts sent, plus the KDOQI 2020 monitoring schedule (weight monthly on dialysis, every 3 months in CKD 4-5 or after transplant, every 6 months in CKD 1-3; screening twice a year; full assessment within 90 days of starting dialysis; 3-day food record; 7-point SGA on dialysis). A part that fails is reported in errors and does not stop the others. Without status, the status is taken from the eGFR stage.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  description: 'ckd_1_2, ckd_3_5, hd, pd or transplant; optional if creatinine, sex and age_years are sent'
+                weight_kg:
+                  type: number
+                  description: 'Required'
+                labs:
+                  type: object
+                  description: 'Same keys as /renal-nutrition/labs'
+                adequacy:
+                  type: object
+                  description: 'Same keys as /renal-nutrition/adequacy (hd and pd only)'
+            example:
+              sex: male
+              age_years: 67
+              creatinine_mg_dl: 3.3
+              weight_kg: 48
+              height_cm: 170
+              diabetes: true
+      responses:
+        '200':
+          description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
 components:
   securitySchemes:
     bearerAuth:

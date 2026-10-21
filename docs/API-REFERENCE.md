@@ -1445,6 +1445,41 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/pregnancy/plan \
 
 **Related routes reused:** `POST /energy/requirements`, `GET /dri`, `GET /dri/compare`, `POST /fhir/Observation/$assess-nutrition` (pre-pregnancy BMI and MUAC), `POST /meals/analyze`.
 
+### Renal nutrition (`/renal-nutrition`) — `v1.49.0+`
+
+Calculators built on the *KDOQI Clinical Practice Guideline for Nutrition in CKD: 2020 Update* and Krause and Mahan's *Food and the Nutrition Care Process*, chapter 35 (Tables 35.9 and 35.10, Box 35.3). Any API key, 100 requests/minute, nothing stored, no SQL. Every target comes from KDOQI 2020. Krause Table 35.9 is older (KDOQI 2000), so its figures are returned separately as `legacy_krause` and never mixed into the targets. The renal food list stays at `GET /renal`.
+
+| Route | What it does |
+|---|---|
+| `GET /renal-nutrition/reference` | `?section=` one of `kdoqi_2020`, `legacy_krause`, `labs`, `adequacy`, `weight_adjustment`, `monitoring`, `ckd_stages`, `emergency_diet`, `known_issues` |
+| `GET /renal-nutrition/emergency-diet` | Box 35.3: 5 days or less when dialysis is not possible. Choices per day, emergency kit, storage |
+| `POST /renal-nutrition/stage` | `sex`, `age_years`, `creatinine_mg_dl` or `creatinine_umol_l`, optional `acr_mg_g`: CKD-EPI 2021 eGFR, G and A category, and the `status` to use next |
+| `POST /renal-nutrition/requirements` | `status` (`ckd_1_2`, `ckd_3_5`, `hd`, `pd`, `transplant`), `weight_kg`, optional `height_cm`, `sex`, `diabetes`, `ckd_stage`: protein, energy, sodium, calcium, bicarbonate, potassium and phosphorus rules, with amounts per day |
+| `POST /renal-nutrition/labs` | Table 35.10 values (mg/dL, mEq/L or SI) against the dialysis or normal-kidney column, with the diet action and the calcium x phosphorus product |
+| `POST /renal-nutrition/adequacy` | URR, Kt/V, eKt/V, weekly Kt/V (peritoneal), nPNA, interdialytic weight gain |
+| `POST /renal-nutrition/plan` | All of the above for the parts sent, plus the KDOQI monitoring schedule |
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/plan \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"sex":"male","age_years":67,"creatinine_mg_dl":3.3,"weight_kg":48,"height_cm":170,"diabetes":true,"labs":{"potassium_meq_l":5.8,"phosphorus_mg_dl":6.7}}'
+# eGFR 19.7 (G4) -> ckd_3_5; protein 0.6-0.8 g/kg (diabetes) on the adjusted weight; potassium and phosphorus flagged high with diet actions
+```
+
+**Where the two sources differ** (the full list is `GET /renal-nutrition/reference?section=known_issues`):
+
+| | Krause Table 35.9 (2000) | KDOQI 2020 (used) |
+|---|---|---|
+| Protein, CKD 3-5 | 0.6-1.0 g/kg | 0.55-0.60 g/kg; 0.6-0.8 with diabetes |
+| Protein, dialysis | 1.2 (HD), 1.2-1.5 (PD) g/kg | 1.0-1.2 g/kg |
+| Energy | 30-35 kcal/kg (35 on HD) | 25-35 kcal/kg |
+| Sodium | 1.5-2 g/day | under 2.3 g/day |
+| Potassium, phosphorus | numeric ranges | adjust to keep serum normal; no intake number |
+
+**Not from either document (stated in the result).** CKD-EPI 2021 and the KDIGO categories in `/stage`, the Daugirdas spKt/V and rate-adjusted eKt/V in `/adequacy` (optional, needs session length, ultrafiltration and weight), and the SI conversion factors. The 2020 guideline has no protein statement for CKD 1-2 or transplant recipients, no fluid statement, and no numeric potassium or phosphorus target: those come back as `null` with the reason. The targets are for metabolically stable adults.
+
+**Related routes reused:** `GET /renal` (renal food list), `POST /meals/analyze` (single-meal kidney-disease screen), `GET /dri`.
+
 ### Recipes
 
 **`POST /recipes/calculate`** *(API key, rate-limited)* — give it a list of ingredients, get back the recipe's total and per-serving nutrition. Builds directly on Serving-Size Intelligence above.

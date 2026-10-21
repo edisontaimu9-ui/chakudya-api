@@ -3,7 +3,13 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.48.0
+ * Version: 1.49.0
+ * v1.49.0 changes: renal nutrition calculators from the KDOQI 2020 Nutrition in CKD guideline and Krause ch. 35 Tables 35.9, 35.10 and Box 35.3 (any API key, no SQL).
+ *   New resource /renal-nutrition: GET /renal-nutrition/reference?section=, GET /renal-nutrition/emergency-diet (Box 35.3), POST /renal-nutrition/stage (CKD-EPI 2021 eGFR
+ *   and KDIGO G/A category), /requirements (protein, energy, sodium, calcium, bicarbonate and the potassium and phosphorus rules by status: ckd_1_2, ckd_3_5, hd, pd,
+ *   transplant, from KDOQI 2020, with IBW and the 95%/115% weight adjustment; the older Table 35.9 figures come back separately as legacy_krause), /labs (Table 35.10 blood values
+ *   with diet actions, dialysis or normal-kidney ranges, SI units, Ca x P product), /adequacy (URR, Kt/V, eKt/V, nPNA, interdialytic weight gain) and /plan (all of them
+ *   plus the monitoring schedule). src/renalNutrition.js. The food list at /renal is unchanged. No change to the /energy engine.
  * v1.48.0 changes: pregnancy and lactation calculators from Krause 16th ed. chapter 14 and Appendix 3 (any API key, no SQL). New resource /pregnancy:
  *   GET /pregnancy/reference?section=, POST /pregnancy/gestational-age (LMP | due date | weeks -> weeks+days, trimester, EDD, milestones),
  *   /weight-gain (pre-pregnancy BMI category, IOM totals and weekly rates, twins, status at a gestational age, weigh-in series),
@@ -671,6 +677,7 @@ import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
+import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
 import { computeWeightAssessment, computeLossPlan, computeGainPlan, computeWeightProgress, computeDietPattern, computeBariatricGuidance, weightReferenceCatalog } from "./weightManagement.js";
 import { computeSportsEnergy, computeSportsMacros, computeFuelTiming, computeHydration, computeBodyComposition, computeSupplementDoses, computeSportsPlan, sportsReferenceCatalog } from "./sportsNutrition.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
@@ -729,7 +736,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.48.0";
+const CNR_VERSION = "1.49.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1083,7 +1090,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management", "pregnancy"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management", "pregnancy", "renal-nutrition"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1363,6 +1370,11 @@ function routePolicy(resource, method, param, action) {
   // Pregnancy and lactation calculators (src/pregnancy.js): arithmetic on the request body, static chapter tables, the energy engine and the
   // static DRI tables. No database reads or writes, so POST is a calculation. Any valid key.
   if (resource === "pregnancy" && ((["gestational-age", "weight-gain", "plan", "assess"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Renal nutrition calculators (src/renalNutrition.js): arithmetic on the request body and static guideline tables. No database reads or writes,
+  // so POST is a calculation. Any valid key. (The renal food list stays at /renal.)
+  if (resource === "renal-nutrition" && ((["stage", "requirements", "labs", "adequacy", "plan"].includes(param) && method === "POST") || ((param === "reference" || param === "emergency-diet") && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Weight management calculators (src/weightManagement.js): arithmetic on the request body and static chapter tables. loss-plan and
@@ -7636,6 +7648,13 @@ function handleRoot(env) {
         "POST   /pregnancy/weight-gain   (API key) → body {pre_pregnancy_weight_kg + height_cm | prepregnancy_bmi, multiples?, age_years?, current_weight_kg + lmp|edd|ga_weeks?, weigh_ins?: [{date, weight_kg}] + lmp|edd} → category, IOM total and weekly rate, twins, status at the gestational age",
         "POST   /pregnancy/plan          (API key) → body {status: pregnant|lactating, age_years (14-50), pre_pregnancy_weight_kg, height_cm, pal_category|pal|activities|activity_factor | maintenance_kcal, pregnant: lmp|edd|ga_weeks, current_weight_kg?, multiples?; lactating: months_postpartum} → energy from /energy/requirements, protein, DRI targets, twin table, lactation rules",
         "POST   /pregnancy/assess        (API key) → body {lmp|edd|ga_weeks|trimester, hemoglobin_g_dl?, hematocrit_percent?, altitude_m?, smoker?, labs?: {...}, glucose?: {test, ...}, blood_pressure?: {systolic_mmhg, diastolic_mmhg, ...}} → anemia, Table 14.4 labs, GDM test, preeclampsia criteria (each section independent)",
+        "GET    /renal-nutrition/reference     (API key) → ?section= kdoqi_2020|legacy_krause|labs|adequacy|weight_adjustment|monitoring|ckd_stages|emergency_diet|known_issues: KDOQI 2020 statements, Krause Tables 35.9 and 35.10, where the two disagree.",
+        "GET    /renal-nutrition/emergency-diet (API key) → Box 35.3 emergency dialysis diet: choices per day, kit, storage.",
+        "POST   /renal-nutrition/stage         (API key) → body {sex, age_years, creatinine_mg_dl|creatinine_umol_l, acr_mg_g?} → CKD-EPI 2021 eGFR, G and A category, the status to send to /requirements.",
+        "POST   /renal-nutrition/requirements  (API key) → body {status: ckd_1_2|ckd_3_5|hd|pd|transplant, weight_kg, height_cm?, sex?, diabetes?, ckd_stage?, edema_free_weight_kg?, weight_basis?} → KDOQI 2020 protein, energy, sodium, calcium, bicarbonate, K and P rules with amounts per day, plus legacy_krause.",
+        "POST   /renal-nutrition/labs          (API key) → body {labs: {potassium_meq_l, phosphorus_mg_dl, ...SI keys accepted}, context?: dialysis|general, diabetes?, on_epo?} → low/in range/high with the diet action, Ca x P product.",
+        "POST   /renal-nutrition/adequacy      (API key) → body {modality: hd|pd, pre_bun_mg_dl+post_bun_mg_dl, session_hours+uf_litres+post_weight_kg?, ekt_v?, weekly_kt_v?, npna?, pre_dialysis_weight_kg+dry_weight_kg?} → URR, Kt/V, eKt/V, nPNA, interdialytic weight gain against targets.",
+        "POST   /renal-nutrition/plan          (API key) → body {status|creatinine+sex+age_years, weight_kg, labs?, adequacy?, ...} → stage, requirements, labs, adequacy and the KDOQI monitoring schedule in one call.",
         "GET    /weight-management/reference   (API key) → chapter 21 tables: BMI classes, Table 21.3 risk, metabolic syndrome, rate bands, energy floors, AMDR, diet adequacy, activity targets, Table 21.11/21.12, known issues. Optional ?section=",
         "GET    /weight-management/bariatric   (API key) ?procedure=lagb|lsg|rygb|bpd_ds [&sex=&childbearing_age=true&pregnant=true] → diet stages (Table 21.9) and vitamin/mineral supplementation (Table 21.10, misprints flagged)",
         "POST   /weight-management/assess      (API key) → adult {sex, age_years, weight_kg, height_cm, waist_cm?, hip_cm?, body_fat_percent?, usual_weight_kg+period_days?, comorbidity_count?, systolic_mmhg?, diastolic_mmhg?, triglycerides_mg_dl?, hdl_mg_dl?, fasting_glucose_mg_dl?} or child (2-18 y) {sex, age_years, weight_kg, height_cm | bmi_for_age_percentile, secondary_complications?} → BMI class, risk, metabolic syndrome, treatment options or age-based goal",
@@ -9399,6 +9418,25 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         const result = pregCalc[param](body, { today: new Date().toISOString().slice(0, 10) });
         if (!result.ok) return err(result.error);
         return success(result.data, { message: `Pregnancy: ${param}` });
+      }
+      return notFound();
+    }
+
+    case "renal-nutrition": {
+      if (param === "reference" || param === "emergency-diet") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const result = param === "reference" ? renalReferenceCatalog(url.searchParams.get("section") ?? undefined) : emergencyDiet();
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: param === "reference" ? "Renal nutrition reference tables" : "Emergency dialysis diet plan (Box 35.3)" });
+      }
+      const renalCalc = { stage: computeRenalStage, requirements: computeRenalRequirements, labs: computeRenalLabs, adequacy: computeDialysisAdequacy, plan: computeRenalPlan };
+      if (param && renalCalc[param]) {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        const result = renalCalc[param](body);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: `Renal nutrition: ${param}` });
       }
       return notFound();
     }
