@@ -1445,7 +1445,7 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/pregnancy/plan \
 
 **Related routes reused:** `POST /energy/requirements`, `GET /dri`, `GET /dri/compare`, `POST /fhir/Observation/$assess-nutrition` (pre-pregnancy BMI and MUAC), `POST /meals/analyze`.
 
-### Renal nutrition (`/renal-nutrition`) — `v1.49.0+`
+### Renal nutrition (`/renal-nutrition`) — `v1.49.0+` (`/food-plan` from `v1.50.0`)
 
 Calculators built on the *KDOQI Clinical Practice Guideline for Nutrition in CKD: 2020 Update* and Krause and Mahan's *Food and the Nutrition Care Process*, chapter 35 (Tables 35.9 and 35.10, Box 35.3). Any API key, 100 requests/minute, nothing stored, no SQL. Every target comes from KDOQI 2020. Krause Table 35.9 is older (KDOQI 2000), so its figures are returned separately as `legacy_krause` and never mixed into the targets. The renal food list stays at `GET /renal`.
 
@@ -1458,12 +1458,21 @@ Calculators built on the *KDOQI Clinical Practice Guideline for Nutrition in CKD
 | `POST /renal-nutrition/labs` | Table 35.10 values (mg/dL, mEq/L or SI) against the dialysis or normal-kidney column, with the diet action and the calcium x phosphorus product |
 | `POST /renal-nutrition/adequacy` | URR, Kt/V, eKt/V, weekly Kt/V (peritoneal), nPNA, interdialytic weight gain |
 | `POST /renal-nutrition/plan` | All of the above for the parts sent, plus the KDOQI monitoring schedule |
+| `POST /renal-nutrition/food-plan` | Same body as `/requirements`, plus optional `exchange_type`, `q`, `limit` (1-300), `share_flag_pct` (5-100, default 25), `potassium_mg_per_day_max`, `phosphorus_mg_per_day_max`, `legacy_krause_limits`. Reads `exchange_lists` and `renal_foods` (read only) and returns each exchange item as a percentage of the daily protein, sodium, potassium and phosphorus limits, per-group averages with the exchanges that fit before the tightest limit, and the matching `renal_foods` row |
 
 ```bash
 curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/plan \
   -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"sex":"male","age_years":67,"creatinine_mg_dl":3.3,"weight_kg":48,"height_cm":170,"diabetes":true,"labs":{"potassium_meq_l":5.8,"phosphorus_mg_dl":6.7}}'
 # eGFR 19.7 (G4) -> ckd_3_5; protein 0.6-0.8 g/kg (diabetes) on the adjusted weight; potassium and phosphorus flagged high with diet actions
+```
+
+**Linking the targets to the food exchange list (`v1.50.0+`).** `POST /renal-nutrition/food-plan` runs `/requirements` unchanged and divides its daily targets by what one exchange of each food supplies. Protein (KDOQI 2020, g/day maximum) and sodium (under 2.3 g/day) come from the targets. KDOQI 2020 gives no potassium or phosphorus intake number, so those budgets exist only when you send `potassium_mg_per_day_max` or `phosphorus_mg_per_day_max` (labelled `clinician-set`) or `legacy_krause_limits: true` (Krause Table 35.9, labelled older than KDOQI 2020). The column names of `exchange_lists` and `renal_foods` are detected rather than assumed: the result lists them in `field_map` and any nutrient it could not find in `missing_fields`. A value missing from an exchange row is filled from the matching `renal_foods` row (name match) and marked `filled_from_renal_foods`. The share-of-day figures, group averages, `share_flag_pct` flag and the name matching are arithmetic added by this API, not from KDOQI 2020 or Krause.
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/food-plan \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"status":"hd","weight_kg":60,"potassium_mg_per_day_max":2000,"exchange_type":"protein"}'
 ```
 
 **Where the two sources differ** (the full list is `GET /renal-nutrition/reference?section=known_issues`):

@@ -62,3 +62,25 @@ describe("/renal-nutrition", () => {
     assert.equal((await call("GET", "/renal")).status, 200);
   });
 });
+
+describe("/renal-nutrition/food-plan", () => {
+  const realF = globalThis.fetch;
+  const rows = { exchange_lists: [{ id: 1, food_item: "Nsima", exchange_type: "starch", kcal: 80, protein_g: 3, sodium_mg: 5, potassium_mg: 60 }], renal_foods: [] };
+  before(() => { globalThis.fetch = async (u) => new Response(JSON.stringify(String(u).includes("exchange_lists") ? rows.exchange_lists : rows.renal_foods), { status: 200, headers: { "Content-Type": "application/json" } }); });
+  after(() => { globalThis.fetch = realF; });
+
+  test("needs a key and POST", async () => {
+    assert.equal((await call("POST", "/renal-nutrition/food-plan", { status: "hd", weight_kg: 60 }, null)).status, 401);
+    assert.equal((await call("GET", "/renal-nutrition/food-plan")).status, 405);
+  });
+  test("links the targets to the exchange list", async () => {
+    const r = await read(await call("POST", "/renal-nutrition/food-plan", { status: "hd", weight_kg: 60, potassium_mg_per_day_max: 2000 }));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.data.daily_budget.protein_g.max, 72);
+    assert.equal(r.body.data.items[0].name, "Nsima");
+    assert.equal(r.body.data.items[0].pct_of_daily_limit.potassium_mg, 3);
+  });
+  test("bad body is a 400", async () => {
+    assert.equal((await call("POST", "/renal-nutrition/food-plan", { weight_kg: 60 })).status, 400);
+  });
+});

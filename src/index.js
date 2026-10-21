@@ -3,7 +3,10 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.49.0
+ * Version: 1.50.0
+ * v1.50.0 changes: renal targets linked to the existing food lists (no SQL, any API key). New POST /renal-nutrition/food-plan: runs /requirements, reads exchange_lists
+ *   and renal_foods, and returns each exchange item as a share of the daily protein, sodium, potassium and phosphorus limits, per-group averages with the exchanges that fit
+ *   before a limit is reached, and the matching renal_foods row. Column names are detected, not assumed (src/renalFoodLink.js). /requirements, /plan, /exchange and /renal are unchanged.
  * v1.49.0 changes: renal nutrition calculators from the KDOQI 2020 Nutrition in CKD guideline and Krause ch. 35 Tables 35.9, 35.10 and Box 35.3 (any API key, no SQL).
  *   New resource /renal-nutrition: GET /renal-nutrition/reference?section=, GET /renal-nutrition/emergency-diet (Box 35.3), POST /renal-nutrition/stage (CKD-EPI 2021 eGFR
  *   and KDIGO G/A category), /requirements (protein, energy, sodium, calcium, bicarbonate and the potassium and phosphorus rules by status: ckd_1_2, ckd_3_5, hd, pd,
@@ -678,6 +681,7 @@ import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.j
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
 import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
+import { linkRenalFoods } from "./renalFoodLink.js";
 import { computeWeightAssessment, computeLossPlan, computeGainPlan, computeWeightProgress, computeDietPattern, computeBariatricGuidance, weightReferenceCatalog } from "./weightManagement.js";
 import { computeSportsEnergy, computeSportsMacros, computeFuelTiming, computeHydration, computeBodyComposition, computeSupplementDoses, computeSportsPlan, sportsReferenceCatalog } from "./sportsNutrition.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
@@ -736,7 +740,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.49.0";
+const CNR_VERSION = "1.50.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1373,8 +1377,8 @@ function routePolicy(resource, method, param, action) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Renal nutrition calculators (src/renalNutrition.js): arithmetic on the request body and static guideline tables. No database reads or writes,
-  // so POST is a calculation. Any valid key. (The renal food list stays at /renal.)
-  if (resource === "renal-nutrition" && ((["stage", "requirements", "labs", "adequacy", "plan"].includes(param) && method === "POST") || ((param === "reference" || param === "emergency-diet") && method === "GET"))) {
+  // so POST is a calculation. Any valid key. (The renal food list stays at /renal.) food-plan also reads exchange_lists and renal_foods (read only).
+  if (resource === "renal-nutrition" && ((["stage", "requirements", "labs", "adequacy", "plan", "food-plan"].includes(param) && method === "POST") || ((param === "reference" || param === "emergency-diet") && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Weight management calculators (src/weightManagement.js): arithmetic on the request body and static chapter tables. loss-plan and
@@ -7655,6 +7659,7 @@ function handleRoot(env) {
         "POST   /renal-nutrition/labs          (API key) → body {labs: {potassium_meq_l, phosphorus_mg_dl, ...SI keys accepted}, context?: dialysis|general, diabetes?, on_epo?} → low/in range/high with the diet action, Ca x P product.",
         "POST   /renal-nutrition/adequacy      (API key) → body {modality: hd|pd, pre_bun_mg_dl+post_bun_mg_dl, session_hours+uf_litres+post_weight_kg?, ekt_v?, weekly_kt_v?, npna?, pre_dialysis_weight_kg+dry_weight_kg?} → URR, Kt/V, eKt/V, nPNA, interdialytic weight gain against targets.",
         "POST   /renal-nutrition/plan          (API key) → body {status|creatinine+sex+age_years, weight_kg, labs?, adequacy?, ...} → stage, requirements, labs, adequacy and the KDOQI monitoring schedule in one call.",
+        "POST   /renal-nutrition/food-plan     (API key) → body = /requirements body + {exchange_type?, q?, limit?, share_flag_pct?, potassium_mg_per_day_max?, phosphorus_mg_per_day_max?, legacy_krause_limits?} → each exchange_lists item as % of the daily protein, sodium, potassium and phosphorus limits, per-group exchanges that fit, and the matching renal_foods row. Read only.",
         "GET    /weight-management/reference   (API key) → chapter 21 tables: BMI classes, Table 21.3 risk, metabolic syndrome, rate bands, energy floors, AMDR, diet adequacy, activity targets, Table 21.11/21.12, known issues. Optional ?section=",
         "GET    /weight-management/bariatric   (API key) ?procedure=lagb|lsg|rygb|bpd_ds [&sex=&childbearing_age=true&pregnant=true] → diet stages (Table 21.9) and vitamin/mineral supplementation (Table 21.10, misprints flagged)",
         "POST   /weight-management/assess      (API key) → adult {sex, age_years, weight_kg, height_cm, waist_cm?, hip_cm?, body_fat_percent?, usual_weight_kg+period_days?, comorbidity_count?, systolic_mmhg?, diastolic_mmhg?, triglycerides_mg_dl?, hdl_mg_dl?, fasting_glucose_mg_dl?} or child (2-18 y) {sex, age_years, weight_kg, height_cm | bmi_for_age_percentile, secondary_complications?} → BMI class, risk, metabolic syndrome, treatment options or age-based goal",
@@ -9428,6 +9433,18 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         const result = param === "reference" ? renalReferenceCatalog(url.searchParams.get("section") ?? undefined) : emergencyDiet();
         if (!result.ok) return err(result.error);
         return success(result.data, { message: param === "reference" ? "Renal nutrition reference tables" : "Emergency dialysis diet plan (Box 35.3)" });
+      }
+      if (param === "food-plan") {
+        // Links the requirements to exchange_lists and renal_foods. Read only. The two reads run in parallel (2 subrequests).
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        const [ex, rn] = await Promise.all([db.select("exchange_lists", { limit: 500, offset: 0 }), db.select("renal_foods", { limit: 500, offset: 0 })]);
+        const result = linkRenalFoods(body, ex.ok ? ex.body : [], rn.ok ? rn.body : []);
+        if (!result.ok) return err(result.error);
+        if (!ex.ok) result.data.warnings.push("exchange_lists could not be read.");
+        if (!rn.ok) result.data.warnings.push("renal_foods could not be read.");
+        return success(result.data, { message: "Renal targets linked to the food exchange list" });
       }
       const renalCalc = { stage: computeRenalStage, requirements: computeRenalRequirements, labs: computeRenalLabs, adequacy: computeDialysisAdequacy, plan: computeRenalPlan };
       if (param && renalCalc[param]) {
