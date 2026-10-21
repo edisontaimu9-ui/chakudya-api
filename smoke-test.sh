@@ -4,7 +4,8 @@
 # Re-run after every deploy or dashboard binding change.
 # Verifies: KV binding, RAG cache, edge cache, rate limiting,
 # memory recall cache + session isolation, foods lookup cascade,
-# BMI-for-age endpoint, and the Eat Well to Live Well guide in RAG.
+# BMI-for-age endpoint, the Eat Well to Live Well guide in RAG, and the
+# renal food-plan link to the exchange list (POST /renal-nutrition/food-plan).
 #
 # Usage: CNR_API_KEY=cnr_... bash smoke-test.sh [base-url]
 # Default base URL: https://chakudya-api.edisontaimu9.workers.dev
@@ -172,6 +173,45 @@ if echo "$rq2" | grep -q "Eat Well to Live Well" && echo "$rq2" | grep -q "150 m
 else
   fail "Guide's physical activity guidance not retrieved"
 fi
+echo ""
+
+# ── 9. Renal targets linked to the food exchange list ─────────
+echo "[9] Renal food-plan (POST /renal-nutrition/food-plan)"
+FP="$BASE/renal-nutrition/food-plan"
+fp0=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FP" -H "Content-Type: application/json" -d '{"status":"hd","weight_kg":60}')
+if [ "$fp0" = "401" ]; then pass "No key -> 401"; else fail "No key did not give 401 (got: $fp0)"; fi
+fp1=$(curl -s "${AUTH[@]}" -o /dev/null -w "%{http_code}" "$FP")
+if [ "$fp1" = "405" ]; then pass "GET -> 405 (POST only)"; else fail "GET did not give 405 (got: $fp1)"; fi
+fp2=$(curl -s "${AUTH[@]}" -o /dev/null -w "%{http_code}" -X POST "$FP" -H "Content-Type: application/json" -d '{"weight_kg":60}')
+if [ "$fp2" = "400" ]; then pass "Missing status -> 400"; else fail "Missing status did not give 400 (got: $fp2)"; fi
+fp3=$(curl -s "${AUTH[@]}" -X POST "$FP" -H "Content-Type: application/json" \
+  -d '{"status":"hd","weight_kg":60,"potassium_mg_per_day_max":2000}')
+if echo "$fp3" | grep -q '"protein_g":{"min":60,"max":72' && echo "$fp3" | grep -q '"max":2300' && echo "$fp3" | grep -q 'clinician-set limit'; then
+  pass "Targets from /requirements (protein 60-72 g, sodium 2300 mg) and clinician potassium limit"
+else
+  fail "Daily budget wrong or missing (got: ${fp3:0:200})"
+fi
+if echo "$fp3" | grep -q '"field_map"'; then
+  echo "     detected columns: $(echo "$fp3" | grep -o '"field_map":{[^}]*}[^}]*}' | head -c 400)"
+  echo "     missing fields:   $(echo "$fp3" | grep -o '"missing_fields":{[^}]*}' | head -c 300)"
+  if echo "$fp3" | grep -q 'No name column'; then
+    fail "exchange_lists has no recognised name column. Add the real column to FIELD_CANDIDATES in src/renalFoodLink.js"
+  else
+    pass "exchange_lists name column detected"
+  fi
+else
+  fail "No field_map in the response"
+fi
+fp4=$(curl -s "${AUTH[@]}" -X POST "$FP" -H "Content-Type: application/json" \
+  -d '{"status":"hd","weight_kg":60,"legacy_krause_limits":true,"limit":3}')
+if echo "$fp4" | grep -q '"max":3000' && echo "$fp4" | grep -q 'older than KDOQI 2020'; then
+  pass "legacy_krause_limits gives the labelled Krause potassium max (3000 mg)"
+else
+  fail "legacy_krause_limits did not give the Krause potassium max (got: ${fp4:0:200})"
+fi
+fp5=$(curl -s "${AUTH[@]}" -X POST "$FP" -H "Content-Type: application/json" \
+  -d '{"status":"hd","weight_kg":60,"share_flag_pct":2}')
+if echo "$fp5" | grep -q "share_flag_pct"; then pass "share_flag_pct out of range rejected"; else fail "share_flag_pct 2 was not rejected (got: ${fp5:0:150})"; fi
 echo ""
 
 # ── Summary ────────────────────────────────────────────────────
