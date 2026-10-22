@@ -93,10 +93,11 @@ id = "413e22969b074518b12a5c0022cf3a84"
 # The "Consolidate" step of Write/Consolidate/Recall/Apply: finds sessions
 # with 6+ unconsolidated memory facts and summarizes each via Groq.
 # See sql/memory_schema.sql for the required table + RPC functions.
-# The "*/5 * * * *" cron is the health probe (HEALTH_CHECK_STORE, sql/034): it runs the
-# GET /health checks every 5 minutes and stores the result for GET /admin/health-history.
+# The single "*/5 * * * *" cron does both jobs: every run is the health probe (HEALTH_CHECK_STORE,
+# sql/034, stored for GET /admin/health-history), and the run at minute :00 also does the hourly
+# consolidation. One cron on purpose: the Workers Free plan allows only 5 cron triggers per account.
 [triggers]
-crons = ["0 * * * *", "*/5 * * * *"]
+crons = ["*/5 * * * *"]
 
 # ── Automated RAG ingestion (POST /rag/upload -> queue -> chunks) ──
 # Queue must exist BEFORE deploy: dashboard -> Workers & Pages -> Queues

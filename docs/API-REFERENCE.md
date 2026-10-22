@@ -541,7 +541,7 @@ Each pinged service also reports `ms`, how long its check took (`v1.52.0+`).
   day, 30 days kept). `?hours=` sets the window (default 24, max 720).
 
 Setup: run `sql/034_add_health_checks.sql` in Supabase, keep
-`HEALTH_CHECK_STORE = "true"` and the second cron in `wrangler.toml`, then
+`HEALTH_CHECK_STORE = "true"` and the `*/5 * * * *` cron in `wrangler.toml` (it also runs the hourly memory consolidation, so only one cron slot is used), then
 `npx wrangler deploy`. Nothing is stored unless `HEALTH_CHECK_STORE=true`.
 
 Response (shortened):

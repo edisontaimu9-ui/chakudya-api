@@ -7,7 +7,7 @@
  * v1.52.0 changes: scheduled health monitoring. A 5-minute cron runs the same checks as GET /health and stores one row per run in health_checks
  *   when HEALTH_CHECK_STORE=true. New GET /admin/health-history (root key only, ?hours=, max 720): uptime %, coverage, per-upstream uptime and probe latency
  *   (avg, p95, max), an outage timeline and daily uptime. A probe that cannot reach the database is parked in KV and written with the next one. Requires
- *   sql/034_add_health_checks.sql and the extra cron in wrangler.toml; src/healthMonitor.js. GET /health now also returns ms per pinged service.
+ *   sql/034_add_health_checks.sql; the single 5-minute cron in wrangler.toml now also runs the hourly consolidation (Workers Free allows 5 crons per account); src/healthMonitor.js. GET /health now also returns ms per pinged service.
  * v1.51.0 changes: diabetes nutrition (no SQL, any API key). New resource /diabetes from Krause 16th ed. ch. 30, ADA Standards of Care 2026 and the UCT exchange lists:
  *   GET /diabetes/reference?section=, POST /diabetes/status (A1C/FPG/OGTT category, eAG), /glucose-targets, /carb-plan (carbohydrate distribution), /carb-count (label reading),
  *   /exchange-plan (reads exchange_lists), /glycemic-load (reads glycaemic_index_data), /insulin (500 and 1700 rules, mealtime dose), /hypoglycemia, /exercise, /plan.
@@ -10204,13 +10204,18 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    if (event.cron === HEALTH_CRON) {
-      // Every 5 minutes: health probe -> health_checks (off unless HEALTH_CHECK_STORE=true).
+    // One cron ("*/5 * * * *") drives both jobs, because the Workers Free plan allows only 5 cron triggers per account.
+    //  - every run: health probe -> health_checks (off unless HEALTH_CHECK_STORE=true)
+    //  - the run at minute :00 of each hour: session-memory consolidation (the old hourly job)
+    // Any other cron string (a manual test trigger) runs consolidation only, as before.
+    const isProbeCron = event.cron === HEALTH_CRON;
+    if (isProbeCron) {
       const db = env.SUPABASE_URL && env.SUPABASE_KEY ? supabase(env) : null;
       ctx.waitUntil(runHealthProbe(env, db, collectHealth).catch((e) => console.error("[health-probe] failed:", e?.message || e)));
-      return;
     }
-    ctx.waitUntil(runScheduledConsolidation(env));
+    if (!isProbeCron || new Date(event.scheduledTime ?? Date.now()).getUTCMinutes() === 0) {
+      ctx.waitUntil(runScheduledConsolidation(env));
+    }
   },
 
   // Cloudflare Queues consumer — automated RAG ingestion (src/ragPipeline.js)
