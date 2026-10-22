@@ -79,3 +79,35 @@ describe("renalFoodLink", () => {
   });
 });
 function round1(x) { return Math.round((x + Number.EPSILON) * 10) / 10; }
+
+describe("renalFoodLink with the live table shapes", () => {
+  // Real rows from GET /exchange and GET /renal (renal numbers are text, per the row's own portion).
+  const ex = [
+    { id: 1, food_name: "Brown / wholewheat bread", exchange_type: "Starch", portion: "1 slice (±42 g)", kcal: 80, kj: 335, protein_g: 3, carbs_g: 15, fat_g: 0 },
+    { id: 9, food_name: "Canned pilchards", exchange_type: "Lean meat", portion: "1/2 cup", kcal: 45, kj: 190, protein_g: 7, carbs_g: 0, fat_g: 2 },
+    { id: 10, food_name: "Cheese (tussers, cheddar, gouda, normal feta)", exchange_type: "High fat meat", portion: "30 g", kcal: 100, kj: 420, protein_g: 7, carbs_g: 0, fat_g: 8 },
+  ];
+  const rn = [
+    { id: 2, name: "Canned fish, pilchards in brine", code: "3055", grams: "30g", measure: "1 heaped DSP", energy_kj: "162.0", protein: "6.0", fat: "1.6", cho: "0.0", po4: "115.0", na: "156.0", k: "126.0" },
+    { id: 6, name: "Cheese, Cheddar", code: "2722", grams: "30g", measure: "size of small matchbox", energy_kj: "494.0", protein: "7.4", fat: "9.7", cho: "0.5", po4: "160.0", na: "146.0", k: "25.0" },
+  ];
+  test("po4, na and k are detected as phosphorus, sodium and potassium", () => {
+    const m = detectFields(rn);
+    assert.equal(m.phosphorus_mg, "po4"); assert.equal(m.sodium_mg, "na"); assert.equal(m.potassium_mg, "k"); assert.equal(m.protein_g, "protein"); assert.equal(m.name, "name");
+    const e = detectFields(ex);
+    assert.equal(e.name, "food_name"); assert.equal(e.group, "exchange_type"); assert.equal(e.kcal, "kcal"); assert.equal(e.protein_g, "protein_g");
+  });
+  test("a strong name match fills missing K, P and Na; a one-word match is only offered", () => {
+    const d = linkRenalFoods({ status: "hd", weight_kg: 60, potassium_mg_per_day_max: 2000, phosphorus_mg_per_day_max: 1000 }, ex, rn).data;
+    const cheese = d.items.find((i) => i.name.startsWith("Cheese"));
+    assert.equal(cheese.renal_foods_match.id, 6);
+    assert.equal(cheese.nutrients.phosphorus_mg, 160); assert.equal(cheese.nutrients.potassium_mg, 25); assert.equal(cheese.nutrients.sodium_mg, 146);
+    assert.equal(cheese.pct_of_daily_limit.phosphorus_mg, 16);
+    const pilch = d.items.find((i) => i.name === "Canned pilchards");
+    assert.equal(pilch.renal_foods_match, null);
+    assert.equal(pilch.renal_foods_possible_match.id, 2);
+    assert.equal(pilch.nutrients.phosphorus_mg, null);
+    assert.equal(d.items.find((i) => i.name.startsWith("Brown")).renal_foods_possible_match, undefined);
+    assert.equal(d.counts.matched_to_renal_foods, 1); assert.equal(d.counts.possible_matches, 1);
+  });
+});

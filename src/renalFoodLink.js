@@ -9,6 +9,9 @@
 // schema-agnostic scans), so each nutrient column is detected from a list of likely names (FIELD_CANDIDATES). The result
 // reports the columns it found (field_map) and the ones it could not (missing_fields), so a wrong guess is visible and the fix
 // is a one-line change to FIELD_CANDIDATES.
+// Live schemas (checked with curl): exchange_lists = id, food_name, exchange_type, portion, kcal, kj, protein_g, carbs_g, fat_g
+// (no sodium, potassium or phosphorus). renal_foods = id, name, code, grams, measure, energy_kj, protein, fat, cho, po4, na, k,
+// all numbers stored as text and given for the row's own portion (grams/measure).
 //
 // NOT from KDOQI 2020 or Krause (stated in every result): the share-of-day arithmetic, the per-group averages, the
 // "high share" flag threshold (share_flag_pct, default 25), and the name matching between the two lists. KDOQI 2020 has no
@@ -32,9 +35,9 @@ export const FIELD_CANDIDATES = {
   grams: ["weight_g", "portion_g", "serving_g", "grams", "amount_g"],
   kcal: ["kcal", "calories", "energy_kcal"],
   protein_g: ["protein_g", "protein"],
-  sodium_mg: ["sodium_mg", "sodium", "na_mg"],
-  potassium_mg: ["potassium_mg", "potassium", "k_mg"],
-  phosphorus_mg: ["phosphorus_mg", "phosphorus", "phosphate_mg", "p_mg"],
+  sodium_mg: ["sodium_mg", "sodium", "na_mg", "na"],
+  potassium_mg: ["potassium_mg", "potassium", "k_mg", "k"],
+  phosphorus_mg: ["phosphorus_mg", "phosphorus", "phosphate_mg", "p_mg", "po4"],
 };
 const NUTRIENTS = ["kcal", "protein_g", "sodium_mg", "potassium_mg", "phosphorus_mg"];
 const LIMITED = ["protein_g", "sodium_mg", "potassium_mg", "phosphorus_mg"];
@@ -61,11 +64,23 @@ export function detectFields(rows) {
 }
 
 const normName = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim().replace(/s\b/g, "");
-function namesMatch(a, b) {
+const NAME_STOP = new Set(["canned", "cooked", "raw", "fresh", "dried", "boiled", "with", "in", "and", "of", "the", "or", "a", "plain"]);
+const nameTokens = (s) => new Set(normName(s).split(" ").filter((t) => t.length > 1 && !NAME_STOP.has(t)));
+/**
+ * Same food, judged by name only. "strong": equal, one name inside the other, or the shorter name's words (2 or more) all inside the
+ * longer. "weak": a single shared word of 5+ letters (e.g. "Canned pilchards" and "Canned fish, pilchards in brine"). Only a strong
+ * match is allowed to fill missing values; a weak one is shown as a possible match for the user to judge.
+ */
+function nameMatchStrength(a, b) {
   const x = normName(a); const y = normName(b);
-  if (!x || !y) return false;
-  if (x === y) return true;
-  return Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x));
+  if (!x || !y) return null;
+  if (x === y) return "strong";
+  if (Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x))) return "strong";
+  const tx = nameTokens(a); const ty = nameTokens(b);
+  const [small, big] = tx.size <= ty.size ? [tx, ty] : [ty, tx];
+  if (!small.size || ![...small].every((t) => big.has(t))) return null;
+  if (small.size >= 2) return "strong";
+  return [...small][0].length >= 5 ? "weak" : null;
 }
 
 function readRow(row, map) {
@@ -159,8 +174,15 @@ export function linkRenalFoods(input, exchangeRows, renalRows) {
   const renalRead = rnRows.map((r) => ({ raw: r, ...readRow(r, rnMap) }));
   const out = [];
   for (const it of items) {
-    // Values missing from the exchange row are taken from the matching renal_foods row, never the other way round.
-    const match = it.name ? renalRead.find((r) => namesMatch(it.name, r.name)) : null;
+    // Values missing from the exchange row are taken from a STRONGLY matching renal_foods row, never the other way round.
+    let match = null; let possible = null;
+    if (it.name) {
+      for (const r of renalRead) {
+        const st = nameMatchStrength(it.name, r.name);
+        if (st === "strong") { match = r; break; }
+        if (st === "weak" && !possible) possible = r;
+      }
+    }
     const nutrients = { ...it.nutrients }; const from = {};
     if (match) for (const n of NUTRIENTS) if (nutrients[n] === null && match.nutrients[n] !== null) { nutrients[n] = match.nutrients[n]; from[n] = "renal_foods"; }
     const share = {}; const flags = [];
@@ -171,7 +193,7 @@ export function linkRenalFoods(input, exchangeRows, renalRows) {
         if (share[n] >= flagPct) flags.push({ nutrient: n, pct_of_daily_limit: share[n] });
       }
     }
-    out.push({ id: it.id, name: it.name, group: it.group, portion: it.portion, grams: it.grams, nutrients, filled_from_renal_foods: Object.keys(from).length ? from : undefined, pct_of_daily_limit: share, high_share: flags, renal_foods_match: match ? { id: match.id, name: match.name, fields: compactFields(match.raw) } : null });
+    out.push({ id: it.id, name: it.name, group: it.group, portion: it.portion, grams: it.grams, nutrients, filled_from_renal_foods: Object.keys(from).length ? from : undefined, pct_of_daily_limit: share, high_share: flags, renal_foods_match: match ? { id: match.id, name: match.name, fields: compactFields(match.raw) } : null, renal_foods_possible_match: !match && possible ? { id: possible.id, name: possible.name, note: "One shared word only, so no values were copied. Check the name and the portion before using it.", fields: compactFields(possible.raw) } : undefined });
   }
   const groups = groupSummaries(out, budget);
   const shown = out.slice(0, limit);
@@ -198,7 +220,7 @@ export function linkRenalFoods(input, exchangeRows, renalRows) {
       status: req.data.status, status_label: req.data.status_label, weight: req.data.weight,
       daily_budget: budget, share_flag_pct: flagPct,
       field_map: { exchange_lists: exMap, renal_foods: rnMap }, missing_fields,
-      counts: { exchange_rows: exRows.length, renal_rows: rnRows.length, matched_to_renal_foods: out.filter((i) => i.renal_foods_match).length, returned: shown.length, total_after_filters: out.length },
+      counts: { exchange_rows: exRows.length, renal_rows: rnRows.length, matched_to_renal_foods: out.filter((i) => i.renal_foods_match).length, possible_matches: out.filter((i) => i.renal_foods_possible_match).length, returned: shown.length, total_after_filters: out.length },
       groups, items: shown,
       requirements_steps: req.data.steps, requirements_warnings: req.data.warnings,
       warnings, notes: [METHOD_NOTE],
