@@ -228,7 +228,7 @@ operations (with the right FHIR scope) and the Fenton compute routes.
 - `POST /memory/consolidate` (also runs automatically via hourly cron, bypassing HTTP auth)
 - `GET /fhir/AuditEvent` (admin role or an explicit `system/AuditEvent.read` scope)
 - `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/:id`: **root key only**, see [API keys](#api-keys)
-- `GET /admin/usage`, `GET /admin/health-history`: **root key only**, read-only monitoring, see [Usage by endpoint](#usage-by-endpoint-v1390) and [Health history](#health-history-v1520)
+- `GET /admin/usage`, `GET /admin/health-history`, `GET /admin/monitoring`, `GET /admin/activity`, `GET /admin/overview`: **root key only**, read-only monitoring, see [Usage by endpoint](#usage-by-endpoint-v1390), [Health history](#health-history-v1520), [Failed and slow calls](#failed-and-slow-calls-v1380), [Recent admin actions](#recent-admin-actions-v1370) and [Admin snapshot](#admin-snapshot-v1350)
 
 A consumer key is refused on every admin route. Bearer tokens are API keys only: OAuth 2.0 was
 removed in v1.34.0 (see the note at the end of the Developer portal section).
@@ -650,6 +650,95 @@ Response (shortened):
 - Without `sql/036` the endpoint still works and `p95_ms` stays `null`.
 - Only the root key is accepted: no key gets `401`, a consumer key is refused,
   and any method other than `GET` gets `405`.
+
+#### Failed and slow calls (`v1.38.0+`)
+
+- `GET /admin/monitoring` *(root admin key only)*: which endpoints are failing and which are slow. The Worker stores one row in `request_log` for each failed or slow request (fast successes are never stored), so this answers "what is breaking and what is slow", not "what is the overall error rate". Rows hold method, route (ids replaced, `/foods/:id`), status, duration and request id. No query strings, bodies, keys or IPs. `?hours=` sets the window (default 24, max 168).
+
+Setup: run `sql/031_add_request_log.sql` in Supabase and keep `REQUEST_LOG_STORE = "true"` in `wrangler.toml`. `REQUEST_LOG_SLOW_MS` sets what counts as slow (default 1500, minimum 100). Nothing is stored unless `REQUEST_LOG_STORE=true`.
+
+Response (shortened):
+
+```json
+{
+  "generated_at": "2026-10-22T10:00:00.000Z",
+  "window_hours": 24,
+  "available": true,
+  "storage_enabled": true,
+  "slow_ms": 1500,
+  "truncated": false,
+  "totals": { "failed": 4, "slow": 2, "by_status": { "429": 3, "500": 1 } },
+  "failing_endpoints": [
+    { "method": "GET", "route": "/foods", "count": 3, "statuses": { "429": 3 }, "last_at": "2026-10-22T09:41:00.000Z" }
+  ],
+  "slow_endpoints": [
+    { "method": "POST", "route": "/rag/query", "count": 2, "max_ms": 4100, "last_at": "2026-10-22T08:12:00.000Z", "avg_ms": 3300 }
+  ],
+  "recent": [
+    { "at": "2026-10-22T09:41:00.000Z", "request_id": "…", "method": "GET", "route": "/foods", "status": 429, "duration_ms": 12, "kind": "error" }
+  ]
+}
+```
+
+- A failure is a `5xx`, a `429`, or a `4xx` other than `401` and `404`. A request that is both failed and slow has `kind: "both"` and counts in both lists.
+- `failing_endpoints` is sorted by `count` and `slow_endpoints` by `max_ms`, 15 each. `recent` is the 40 newest rows.
+- Only the newest 2,000 rows in the window are read. `truncated` is `true` when the window held more.
+- If `request_log` cannot be read (`sql/031` not run), the response is `available: false` with a `note`, zero totals and empty lists, instead of an error.
+- Only the root key is accepted: no key gets `401`, a consumer key is refused, and any method other than `GET` gets `405`.
+
+#### Recent admin actions (`v1.37.0+`)
+
+- `GET /admin/activity` *(root admin key only)*: a feed of recent admin actions, newest first. It is built from data the API already stores, so it needs no SQL and no setting. `?limit=` sets the number of events (default 30, max 100).
+
+Response (shortened):
+
+```json
+{
+  "generated_at": "2026-10-22T10:00:00.000Z",
+  "sources": { "api_keys": true, "packaged_reviews": true },
+  "events": [
+    { "type": "packaged_approved", "at": "2026-10-22T09:30:00.000Z", "actor": "reviewer-1",
+      "subject": "Maize flour 2kg", "detail": "BrandName · 6001234567890", "ref": "42" },
+    { "type": "key_created", "at": "2026-10-21T14:02:00.000Z", "actor": null,
+      "subject": "clinic-app", "detail": "role reviewer", "ref": "7" }
+  ]
+}
+```
+
+- `type` is `key_created`, `key_revoked`, `packaged_approved` or `packaged_rejected`.
+- Key events come from the newest 200 keys. Keys made through developer self-service are left out, because they are not admin actions. Key events have `actor: null`, since the API does not record who made a change. Review events carry `reviewed_by` as `actor`, and a rejection shows its reason in `detail`.
+- Review events come from the 100 most recently reviewed packaged foods.
+- `sources` shows which of the two reads worked. If one fails, its events are missing and the other source still returns.
+- Key hashes and raw keys are never returned. Nothing here writes.
+- Only the root key is accepted: no key gets `401`, a consumer key is refused, and any method other than `GET` gets `405`.
+
+#### Admin snapshot (`v1.35.0+`)
+
+- `GET /admin/overview` *(root admin key only)*: one read-only snapshot for the admin monitor page. No setup needed.
+
+Response (shortened):
+
+```json
+{
+  "generated_at": "2026-10-22T10:00:00.000Z",
+  "registry": [ { "label": "Foods", "table": "foods", "count": 1200 } ],
+  "packaged_review": { "pending": 5, "approved": 80, "rejected": 3 },
+  "rag_ingest_jobs": { "queued": 0, "processing": 1, "done": 40, "failed": 2 },
+  "api_keys": {
+    "total": 12, "active": 10, "by_role": { "admin": 2, "reviewer": 3 },
+    "usage_today": 150, "usage_last_7_days": 900,
+    "usage_daily": [ { "day": "2026-10-16", "count": 120 } ],
+    "top": [ { "id": 7, "label": "clinic-app", "role": "reviewer", "last_used_at": "2026-10-22T09:50:00.000Z",
+               "today": 40, "last_7_days": 250, "daily": [30, 35, 40, 38, 32, 35, 40] } ]
+  }
+}
+```
+
+- `registry` counts rows in 11 reference tables (foods, packaged foods, glycaemic index entries, exchange list items, renal foods, enteral formulas, drug-nutrient interactions, food synonyms, NCP diagnosis terms, Fenton preterm rows and BMI-for-age rows). A count is `null` if that table cannot be read.
+- `packaged_review` and `rag_ingest_jobs` are counts by status.
+- `api_keys` counts the newest 200 keys. Per-key usage comes from the KV counters the API already keeps, so it is approximate. It covers the last 7 UTC days, oldest first, and is read for up to 100 active keys. `usage_daily` is the total across those keys, and each `top` entry (up to 20, busiest first) has `daily` aligned with `usage_daily[].day`.
+- Key hashes and raw keys are never returned. Nothing here writes.
+- Only the root key is accepted: no key gets `401`, a consumer key is refused, and any method other than `GET` gets `405`.
 
 ### Batch
 
