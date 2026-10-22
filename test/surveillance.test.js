@@ -372,6 +372,25 @@ describe("analyseAlerts", () => {
   });
 });
 
+describe("small counts are never shown as numbers", () => {
+  test("headline counts below the minimum read '<10'", async () => {
+    const db = fakeDb((fn) => fn === "surveillance_volume"
+      ? okRows([{ district: "Zomba", region: "Southern", population_group: "under5", setting: "community", n: 1, months_reporting: 1 }])
+      : okRows([]));
+    const r = await handleSurveillance(req("GET"), new URL("https://x/surveillance/summary"), db, {}, "summary", helpers, fetchRows, NOW);
+    assert.equal(r.data.data_quality.records, "<10");
+    assert.deepEqual(r.data.data_quality.by_population_group, { under5: "<10" });
+    assert.deepEqual(r.data.data_quality.by_setting, { community: "<10" });
+    assert.deepEqual(r.data.records_by_region, { Southern: "<10" });
+    assert.ok(!JSON.stringify(r.data).match(/:\s?1[,}]/), "no raw count of 1 anywhere");
+  });
+  test("an empty window is a real zero, not hidden", async () => {
+    const db = fakeDb(() => okRows([]));
+    const r = await handleSurveillance(req("GET"), new URL("https://x/surveillance/summary"), db, {}, "summary", helpers, fetchRows, NOW);
+    assert.equal(r.data.data_quality.records, 0);
+  });
+});
+
 describe("dataQuality", () => {
   test("coverage, gaps and facility bias", () => {
     const vol = [

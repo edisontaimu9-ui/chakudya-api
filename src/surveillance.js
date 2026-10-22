@@ -598,6 +598,10 @@ function figures(t) {
   };
 }
 
+/** A count below the minimum cell size is shown as "<10" (the real minimum), never as the number itself. */
+export const shownCount = (n, cell) => (n > 0 && n < cell ? `<${cell}` : n);
+const shownCounts = (obj, cell) => Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, shownCount(v, cell)]));
+
 const PRIORITY_RANK = { critical: 0, high: 1, medium: 2, info: 3 };
 
 export const HOTSPOT_Q = 0.1;
@@ -926,9 +930,9 @@ export function dataQuality(volumeRows, from, to, { cell = DEFAULT_MIN_CELL } = 
   if (facilityShare !== null && facilityShare >= 0.9) notes.push("Over 90% of records come from health facilities, so findings reflect people who attend facilities and may miss community burden.");
   if (total === 0) notes.push("No records in this window.");
   return {
-    records: total,
-    by_population_group: byGroup,
-    by_setting: bySetting,
+    records: shownCount(total, cell),
+    by_population_group: shownCounts(byGroup, cell),
+    by_setting: shownCounts(bySetting, cell),
     districts_reporting: reporting.length,
     districts_total: DISTRICTS.length,
     districts_without_enough_data: without,
@@ -940,7 +944,7 @@ export function dataQuality(volumeRows, from, to, { cell = DEFAULT_MIN_CELL } = 
 
 function gapInsights(quality, minCellValue) {
   const out = [];
-  if (quality.districts_without_enough_data.length && quality.records > 0) {
+  if (quality.districts_without_enough_data.length && quality.records !== 0) {
     out.push({
       id: "coverage:districts",
       type: "data_gap",
@@ -1177,7 +1181,7 @@ export async function handleSurveillance(request, url, db, env, param, helpers, 
       }).filter(Boolean).sort((a, b) => a.population_group.localeCompare(b.population_group) || a.indicator.localeCompare(b.indicator));
       const byRegion = {};
       for (const r of vol.rows) byRegion[r.region] = (byRegion[r.region] || 0) + (Number(r.n) || 0);
-      return success({ available: true, window: windowOut, data_quality: quality, records_by_region: byRegion, national, data_caveat: DATA_CAVEAT }, { message: "Surveillance summary" });
+      return success({ available: true, window: windowOut, data_quality: quality, records_by_region: shownCounts(byRegion, cell), national, data_caveat: DATA_CAVEAT }, { message: "Surveillance summary" });
     }
 
     if (param === "hotspots") {
