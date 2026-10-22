@@ -1467,7 +1467,7 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/plan 
 # eGFR 19.7 (G4) -> ckd_3_5; protein 0.6-0.8 g/kg (diabetes) on the adjusted weight; potassium and phosphorus flagged high with diet actions
 ```
 
-**Linking the targets to the food exchange list (`v1.50.0+`).** `POST /renal-nutrition/food-plan` runs `/requirements` unchanged and divides its daily targets by what one exchange of each food supplies. Protein (KDOQI 2020, g/day maximum) and sodium (under 2.3 g/day) come from the targets. KDOQI 2020 gives no potassium or phosphorus intake number, so those budgets exist only when you send `potassium_mg_per_day_max` or `phosphorus_mg_per_day_max` (labelled `clinician-set`) or `legacy_krause_limits: true` (Krause Table 35.9, labelled older than KDOQI 2020). The column names of `exchange_lists` and `renal_foods` are detected rather than assumed: the result lists them in `field_map` and any nutrient it could not find in `missing_fields`. A value missing from an exchange row is filled from the matching `renal_foods` row (name match) and marked `filled_from_renal_foods`. The share-of-day figures, group averages, `share_flag_pct` flag and the name matching are arithmetic added by this API, not from KDOQI 2020 or Krause.
+**Linking the targets to the food exchange list (`v1.50.0+`).** `POST /renal-nutrition/food-plan` runs `/requirements` unchanged and divides its daily targets by what one exchange of each food supplies. Protein (KDOQI 2020, g/day maximum) and sodium (under 2.3 g/day) come from the targets. KDOQI 2020 gives no potassium or phosphorus intake number, so those budgets exist only when you send `potassium_mg_per_day_max` or `phosphorus_mg_per_day_max` (labelled `clinician-set`) or `legacy_krause_limits: true` (Krause Table 35.9, labelled older than KDOQI 2020). The column names of `exchange_lists` and `renal_foods` are detected rather than assumed: the result lists them in `field_map` and any nutrient it could not find in `missing_fields`. A value missing from an exchange row (`exchange_lists` has no sodium, potassium or phosphorus) is filled from the matching `renal_foods` row (`po4`, `na`, `k`) only on a strong name match, and marked `filled_from_renal_foods`. A one-word name match is returned as `renal_foods_possible_match` and nothing is copied. `renal_foods` values are for that row's own portion (`grams`, `measure`), not per 100 g. The share-of-day figures, group averages, `share_flag_pct` flag and the name matching are arithmetic added by this API, not from KDOQI 2020 or Krause.
 
 ```bash
 curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/food-plan \
@@ -1488,6 +1488,36 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/food-
 **Not from either document (stated in the result).** CKD-EPI 2021 and the KDIGO categories in `/stage`, the Daugirdas spKt/V and rate-adjusted eKt/V in `/adequacy` (optional, needs session length, ultrafiltration and weight), and the SI conversion factors. The 2020 guideline has no protein statement for CKD 1-2 or transplant recipients, no fluid statement, and no numeric potassium or phosphorus target: those come back as `null` with the reason. The targets are for metabolically stable adults.
 
 **Related routes reused:** `GET /renal` (renal food list), `POST /meals/analyze` (single-meal kidney-disease screen), `GET /dri`.
+
+### Diabetes nutrition (`/diabetes`) — `v1.51.0+`
+
+Calculators and reference tables from Krause 16th ed. chapter 30, the ADA Standards of Care in Diabetes 2026 and the UCT exchange lists. Any valid API key. Where Krause (written around ADA 2021) and ADA 2026 differ, ADA 2026 is used and the difference is listed in `GET /diabetes/reference?section=known_issues`. Arithmetic added by this API and not printed in the sources is labelled in each result.
+
+| Route | What it does |
+|---|---|
+| `GET /diabetes/reference?section=` | `diagnosis`, `a1c_eag`, `glycemic_targets`, `pregnancy_targets`, `hypoglycemia`, `insulin_rules`, `insulin_action_times`, `exercise`, `sick_day`, `nutrition_recommendations`, `food_list_values`, `medication_nutrition`, `known_issues`. No section lists them |
+| `POST /diabetes/status` | `a1c_percent` or `a1c_mmol_mol`, `fpg_*`, `ogtt_2h_*`, `random_*` (mg/dL or mmol/L), `classic_symptoms`, `a1c_unreliable` → normal, prediabetes or diabetes (Krause Table 30.1), and eAG |
+| `POST /diabetes/glucose-targets` | `population`: `nonpregnant_adult` (ADA 2026: A1C <7%, 80-130 before meals, <180 after, CGM time in range) or `pregnancy` (fasting <95, 1 h <140, 2 h <120) |
+| `POST /diabetes/carb-plan` | `carb_g_per_day`, or `energy_kcal` with `carb_pct`, or `sex` for the Krause starting point (women 3-4, men 4-5 carbohydrate servings per meal, 1-2 per snack); `meals`, `snacks`, `meal_weights`, `population: gdm` → grams and 15 g exchanges per meal and snack |
+| `POST /diabetes/carb-count` | `total_carb_g`, `fibre_g`, `sugar_alcohol_g`, `servings` → counted carbohydrate (half the fibre and sugar alcohol is subtracted only above 5 g) |
+| `POST /diabetes/exchange-plan` | Reads `exchange_lists` (read only). `exchanges: {type: n}` totals a daily prescription by the Krause 4-4-9 worksheet method; `meals: {meal: {type: n}}` gives carbohydrate choices per meal; `carb_plan: {...}` attaches example choices to each slot; with none of these it returns the exchange types and items |
+| `POST /diabetes/glycemic-load` | Reads `glycaemic_index_data` (read only). `foods: [{food, carbs_g, gi?}]` → GI from the table, GL = GI × carbohydrate / 100 per food and for the meal. Foods with no GI are listed, not guessed |
+| `POST /diabetes/insulin` | `tdd_units` (or clinician-set `icr_g_per_unit` and `cf_mg_dl_per_unit`), `carbs_g`, `current_glucose_*`, `target_glucose_*`, `dose_step` → 500 rule, 1700 rule, mealtime and correction dose. No dose is calculated below 70 mg/dL. Active insulin is not modelled. A starting estimate for the prescriber |
+| `POST /diabetes/hypoglycemia` | `glucose_*`, `assistance_needed`, `able_to_swallow`, `on_alpha_glucosidase_inhibitor` → ADA level 1-3 and treatment steps |
+| `POST /diabetes/exercise` | `duration_min`, `on_insulin_or_secretagogue`, `pre_exercise_glucose_*`, `intensity`, `ketones_present` → extra carbohydrate (15 g per 30-60 min on insulin or a secretagogue) |
+| `POST /diabetes/plan` | `labs`, `population`, `carb` → status, glucose targets and carbohydrate plan in one call |
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/diabetes/carb-plan \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"energy_kcal":1900,"carb_pct":50,"meals":3,"snacks":3}'
+
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/diabetes/exchange-plan \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"carb_plan":{"carb_g_per_day":180,"meals":3,"snacks":2}}'
+```
+
+Gaps: `exchange_lists` is the South African UCT list, so Malawian foods appear only as maize meal portions, and `glycaemic_index_data` holds only a few Malawian studies. Malawi diabetes guidelines are not loaded yet.
 
 ### Recipes
 

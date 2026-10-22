@@ -5,7 +5,7 @@
 # Verifies: KV binding, RAG cache, edge cache, rate limiting,
 # memory recall cache + session isolation, foods lookup cascade,
 # BMI-for-age endpoint, the Eat Well to Live Well guide in RAG, and the
-# renal food-plan link to the exchange list (POST /renal-nutrition/food-plan).
+# renal food-plan link to the exchange list (POST /renal-nutrition/food-plan), and diabetes nutrition (/diabetes).
 #
 # Usage: CNR_API_KEY=cnr_... bash smoke-test.sh [base-url]
 # Default base URL: https://chakudya-api.edisontaimu9.workers.dev
@@ -212,6 +212,48 @@ fi
 fp5=$(curl -s "${AUTH[@]}" -X POST "$FP" -H "Content-Type: application/json" \
   -d '{"status":"hd","weight_kg":60,"share_flag_pct":2}')
 if echo "$fp5" | grep -q "share_flag_pct"; then pass "share_flag_pct out of range rejected"; else fail "share_flag_pct 2 was not rejected (got: ${fp5:0:150})"; fi
+echo ""
+
+# ── 10. Diabetes nutrition ─────────────────────────────────────
+echo "[10] Diabetes nutrition (/diabetes)"
+DB="$BASE/diabetes"
+post() { curl -s "${AUTH[@]}" -X POST "$DB/$1" -H "Content-Type: application/json" -d "$2"; }
+d0=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DB/status" -H "Content-Type: application/json" -d '{"a1c_percent":7}')
+if [ "$d0" = "401" ]; then pass "No key -> 401"; else fail "No key did not give 401 (got: $d0)"; fi
+d1=$(curl -s "${AUTH[@]}" -o /dev/null -w "%{http_code}" "$DB/insulin")
+if [ "$d1" = "405" ]; then pass "GET on a POST route -> 405"; else fail "GET /diabetes/insulin did not give 405 (got: $d1)"; fi
+d2=$(curl -s "${AUTH[@]}" "$DB/reference?section=a1c_eag")
+if echo "$d2" | grep -q '"eag_mg_dl":298'; then pass "Reference: A1C to eAG table (Krause Table 30.2)"; else fail "a1c_eag reference missing (got: ${d2:0:150})"; fi
+d3=$(post status '{"a1c_percent":6.8,"fpg_mg_dl":130}')
+if echo "$d3" | grep -q '"category":"diabetes"' && echo "$d3" | grep -q '"estimated_average_glucose_mg_dl":148'; then pass "Status: A1C 6.8 + FPG 130 -> diabetes, eAG 148 mg/dL"; else fail "Status wrong (got: ${d3:0:200})"; fi
+d4=$(post carb-plan '{"carb_g_per_day":180,"meals":3,"snacks":0}')
+if echo "$d4" | grep -q '"carb_g":60' && echo "$d4" | grep -q '"carb_exchanges":4'; then pass "Carb plan: 180 g over 3 meals -> 60 g (4 exchanges) each"; else fail "Carb plan wrong (got: ${d4:0:200})"; fi
+d5=$(post carb-plan '{"population":"gdm","carb_g_per_day":200,"meals":3,"snacks":3}')
+if echo "$d5" | grep -q '"slot":"bedtime snack"' && echo "$d5" | grep -q '"carb_g":30'; then pass "GDM plan: breakfast 30 g and a bedtime snack"; else fail "GDM plan wrong (got: ${d5:0:200})"; fi
+d6=$(post insulin '{"tdd_units":50,"carbs_g":60,"current_glucose_mg_dl":204,"target_glucose_mg_dl":100}')
+if echo "$d6" | grep -q '"icr_g_per_unit":10' && echo "$d6" | grep -q '"carb_dose_units":6' && echo "$d6" | grep -q '"total_units_rounded":9'; then pass "Insulin: TDD 50 -> ICR 10, CF 34, dose 9 units"; else fail "Insulin wrong (got: ${d6:0:250})"; fi
+d7=$(post insulin '{"tdd_units":50,"carbs_g":60,"current_glucose_mg_dl":60,"target_glucose_mg_dl":100}')
+if echo "$d7" | grep -q '"dose":null'; then pass "Insulin: no dose calculated below 70 mg/dL"; else fail "A dose was calculated at 60 mg/dL (got: ${d7:0:200})"; fi
+d8=$(post hypoglycemia '{"glucose_mg_dl":50}')
+if echo "$d8" | grep -q '"level":2' && echo "$d8" | grep -q '15 minutes'; then pass "Hypoglycaemia: 50 mg/dL -> level 2, recheck in 15 minutes"; else fail "Hypoglycaemia wrong (got: ${d8:0:200})"; fi
+d9=$(post exercise '{"duration_min":60,"on_insulin_or_secretagogue":true}')
+if echo "$d9" | grep -q '"extra_carbohydrate_g_range":\[15,30\]'; then pass "Exercise: 60 min on insulin -> 15-30 g"; else fail "Exercise wrong (got: ${d9:0:200})"; fi
+d10=$(post exchange-plan '{"carb_plan":{"carb_g_per_day":180,"meals":3}}')
+if echo "$d10" | grep -q '"example_choices"' && echo "$d10" | grep -q '"field_map"'; then
+  pass "Exchange plan reads exchange_lists and attaches example choices"
+  echo "     detected columns: $(echo "$d10" | grep -o '"field_map":{[^}]*}' | head -c 300)"
+else
+  fail "Exchange plan failed (got: ${d10:0:250})"
+fi
+d11=$(post exchange-plan '{"exchanges":{"Starch":10,"Fruit":3}}')
+if echo "$d11" | grep -q '"cho_choices":13' || echo "$d11" | grep -q 'unknown exchange type'; then
+  if echo "$d11" | grep -q 'unknown exchange type'; then echo "     exchange_type names on file: $(echo "$d11" | grep -o 'Available: [^"]*' | head -c 300)"; fi
+  pass "Exchange plan: prescription accepted or exchange types listed"
+else
+  fail "Exchange prescription wrong (got: ${d11:0:250})"
+fi
+d12=$(post glycemic-load '{"foods":[{"food":"nsima","carbs_g":50},{"food":"mandasi","carbs_g":20}]}')
+if echo "$d12" | grep -q '"foods_without_gi":1'; then pass "Glycaemic load: nsima found, mandasi listed as having no GI"; else fail "Glycaemic load wrong (got: ${d12:0:250})"; fi
 echo ""
 
 # ── Summary ────────────────────────────────────────────────────

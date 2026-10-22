@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.50.0
+  version: 1.51.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -67,6 +67,7 @@ tags:
 - name: Weight Management
 - name: Pregnancy
 - name: Renal Nutrition
+- name: Diabetes Nutrition
 - name: Fenton Preterm
 - name: FHIR
 - name: Packaged
@@ -8793,6 +8794,265 @@ paths:
       responses:
         '200':
           description: Result with steps, warnings and sources
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/reference:
+    get:
+      tags:
+      - Diabetes Nutrition
+      summary: Diabetes nutrition reference tables
+      description: 'Krause chapter 30, ADA Standards of Care 2026 and UCT tables. section = diagnosis, a1c_eag, glycemic_targets, pregnancy_targets, hypoglycemia, insulin_rules, insulin_action_times, exercise, sick_day, nutrition_recommendations, food_list_values, medication_nutrition or known_issues. Without a section, lists them.'
+      parameters:
+      - name: section
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Reference table
+        '400':
+          description: Unknown section
+        '401':
+          description: Missing or invalid API key
+  /diabetes/status:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Diagnosis category and estimated average glucose
+      description: 'A1C, fasting, 2-hour OGTT or random glucose (mg/dL or mmol/L) to normal, prediabetes or diabetes per Krause Table 30.1, plus A1C to eAG and mmol/mol.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              a1c_percent: 6.8
+              fpg_mg_dl: 130
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/glucose-targets:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Glucose targets
+      description: 'population nonpregnant_adult (ADA 2026) or pregnancy.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              population: nonpregnant_adult
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/carb-plan:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Carbohydrate prescription and distribution
+      description: 'Daily carbohydrate from carb_g_per_day, energy_kcal with carb_pct, or the Krause starting servings by sex, split across meals and snacks in grams and 15 g exchanges. population gdm applies the pregnancy pattern.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              energy_kcal: 1900
+              carb_pct: 50
+              meals: 3
+              snacks: 3
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/carb-count:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Carbohydrate counting from a food label
+      description: 'Subtracts half of fibre and sugar alcohol only when together they exceed 5 g per serving (Krause p.637).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              total_carb_g: 30
+              fibre_g: 8
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/exchange-plan:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Carbohydrate targets linked to the exchange list
+      description: 'Reads exchange_lists (read only). exchanges, meals or carb_plan; otherwise returns exchange types and items.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              exchanges: {starch: 10, fruit: 3, milk: 2}
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/glycemic-load:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Glycaemic load of foods and a meal
+      description: 'Reads glycaemic_index_data (read only). GL = GI x available carbohydrate / 100.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              foods: [{food: nsima, carbs_g: 50}]
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/insulin:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Insulin-to-carbohydrate ratio, correction factor and dose
+      description: '500 and 1700 rules from total daily dose (Krause) or clinician-set ratios. A starting estimate for the prescriber. No dose below 70 mg/dL.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              tdd_units: 50
+              carbs_g: 60
+              current_glucose_mg_dl: 204
+              target_glucose_mg_dl: 100
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/hypoglycemia:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Hypoglycaemia level and treatment steps
+      description: 'ADA 2026 levels 1-3 and treatment.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              glucose_mg_dl: 60
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/exercise:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Extra carbohydrate for exercise
+      description: '15 g per 30-60 min of activity on insulin or a secretagogue (Krause p.639).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              duration_min: 60
+              on_insulin_or_secretagogue: true
+      responses:
+        '200':
+          description: Result with sources and disclaimer
+        '400':
+          description: Invalid input
+        '401':
+          description: Missing or invalid API key
+        '429':
+          description: Rate limited
+  /diabetes/plan:
+    post:
+      tags:
+      - Diabetes Nutrition
+      summary: Glycaemic status, targets and carbohydrate plan
+      description: 'labs, population and carb in one call.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+            example:
+              labs: {a1c_percent: 8.1}
+              carb: {energy_kcal: 1800, carb_pct: 45}
+      responses:
+        '200':
+          description: Result with sources and disclaimer
         '400':
           description: Invalid input
         '401':

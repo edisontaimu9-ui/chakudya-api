@@ -3,7 +3,10 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.50.0
+ * Version: 1.51.0
+ * v1.51.0 changes: diabetes nutrition (no SQL, any API key). New resource /diabetes from Krause 16th ed. ch. 30, ADA Standards of Care 2026 and the UCT exchange lists:
+ *   GET /diabetes/reference?section=, POST /diabetes/status (A1C/FPG/OGTT category, eAG), /glucose-targets, /carb-plan (carbohydrate distribution), /carb-count (label reading),
+ *   /exchange-plan (reads exchange_lists), /glycemic-load (reads glycaemic_index_data), /insulin (500 and 1700 rules, mealtime dose), /hypoglycemia, /exercise, /plan.
  * v1.50.0 changes: renal targets linked to the existing food lists (no SQL, any API key). New POST /renal-nutrition/food-plan: runs /requirements, reads exchange_lists
  *   and renal_foods, and returns each exchange item as a share of the daily protein, sodium, potassium and phosphorus limits, per-group averages with the exchanges that fit
  *   before a limit is reached, and the matching renal_foods row. Column names are detected, not assumed (src/renalFoodLink.js). /requirements, /plan, /exchange and /renal are unchanged.
@@ -682,6 +685,7 @@ import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from 
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
 import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
 import { linkRenalFoods } from "./renalFoodLink.js";
+import { computeGlycemicStatus, computeGlucoseTargets, computeCarbPlan, computeCarbCount, computeExchangePlan, computeGlycemicLoad, computeInsulin, computeHypoglycemia, computeExerciseCarbs, computeDiabetesPlan, diabetesReferenceCatalog } from "./diabetesNutrition.js";
 import { computeWeightAssessment, computeLossPlan, computeGainPlan, computeWeightProgress, computeDietPattern, computeBariatricGuidance, weightReferenceCatalog } from "./weightManagement.js";
 import { computeSportsEnergy, computeSportsMacros, computeFuelTiming, computeHydration, computeBodyComposition, computeSupplementDoses, computeSportsPlan, sportsReferenceCatalog } from "./sportsNutrition.js";
 import { computeFoodEnergy } from "./foodEnergy.js";
@@ -740,7 +744,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.50.0";
+const CNR_VERSION = "1.51.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1094,7 +1098,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management", "pregnancy", "renal-nutrition"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management", "pregnancy", "renal-nutrition", "diabetes"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1379,6 +1383,10 @@ function routePolicy(resource, method, param, action) {
   // Renal nutrition calculators (src/renalNutrition.js): arithmetic on the request body and static guideline tables. No database reads or writes,
   // so POST is a calculation. Any valid key. (The renal food list stays at /renal.) food-plan also reads exchange_lists and renal_foods (read only).
   if (resource === "renal-nutrition" && ((["stage", "requirements", "labs", "adequacy", "plan", "food-plan"].includes(param) && method === "POST") || ((param === "reference" || param === "emergency-diet") && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // /diabetes: POST calculators and GET reference. exchange-plan and glycemic-load also read exchange_lists and glycaemic_index_data (read only). Any valid key.
+  if (resource === "diabetes" && ((["status", "glucose-targets", "carb-plan", "carb-count", "exchange-plan", "glycemic-load", "insulin", "hypoglycemia", "exercise", "plan"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Weight management calculators (src/weightManagement.js): arithmetic on the request body and static chapter tables. loss-plan and
@@ -7660,6 +7668,17 @@ function handleRoot(env) {
         "POST   /renal-nutrition/adequacy      (API key) → body {modality: hd|pd, pre_bun_mg_dl+post_bun_mg_dl, session_hours+uf_litres+post_weight_kg?, ekt_v?, weekly_kt_v?, npna?, pre_dialysis_weight_kg+dry_weight_kg?} → URR, Kt/V, eKt/V, nPNA, interdialytic weight gain against targets.",
         "POST   /renal-nutrition/plan          (API key) → body {status|creatinine+sex+age_years, weight_kg, labs?, adequacy?, ...} → stage, requirements, labs, adequacy and the KDOQI monitoring schedule in one call.",
         "POST   /renal-nutrition/food-plan     (API key) → body = /requirements body + {exchange_type?, q?, limit?, share_flag_pct?, potassium_mg_per_day_max?, phosphorus_mg_per_day_max?, legacy_krause_limits?} → each exchange_lists item as % of the daily protein, sodium, potassium and phosphorus limits, per-group exchanges that fit, and the matching renal_foods row. Read only.",
+        "GET    /diabetes/reference           (API key) → ?section= diagnosis|a1c_eag|glycemic_targets|pregnancy_targets|hypoglycemia|insulin_rules|insulin_action_times|exercise|sick_day|nutrition_recommendations|food_list_values|medication_nutrition|known_issues",
+        "POST   /diabetes/status              (API key) → body {a1c_percent|a1c_mmol_mol, fpg_mg_dl|fpg_mmol_l, ogtt_2h_mg_dl|ogtt_2h_mmol_l, random_mg_dl|random_mmol_l, classic_symptoms?, a1c_unreliable?} → normal|prediabetes|diabetes (KR Table 30.1) and eAG.",
+        "POST   /diabetes/glucose-targets     (API key) → body {population?: nonpregnant_adult|pregnancy} → ADA 2026 A1C, pre/postprandial and CGM targets, or pregnancy targets.",
+        "POST   /diabetes/carb-plan           (API key) → body {carb_g_per_day | energy_kcal+carb_pct | sex, meals?, snacks?, population?: general|gdm, meal_weights?} → carbohydrate per meal and snack in grams and 15 g exchanges.",
+        "POST   /diabetes/carb-count          (API key) → body {total_carb_g, fibre_g?, sugar_alcohol_g?, servings?} → counted carbohydrate from a food label (KR half-fibre rule).",
+        "POST   /diabetes/exchange-plan       (API key) → body {exchanges?: {type: n}, meals?: {meal: {type: n}}, carb_plan?: {...}, exchange_type?, q?, limit?} → links carbohydrate targets to exchange_lists. Read only.",
+        "POST   /diabetes/glycemic-load       (API key) → body {foods: [{food, carbs_g, gi?}]} → GI from glycaemic_index_data, GL per food and meal. Read only.",
+        "POST   /diabetes/insulin             (API key) → body {tdd_units|icr_g_per_unit+cf_mg_dl_per_unit, carbs_g?, current_glucose_mg_dl?, target_glucose_mg_dl?} → 500 and 1700 rules, mealtime and correction dose. Starting estimate for the prescriber.",
+        "POST   /diabetes/hypoglycemia        (API key) → body {glucose_mg_dl|glucose_mmol_l, assistance_needed?, able_to_swallow?, on_alpha_glucosidase_inhibitor?} → ADA level 1-3 and treatment steps.",
+        "POST   /diabetes/exercise            (API key) → body {duration_min, on_insulin_or_secretagogue?, pre_exercise_glucose_mg_dl?, intensity?, ketones_present?} → extra carbohydrate for activity.",
+        "POST   /diabetes/plan                (API key) → body {labs?, population?, carb?: {...}} → status, glucose targets and carbohydrate plan in one call.",
         "GET    /weight-management/reference   (API key) → chapter 21 tables: BMI classes, Table 21.3 risk, metabolic syndrome, rate bands, energy floors, AMDR, diet adequacy, activity targets, Table 21.11/21.12, known issues. Optional ?section=",
         "GET    /weight-management/bariatric   (API key) ?procedure=lagb|lsg|rygb|bpd_ds [&sex=&childbearing_age=true&pregnant=true] → diet stages (Table 21.9) and vitamin/mineral supplementation (Table 21.10, misprints flagged)",
         "POST   /weight-management/assess      (API key) → adult {sex, age_years, weight_kg, height_cm, waist_cm?, hip_cm?, body_fat_percent?, usual_weight_kg+period_days?, comorbidity_count?, systolic_mmhg?, diastolic_mmhg?, triglycerides_mg_dl?, hdl_mg_dl?, fasting_glucose_mg_dl?} or child (2-18 y) {sex, age_years, weight_kg, height_cm | bmi_for_age_percentile, secondary_complications?} → BMI class, risk, metabolic syndrome, treatment options or age-based goal",
@@ -9454,6 +9473,37 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         const result = renalCalc[param](body);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: `Renal nutrition: ${param}` });
+      }
+      return notFound();
+    }
+
+    case "diabetes": {
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const result = diabetesReferenceCatalog(url.searchParams.get("section"));
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Diabetes nutrition reference tables" });
+      }
+      const diabetesCalc = { status: computeGlycemicStatus, "glucose-targets": computeGlucoseTargets, "carb-plan": computeCarbPlan, "carb-count": computeCarbCount, insulin: computeInsulin, hypoglycemia: computeHypoglycemia, exercise: computeExerciseCarbs, plan: computeDiabetesPlan };
+      if (param && (diabetesCalc[param] || param === "exchange-plan" || param === "glycemic-load")) {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        let result;
+        if (param === "exchange-plan") {
+          // Read only: one select of exchange_lists (about 300 rows).
+          const ex = await db.select("exchange_lists", { limit: 500, offset: 0 });
+          if (!ex.ok) return err("exchange_lists could not be read", 502);
+          result = computeExchangePlan(body, ex.body);
+        } else if (param === "glycemic-load") {
+          const gi = await db.select("glycaemic_index_data", { limit: 200 });
+          result = computeGlycemicLoad(body, gi.ok ? gi.body : [], matchGlycaemicIndexRows);
+          if (result.ok && !gi.ok) result.data.warnings.push("glycaemic_index_data could not be read, so only gi values you sent were used.");
+        } else {
+          result = diabetesCalc[param](body);
+        }
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: `Diabetes nutrition: ${param}` });
       }
       return notFound();
     }
