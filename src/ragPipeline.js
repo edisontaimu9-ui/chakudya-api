@@ -14,6 +14,8 @@
  * as manual ingest, so /rag/retrieve and /rag/ask need no changes.
  */
 
+import { trackedFetch } from "./upstreamFailures.js";
+
 export const BUCKET = "rag-uploads";
 const MAX_BYTES = 25 * 1024 * 1024;
 const ALLOWED_EXT = ["pdf", "docx", "txt", "md", "csv", "html"];
@@ -298,7 +300,7 @@ export function dropReferenceChunks(chunks) {
 // ── embeddings (batched; same model as embedText in index.js) ────────────────
 export async function embedBatch(texts, env) {
   for (let attempt = 1; attempt <= 4; attempt++) {
-    const res = await fetch("https://api.cohere.com/v1/embed", {
+    const res = await trackedFetch(env, "cohere", "https://api.cohere.com/v1/embed", {
       method: "POST",
       headers: { Authorization: `Bearer ${env.COHERE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ texts, model: "embed-multilingual-v3.0", input_type: "search_document" }),

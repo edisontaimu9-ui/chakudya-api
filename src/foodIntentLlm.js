@@ -10,6 +10,8 @@
  * bad JSON) returns the rows unchanged. Ids, nutrient values and sources are never touched.
  */
 
+import { trackedFetch } from "./upstreamFailures.js";
+
 const MAX_CANDIDATES = 10;
 const TIMEOUT_MS = 2500;
 
@@ -74,7 +76,7 @@ export async function llmRerankFoods({ env, query, rows, fetchImpl = fetch }) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
   try {
-    const res = await fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
+    const res = await trackedFetch(env, "groq", "https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -84,7 +86,7 @@ export async function llmRerankFoods({ env, query, rows, fetchImpl = fetch }) {
         messages: buildRerankMessages(query, head),
       }),
       signal: ctl.signal,
-    });
+    }, fetchImpl);
     if (!res.ok) return { rows, used: false };
     const data = await res.json();
     const order = parseRerankReply(data?.choices?.[0]?.message?.content, head);
@@ -148,7 +150,7 @@ export async function inferDefaultForm({ env, term, fetchImpl = fetch }) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
   try {
-    const res = await fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
+    const res = await trackedFetch(env, "groq", "https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -158,7 +160,7 @@ export async function inferDefaultForm({ env, term, fetchImpl = fetch }) {
         messages: buildDefaultFormMessages(term),
       }),
       signal: ctl.signal,
-    });
+    }, fetchImpl);
     if (!res.ok) return { form: null, ok: false };
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;

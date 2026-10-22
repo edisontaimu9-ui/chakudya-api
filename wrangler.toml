@@ -74,6 +74,9 @@ ROUTE_USAGE_STORE = "true"
 # Admin monitor "Uptime and outages": the 5-minute cron stores each health probe in health_checks (run sql/034 first).
 # About 288 small rows a day, 30 days kept. If the database is down the row waits in KV and is written with the next probe.
 HEALTH_CHECK_STORE = "true"
+# Failed calls to Cohere, Groq, USDA and FatSecret are counted per UTC day in upstream_failures (run sql/035 first).
+# A thrown error, timeout or non-2xx reply counts; "no match" does not. Counts only. Set to "false" to stop counting.
+UPSTREAM_FAILURES_STORE = "true"
 
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
 # Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).

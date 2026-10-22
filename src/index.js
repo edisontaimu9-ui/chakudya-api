@@ -684,6 +684,7 @@ import { handleAdminOverview } from "./adminOverview.js";
 import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
+import { trackedFetch, recordUpstreamFailure, isFatSecretError, flushUpstreamFailures } from "./upstreamFailures.js";
 import { handleAdminHealthHistory, runHealthProbe, HEALTH_CRON } from "./healthMonitor.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
@@ -2224,7 +2225,7 @@ function escapeLikePattern(raw) {
 // ─── COHERE EMBEDDING ─────────────────────────────────────────────────────────
 
 async function embedText(text, env, inputType = "search_query") {
-  const res = await fetch("https://api.cohere.com/v1/embed", {
+  const res = await trackedFetch(env, "cohere", "https://api.cohere.com/v1/embed", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.COHERE_API_KEY}`,
@@ -4295,7 +4296,7 @@ Text: "${text}"
 Respond with ONLY this JSON, no other text: {"ingredients": [{"food_name": "...", "quantity": <number>, "unit": "..."}]}`;
 
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const res = await trackedFetch(env, "groq", "https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.GROQ_API_KEY}`,
@@ -5305,7 +5306,7 @@ async function fetchFromUSDA(query, env) {
     `?api_key=${env.USDA_FDC_API_KEY}` +
     `&query=${encodeURIComponent(query)}` +
     `&pageSize=5&dataType=${encodeURIComponent("Foundation,SR Legacy,Survey (FNDDS)")}`;
-  const res = await fetch(url);
+  const res = await trackedFetch(env, "usda", url);
   if (!res.ok) return null;
   const data = await res.json().catch(() => null);
   const candidates = data?.foods ?? [];
@@ -5544,11 +5545,12 @@ async function fetchFromFatSecretBarcode(barcode, env) {
     env.FATSECRET_CONSUMER_SECRET
   );
 
-  const res = await fetch(signedUrl);
+  const res = await trackedFetch(env, "fatsecret", signedUrl);
   if (!res.ok) return null;
   const data = await res.json().catch(() => null);
   // Error 211 = "No food item detected" for this barcode; missing scope
   // (14) or any other error also just falls through to the next source.
+  if (isFatSecretError(data)) recordUpstreamFailure(env, "fatsecret");
   const food = data?.food;
   if (!food || data?.error) return null;
 
@@ -5604,9 +5606,10 @@ async function fetchFromFatSecret(query, env) {
     env.FATSECRET_CONSUMER_SECRET
   );
 
-  const searchRes = await fetch(signedUrl);
+  const searchRes = await trackedFetch(env, "fatsecret", signedUrl);
   if (!searchRes.ok) return null;
   const data = await searchRes.json().catch(() => null);
+  if (isFatSecretError(data)) recordUpstreamFailure(env, "fatsecret");
   const rawFoods = data?.foods?.food;
   const candidates = Array.isArray(rawFoods) ? rawFoods : rawFoods ? [rawFoods] : [];
   if (!candidates.length) return null;
@@ -5667,9 +5670,10 @@ async function fetchFromFatSecret(query, env) {
       env.FATSECRET_CONSUMER_KEY,
       env.FATSECRET_CONSUMER_SECRET
     );
-    const detailRes = await fetch(detailUrl);
+    const detailRes = await trackedFetch(env, "fatsecret", detailUrl);
     if (detailRes.ok) {
       const detailData = await detailRes.json().catch(() => null);
+      if (isFatSecretError(detailData)) recordUpstreamFailure(env, "fatsecret");
       const detailFood = detailData?.food;
       const picked = detailFood && !detailData?.error
         ? pickFatSecretServing(detailFood.servings?.serving)
@@ -5735,7 +5739,7 @@ async function fetchFatSecretAutocomplete(expression, maxResults, env) {
     env.FATSECRET_CONSUMER_SECRET
   );
 
-  const res = await fetch(signedUrl);
+  const res = await trackedFetch(env, "fatsecret", signedUrl);
   if (!res.ok) return [];
   const data = await res.json().catch(() => null);
   // FatSecret's JSON quirk: a single result comes back as a bare string,
@@ -5759,7 +5763,7 @@ async function fetchFatSecretCategories(env) {
     env.FATSECRET_CONSUMER_SECRET
   );
 
-  const res = await fetch(signedUrl);
+  const res = await trackedFetch(env, "fatsecret", signedUrl);
   if (!res.ok) return [];
   const data = await res.json().catch(() => null);
   const raw = data?.food_categories?.food_category;
@@ -6253,7 +6257,7 @@ async function extractNutritionLabel(imageInputs, env) {
     image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
   }));
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const res = await trackedFetch(env, "groq", "https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.GROQ_API_KEY}`,
@@ -6676,7 +6680,7 @@ Query: "${query}"
 Respond with ONLY this JSON, no other text: {"intent": "<label>", "barcode": "<digits found in the query, or null>"}`;
 
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const res = await trackedFetch(env, "groq", "https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.GROQ_API_KEY}`,
@@ -7012,7 +7016,7 @@ async function rerankCandidates(query, candidates, env, topN) {
   if (!env.COHERE_API_KEY || capped.length <= 1) return heuristicOrder();
 
   try {
-    const res = await fetch("https://api.cohere.com/v1/rerank", {
+    const res = await trackedFetch(env, "cohere", "https://api.cohere.com/v1/rerank", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.COHERE_API_KEY}`,
@@ -7067,7 +7071,7 @@ async function answerWithLLM(query, contextBlock, env) {
 
   try {
     for (let attempt = 0; attempt <= MAX_ANSWER_CONTINUATIONS; attempt++) {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const res = await trackedFetch(env, "groq", "https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${env.GROQ_API_KEY}`,
@@ -7350,7 +7354,7 @@ Write ONE paragraph (max ~120 words) capturing the key patient facts, clinical c
 
   let summaryText;
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const res = await trackedFetch(env, "groq", "https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.GROQ_API_KEY}`,
@@ -10170,6 +10174,7 @@ export default {
 
     const tagged = new Response(response.body, response);
     tagged.headers.set("X-Request-Id", requestId);
+    ctx.waitUntil(flushUpstreamFailures()); // upstream_failures writes queued during this request
 
     // Failed and slow calls go to request_log for the admin monitor (off unless REQUEST_LOG_STORE=true).
     // Per-route call counts go to route_usage (off unless ROUTE_USAGE_STORE=true).
@@ -10216,10 +10221,12 @@ export default {
     if (!isProbeCron || new Date(event.scheduledTime ?? Date.now()).getUTCMinutes() === 0) {
       ctx.waitUntil(runScheduledConsolidation(env));
     }
+    ctx.waitUntil(flushUpstreamFailures());
   },
 
   // Cloudflare Queues consumer — automated RAG ingestion (src/ragPipeline.js)
   async queue(batch, env, ctx) {
     await handleIngestQueue(batch, env, supabase(env));
+    await flushUpstreamFailures();
   },
 };
