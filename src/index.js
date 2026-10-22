@@ -3,7 +3,12 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.53.0
+ * Version: 1.54.0
+ * v1.54.0 changes: Nutrition Research & Surveillance Engine (src/surveillance.js, sql/037, SURVEILLANCE_STORE). POST /surveillance/records takes anonymised
+ *   screening records (one or up to 100; raw measurements are classified with the WHO tables and discarded; only coarse fields are accepted, so a name or phone
+ *   number is rejected). GET /surveillance/reference (any key); GET /surveillance/summary, /hotspots, /trends, /alerts, /insights (admin key): district hotspots
+ *   against the national figure (exact binomial test, Benjamini-Hochberg), monthly trends (Cochran-Armitage) with year-on-year change, early warning (recent months
+ *   vs baseline) and prioritised, actionable insights. Small cells (under SURVEILLANCE_MIN_CELL, default 10) are hidden. Programme data, not a random survey.
  * v1.53.0 changes: failure alerts and latency. (1) The health probe POSTs to ALERT_WEBHOOK_URL when the verdict flips (healthy <-> degraded) and holds for
  *   ALERT_CONFIRM_CHECKS probes (default 2); state lives in KV so a database outage still alerts; src/healthAlert.js. (2) GET /admin/usage now returns an
  *   estimated p95_ms per route and overall, from latency buckets added to route_usage by sql/036 (the Worker code that writes them is unchanged; the older
@@ -688,6 +693,7 @@ import { handleAdminOverview } from "./adminOverview.js";
 import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
+import { handleSurveillance } from "./surveillance.js";
 import { trackedFetch, recordUpstreamFailure, isFatSecretError, flushUpstreamFailures } from "./upstreamFailures.js";
 import { handleAdminHealthHistory, runHealthProbe, HEALTH_CRON } from "./healthMonitor.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
@@ -1302,6 +1308,14 @@ function routePolicy(resource, method, param, action) {
     return isWrite
       ? { auth: "key", rate: { limit: 30, windowSeconds: 60, scope: "ip" } }
       : { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+
+  // Nutrition Research & Surveillance Engine (src/surveillance.js). Sending anonymised records and reading the reference
+  // need any valid key; the analysis reads (summary, hotspots, trends, alerts, insights) need an admin key.
+  if (resource === "surveillance") {
+    if (param === "records" && method === "POST") return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    if (param === "reference" && method === "GET") return { auth: "key", rate: { limit: 60, windowSeconds: 60, scope: "ip" } };
+    return { auth: "admin", rate: { limit: 30, windowSeconds: 60, scope: "admin" } };
   }
 
   // API key management — admin-gated regardless of method (including GET,
@@ -7720,6 +7734,13 @@ function handleRoot(env) {
         "POST   /sports/body-composition (API key) → body {sex, weight_kg, body_fat_percent, age_years?, target_weight_kg?} → fat and lean mass, lowest safe and highest optimal weight, weekly loss/gain rates, weeks to target",
         "POST   /sports/supplement-dose  (API key) → body {weight_kg, age_years, supplements?: [caffeine|creatine|beta_alanine|hmb|beetroot_juice], pregnant?, lactating?} → chapter doses; withheld under 18, pregnant or nursing",
         "POST   /sports/plan             (API key) → one athlete: top-level body and activity fields plus optional profile, event, hydration, weight_goal, supplements objects → each section as its own endpoint would return it",
+        "POST   /surveillance/records    (API key) → one anonymised screening record, or {records:[...]} up to 100: {submission_id, consent_confirmed:true, observed_on?, district, sex?, age_months|age_years, setting?, source?, measurements?:{weight_kg,length_cm|height_cm,muac_cm}, outcomes?:{...}}; measurements are classified (WHO) and discarded; unknown fields are rejected; needs SURVEILLANCE_STORE=true and sql/037",
+        "GET    /surveillance/reference  (API key) → districts, population groups, indicators and statuses, accepted fields, privacy rules, method notes",
+        "GET    /surveillance/summary    (admin key) → records by group, setting and region, districts reporting, national prevalence per indicator (?from=&to=&months=)",
+        "GET    /surveillance/hotspots   (admin key) → districts significantly above the national figure for an indicator (?population_group=&indicator=&min_n=); pass indicator to list every district",
+        "GET    /surveillance/trends     (admin key) → monthly series, trend test and change vs the same month last year (?indicator= required, ?population_group=&district=&months=)",
+        "GET    /surveillance/alerts     (admin key) → early warning: districts where the recent months are higher than the baseline (?recent_months=3&baseline_months=9&min_increase_pp=2)",
+        "GET    /surveillance/insights   (admin key) → hotspots, rising districts, national trends and data gaps as prioritised insights with suggested actions and research questions",
         "GET    /energy/factors         (API key) → activity and stress factors, PAL categories, activity table, IOM equations, reference tables",
         "GET    /admin/usage      (root key only) → calls per endpoint, daily totals, top routes and estimated p95 latency from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032 (sql/036 for p95)",
         "GET    /admin/health-history (root key only) → uptime %, per-upstream uptime and latency, outage timeline from the 5-minute health probe (?hours=, max 720); needs HEALTH_CHECK_STORE=true and sql/034",
@@ -9421,6 +9442,15 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
 
     case "growth": {
       return await handleGrowth(request, url, db, param || null);
+    }
+
+    case "surveillance": {
+      const fetchRows = async (table, filters, limit) => {
+        const { ok, status, body } = await db.select(table, { filters, limit });
+        if (!ok) throw new Error(body?.message || `Query failed (${status})`);
+        return Array.isArray(body) ? body : [];
+      };
+      return await handleSurveillance(request, url, db, env, param || null, { success, err, notFound, parseBody, json }, fetchRows);
     }
 
     case "energy": {

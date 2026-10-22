@@ -2292,6 +2292,83 @@ normal operation.
 
 ---
 
+## Nutrition Research & Surveillance Engine (v1.54.0)
+
+Individual screening answers "is this child malnourished?". The surveillance engine answers "where, how many, and is it
+getting worse?" by pooling **anonymised** screening records. It finds districts with a higher burden than the national
+figure, tracks monthly trends, raises early warnings, and turns the findings into prioritised insights with suggested
+actions and research questions.
+
+Setup: run `sql/037_add_surveillance.sql` in Supabase and keep `SURVEILLANCE_STORE = "true"` in `wrangler.toml`.
+`SURVEILLANCE_MIN_CELL` (default `10`, lowest `5`) sets the smallest group that is ever shown.
+
+| Route | Key | Purpose |
+|---|---|---|
+| `POST /surveillance/records` | any API key | Send one record, or `{"records":[...]}` up to 100 |
+| `GET /surveillance/reference` | any API key | Districts, population groups, indicators, accepted fields, privacy rules |
+| `GET /surveillance/summary` | admin key | Records by group, setting and region; districts reporting; national prevalence |
+| `GET /surveillance/hotspots` | admin key | Districts significantly above the national figure |
+| `GET /surveillance/trends` | admin key | Monthly series, trend test, change against the same month last year |
+| `GET /surveillance/alerts` | admin key | Early warning: recent months against the baseline, per district |
+| `GET /surveillance/insights` | admin key | All of the above as prioritised, actionable findings |
+
+### Sending records
+
+```json
+{
+  "submission_id": "k3j9x2m8q1w7",
+  "consent_confirmed": true,
+  "observed_on": "2026-10-14",
+  "district": "Zomba",
+  "sex": "female",
+  "age_months": 18,
+  "setting": "community",
+  "source": "oasis",
+  "measurements": { "weight_kg": 8.1, "length_cm": 76.5, "muac_cm": 11.9 },
+  "outcomes": { "recent_diarrhoea": true, "low_dietary_diversity": true }
+}
+```
+
+- `submission_id`: a random token your app makes (8 to 64 letters, digits, `-` or `_`). It only stops a re-sent record from being counted twice. Never use an id from a patient record.
+- `consent_confirmed` must be `true`: your programme confirms it has the consent, or the legal and ethical basis, to share the anonymised record.
+- `district`: one of Malawi's 28 districts. `Mzuzu City`, `Lilongwe City`, `Blantyre City` and `Zomba City` roll up to Mzimba, Lilongwe, Blantyre and Zomba.
+- `age_months` for children, `age_years` for adults and women. `population_group` is worked out from the age (`under5`, `school_age`, `adolescent`, `adult`) and must be sent for `pregnant_lactating`.
+- `measurements` are classified with the WHO tables (the same maths as `/growth/assess`) and then **discarded**. Adults send `weight_kg` and `height_cm` for BMI. For pregnant and breastfeeding women send your own classification in `outcomes`.
+- `outcomes` are indicators you already classified. Risk indicators take `true`/`false`. A `false` matters: it is the denominator. If both are sent, the server's classification wins.
+- Re-sending the same `submission_id` is safe.
+
+**What is never stored:** names, phone numbers, addresses, facility names, patient or device ids, exact dates, exact ages, raw measurements.
+Any field outside the list above is **rejected**, so identifiers cannot slip in by accident. A record keeps only: month, district and region,
+population group, sex, age band, setting, app label and the classified outcomes.
+
+The response lists how many records were `stored`, `already_received` and `rejected` (by position, with the reason, never echoing the content).
+If every record is rejected the status is `422`.
+
+### Indicators
+
+`stunting`, `wasting`, `underweight`, `muac_gam`, `acute_malnutrition` (worst of wasting, low MUAC and oedema), `overweight`, `thinness`,
+`adult_underweight`, `adult_overweight`, `maternal_muac_low`, and yes/no risk indicators `anaemia_suspected`, `low_dietary_diversity`,
+`food_insecure_household`, `recent_diarrhoea`, `bilateral_oedema`, `not_exclusively_breastfed`. `GET /surveillance/reference` lists the population groups
+and statuses for each.
+
+### Reading the analysis
+
+All analysis routes take a window: `?months=` (1 to 36, default 12) or `?from=2026-01&to=2026-09`.
+
+- **Hotspots**: `?population_group=&indicator=&min_n=`. A district is a hotspot when its rate is above the national rate by an exact binomial test, corrected across districts (Benjamini-Hochberg, q at most 0.10). Priority is `critical`, `high` or `medium` from the ratio to the national rate and the WHO band. Pass `indicator` to list every district. Districts with fewer than `min_n` records (default 30) are not compared.
+- **Trends**: `?indicator=` (required) `&population_group=&district=&months=`. Cochran-Armitage trend test and a weighted slope in percentage points per month, plus change against the same month a year earlier when available.
+- **Alerts**: `?recent_months=3&baseline_months=9&min_increase_pp=2`. A district is flagged when its recent months are significantly higher than its own baseline.
+- **Insights**: hotspots, rising districts, national trends and data gaps in one list, sorted by priority. Each has `evidence`, `confidence`, `suggested_actions` and `research_questions`, followed by `data_quality`.
+
+### Privacy and honesty about the data
+
+- Reads return aggregates only, never rows. Any district or month with fewer than the minimum cell size is hidden (`classification: "suppressed"`).
+- This is programme screening data, not a random survey. Figures describe the people who were screened, not whole districts, and WHO prevalence bands are indicative only. Confirm important findings with a representative survey (SMART, DHS, MICS) before large resource decisions. Every analysis response carries this caveat.
+- `data_quality` reports districts with too little data, districts reporting in fewer than half the months, and a heavy facility bias, because a district with no data is not a district with no problem.
+- Suggested actions are decision support for programme teams, not clinical advice or directives.
+
+If `sql/037` has not been run, the read routes return `{"available": false}` with a note instead of an error.
+
 ## Response Format
 
 ### List success

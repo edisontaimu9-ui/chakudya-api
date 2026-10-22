@@ -83,6 +83,12 @@ ALERT_CONFIRM_CHECKS = "2"
 # A thrown error, timeout or non-2xx reply counts; "no match" does not. Counts only. Set to "false" to stop counting.
 UPSTREAM_FAILURES_STORE = "true"
 
+# Nutrition Research & Surveillance Engine: POST /surveillance/records stores anonymised screening records in surveillance_records
+# (run sql/037 first). Reads (hotspots, trends, alerts, insights) need an admin key. Set to "false" to stop accepting records.
+# SURVEILLANCE_MIN_CELL hides any district or month with fewer records than this (default 10, lowest allowed 5).
+SURVEILLANCE_STORE = "true"
+SURVEILLANCE_MIN_CELL = "10"
+
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
 # Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).
 # Both fail OPEN (silently) if this isn't bound — no error, just no rate
