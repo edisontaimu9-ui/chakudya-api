@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.51.0
+  version: 1.52.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -260,6 +260,90 @@ paths:
                           items:
                             type: object
                             description: method, route, calls, errors, error_rate (percent), avg_ms, share (percent of all calls) and last_day.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not the root key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /admin/health-history:
+    get:
+      tags:
+      - API Keys
+      summary: Uptime, upstream status and outage timeline (root key only)
+      description: Reads the health probe history. A cron runs the same checks as `GET /health` every 5 minutes and stores one
+        row per run when `HEALTH_CHECK_STORE=true` (run `sql/034_add_health_checks.sql` first). Returns uptime percent, coverage
+        (how many of the expected probes actually ran), per-upstream uptime and probe latency (average, p95, max), an outage
+        timeline (runs of consecutive degraded probes, newest first) and daily uptime. `current.stale` is true when the latest
+        probe is older than 15 minutes, which usually means the cron is not running. A probe that could not reach the database
+        is held in KV and written with the next one, so a database outage still shows up. Only Supabase, Cohere and Groq
+        count towards an outage. Needs the root key. When the table cannot be read the response has `available` false and a note.
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: hours
+        in: query
+        schema:
+          type: integer
+          default: 24
+          maximum: 720
+        description: Look-back window in hours.
+      responses:
+        '200':
+          description: Health history summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/Success'
+                - type: object
+                  properties:
+                    data:
+                      type: object
+                      properties:
+                        generated_at:
+                          type: string
+                          format: date-time
+                        window_hours:
+                          type: integer
+                        available:
+                          type: boolean
+                        storage_enabled:
+                          type: boolean
+                        probe_every_minutes:
+                          type: integer
+                        truncated:
+                          type: boolean
+                        totals:
+                          type: object
+                          description: checks, healthy and degraded counts.
+                        uptime_pct:
+                          type: number
+                          nullable: true
+                          description: Healthy probes as a percent of all probes in the window.
+                        coverage_pct:
+                          type: number
+                          nullable: true
+                          description: Probes that ran as a percent of probes expected since the first one in the window.
+                        current:
+                          type: object
+                          nullable: true
+                          description: Latest probe, with age_minutes, stale and each service status.
+                        services:
+                          type: object
+                          description: Per service checks, errors, uptime_pct, avg_ms, p95_ms, max_ms and required.
+                        incidents:
+                          type: array
+                          items:
+                            type: object
+                            description: started_at, resolved_at, ongoing, checks, duration_minutes, failing_services and detail.
+                        daily:
+                          type: array
+                          items:
+                            type: object
+                            description: day, checks, healthy and uptime_pct.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

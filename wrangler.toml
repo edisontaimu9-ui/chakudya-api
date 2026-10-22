@@ -71,6 +71,9 @@ REQUEST_LOG_STORE = "true"
 # Admin monitor "Usage by endpoint": count calls per route per day in route_usage (run sql/032 first).
 # One small fire-and-forget database call per request. Set to "false" to stop counting.
 ROUTE_USAGE_STORE = "true"
+# Admin monitor "Uptime and outages": the 5-minute cron stores each health probe in health_checks (run sql/034 first).
+# About 288 small rows a day, 30 days kept. If the database is down the row waits in KV and is written with the next probe.
+HEALTH_CHECK_STORE = "true"
 
 # ── KV Namespace — rate limiting + RAG/memory query cache ──────────
 # Bound as RATE_LIMIT_KV in code (checkRateLimit, getQueryCache/putQueryCache).
@@ -90,8 +93,10 @@ id = "413e22969b074518b12a5c0022cf3a84"
 # The "Consolidate" step of Write/Consolidate/Recall/Apply: finds sessions
 # with 6+ unconsolidated memory facts and summarizes each via Groq.
 # See sql/memory_schema.sql for the required table + RPC functions.
+# The "*/5 * * * *" cron is the health probe (HEALTH_CHECK_STORE, sql/034): it runs the
+# GET /health checks every 5 minutes and stores the result for GET /admin/health-history.
 [triggers]
-crons = ["0 * * * *"]
+crons = ["0 * * * *", "*/5 * * * *"]
 
 # ── Automated RAG ingestion (POST /rag/upload -> queue -> chunks) ──
 # Queue must exist BEFORE deploy: dashboard -> Workers & Pages -> Queues

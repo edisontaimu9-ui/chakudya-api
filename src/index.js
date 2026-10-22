@@ -3,7 +3,11 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.51.0
+ * Version: 1.52.0
+ * v1.52.0 changes: scheduled health monitoring. A 5-minute cron runs the same checks as GET /health and stores one row per run in health_checks
+ *   when HEALTH_CHECK_STORE=true. New GET /admin/health-history (root key only, ?hours=, max 720): uptime %, coverage, per-upstream uptime and probe latency
+ *   (avg, p95, max), an outage timeline and daily uptime. A probe that cannot reach the database is parked in KV and written with the next one. Requires
+ *   sql/034_add_health_checks.sql and the extra cron in wrangler.toml; src/healthMonitor.js. GET /health now also returns ms per pinged service.
  * v1.51.0 changes: diabetes nutrition (no SQL, any API key). New resource /diabetes from Krause 16th ed. ch. 30, ADA Standards of Care 2026 and the UCT exchange lists:
  *   GET /diabetes/reference?section=, POST /diabetes/status (A1C/FPG/OGTT category, eAG), /glucose-targets, /carb-plan (carbohydrate distribution), /carb-count (label reading),
  *   /exchange-plan (reads exchange_lists), /glycemic-load (reads glycaemic_index_data), /insulin (500 and 1700 rules, mealtime dose), /hypoglycemia, /exercise, /plan.
@@ -680,6 +684,7 @@ import { handleAdminOverview } from "./adminOverview.js";
 import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
+import { handleAdminHealthHistory, runHealthProbe, HEALTH_CRON } from "./healthMonitor.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
@@ -744,7 +749,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.51.0";
+const CNR_VERSION = "1.52.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1243,7 +1248,7 @@ function routePolicy(resource, method, param, action) {
   const isMemoryWrite = resource === "memory" && param === "write" && method === "POST";
   const isMemoryRecall = resource === "memory" && param === "recall" && (method === "GET" || method === "POST");
   const isMemoryConsolidate = resource === "memory" && param === "consolidate" && method === "POST";
-  const isAdminKeys = resource === "admin" && (param === "keys" || param === "overview" || param === "activity" || param === "monitoring" || param === "usage");
+  const isAdminKeys = resource === "admin" && (param === "keys" || param === "overview" || param === "activity" || param === "monitoring" || param === "usage" || param === "health-history");
   const isBulkInsert =
     ["foods", "exchange", "renal", "formulas", "drug-interactions", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "fenton-preterm", "activity-energy"].includes(resource) &&
     param === "bulk" &&
@@ -7573,14 +7578,20 @@ async function checkOpenFoodFacts() {
   return res.ok ? { status: "ok" } : { status: "error", detail: res.error || `HTTP ${res.httpStatus}` };
 }
 
-async function handleHealth(request, env) {
-  if (request.method !== "GET") return err("Method not allowed", 405);
+/** Runs a check and adds how long it took (ms), for the health history and the /health response. */
+async function timedCheck(fn) {
+  const t = Date.now();
+  const r = await fn();
+  return r.status === "not_configured" ? r : { ...r, ms: Date.now() - t };
+}
 
+/** The checks behind GET /health, shared with the scheduled probe (src/healthMonitor.js). */
+async function collectHealth(env) {
   const [supabase_, cohere_, groq_, openFoodFacts_] = await Promise.all([
-    checkSupabase(env),
-    checkCohere(env),
-    checkGroq(env),
-    checkOpenFoodFacts(),
+    timedCheck(() => checkSupabase(env)),
+    timedCheck(() => checkCohere(env)),
+    timedCheck(() => checkGroq(env)),
+    timedCheck(() => checkOpenFoodFacts()),
   ]);
 
   const services = {
@@ -7605,6 +7616,13 @@ async function handleHealth(request, env) {
   // usda_fdc/fatsecret already do. So it's reported for visibility but,
   // like those two, doesn't flip the overall healthy/degraded verdict.
   const degraded = [supabase_, cohere_, groq_].some((s) => s.status === "error");
+  return { services, degraded };
+}
+
+async function handleHealth(request, env) {
+  if (request.method !== "GET") return err("Method not allowed", 405);
+
+  const { services, degraded } = await collectHealth(env);
 
   return json(
     {
@@ -7696,6 +7714,7 @@ function handleRoot(env) {
         "POST   /sports/plan             (API key) → one athlete: top-level body and activity fields plus optional profile, event, hydration, weight_goal, supplements objects → each section as its own endpoint would return it",
         "GET    /energy/factors         (API key) → activity and stress factors, PAL categories, activity table, IOM equations, reference tables",
         "GET    /admin/usage      (root key only) → calls per endpoint, daily totals and top routes from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032",
+        "GET    /admin/health-history (root key only) → uptime %, per-upstream uptime and latency, outage timeline from the 5-minute health probe (?hours=, max 720); needs HEALTH_CHECK_STORE=true and sql/034",
         "GET    /admin/monitoring (root key only) → failed calls and slow endpoints from request_log (?hours=, max 168); needs REQUEST_LOG_STORE=true and sql/031",
         "GET    /admin/activity   (root key only) → recent admin actions: keys created/revoked, packaged foods approved/rejected (?limit=, max 100)",
         "GET    /admin/overview   (root key only) → read-only snapshot for the admin monitor: registry record counts, packaged review queue, RAG ingest jobs, API key and usage totals",
@@ -9206,6 +9225,9 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "usage") {
         return await handleAdminUsage(request, db, env, { success, err });
       }
+      if (param === "health-history") {
+        return await handleAdminHealthHistory(request, db, env, { success, err });
+      }
       return notFound();
     }
 
@@ -9796,7 +9818,7 @@ async function authAndRateGate(request, env, ctx, db, resource, method, param, a
 
     // Managing other API keys is root-only — a per-consumer key can't
     // mint or revoke keys, so a single leaked non-root key can't escalate.
-    if (resource === "admin" && (param === "keys" || param === "overview" || param === "activity" || param === "monitoring" || param === "usage") && !admin.isRoot) {
+    if (resource === "admin" && (param === "keys" || param === "overview" || param === "activity" || param === "monitoring" || param === "usage" || param === "health-history") && !admin.isRoot) {
       return { response: unauthorized("Only the root admin key can manage API keys") };
     }
 
@@ -10182,6 +10204,12 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    if (event.cron === HEALTH_CRON) {
+      // Every 5 minutes: health probe -> health_checks (off unless HEALTH_CHECK_STORE=true).
+      const db = env.SUPABASE_URL && env.SUPABASE_KEY ? supabase(env) : null;
+      ctx.waitUntil(runHealthProbe(env, db, collectHealth).catch((e) => console.error("[health-probe] failed:", e?.message || e)));
+      return;
+    }
     ctx.waitUntil(runScheduledConsolidation(env));
   },
 

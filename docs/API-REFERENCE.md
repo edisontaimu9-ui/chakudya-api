@@ -531,6 +531,51 @@ Returns `200` when `status: "healthy"`, `503` when `status: "degraded"`
 (i.e. Supabase, Cohere, or Groq — the required upstreams — failed to
 respond).
 
+Each pinged service also reports `ms`, how long its check took (`v1.52.0+`).
+
+#### Health history (`v1.52.0+`)
+
+- `GET /admin/health-history` *(root admin key only)* — uptime and outage history
+  from a scheduled probe. A cron (`*/5 * * * *`) runs the same checks as
+  `GET /health` and stores one row per run in `health_checks` (about 288 a
+  day, 30 days kept). `?hours=` sets the window (default 24, max 720).
+
+Setup: run `sql/034_add_health_checks.sql` in Supabase, keep
+`HEALTH_CHECK_STORE = "true"` and the second cron in `wrangler.toml`, then
+`npx wrangler deploy`. Nothing is stored unless `HEALTH_CHECK_STORE=true`.
+
+Response (shortened):
+
+```json
+{
+  "window_hours": 24,
+  "available": true,
+  "uptime_pct": 99.7,
+  "coverage_pct": 100,
+  "current": { "at": "2026-10-22T10:05:00.000Z", "status": "healthy", "age_minutes": 2, "stale": false,
+               "services": { "supabase": "ok", "cohere": "ok", "groq": "ok", "open_food_facts": "ok" } },
+  "services": {
+    "groq": { "checks": 288, "errors": 1, "uptime_pct": 99.7, "avg_ms": 140, "p95_ms": 310, "max_ms": 5003, "required": true }
+  },
+  "incidents": [
+    { "started_at": "2026-10-22T04:15:00.000Z", "resolved_at": "2026-10-22T04:20:00.000Z", "ongoing": false,
+      "checks": 1, "duration_minutes": 5, "failing_services": ["groq"], "detail": "groq: Timed out" }
+  ],
+  "daily": [ { "day": "2026-10-22", "checks": 288, "healthy": 287, "uptime_pct": 99.7 } ]
+}
+```
+
+- `uptime_pct` is healthy probes over all probes. Only Supabase, Cohere and
+  Groq can make a probe `degraded`, the same rule as `/health`.
+- `coverage_pct` is probes that ran over probes expected since the first one
+  in the window. Below 100 means missed cron runs.
+- `current.stale` is `true` when the latest probe is over 15 minutes old,
+  usually because the cron stopped.
+- An incident is a run of consecutive degraded probes. Its length is
+  measured to the first healthy probe, so it is accurate to about 5 minutes.
+- If a probe cannot reach the database it is held in KV and written with the
+  next successful one, so a Supabase outage still appears in the timeline.
+
 ### Batch
 
 - `POST /batch` *(API key, rate-limited, max 20 sub-requests)* — runs several
