@@ -3,7 +3,11 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.52.0
+ * Version: 1.53.0
+ * v1.53.0 changes: failure alerts and latency. (1) The health probe POSTs to ALERT_WEBHOOK_URL when the verdict flips (healthy <-> degraded) and holds for
+ *   ALERT_CONFIRM_CHECKS probes (default 2); state lives in KV so a database outage still alerts; src/healthAlert.js. (2) GET /admin/usage now returns an
+ *   estimated p95_ms per route and overall, from latency buckets added to route_usage by sql/036 (the Worker code that writes them is unchanged; the older
+ *   columns are used if sql/036 has not been run). (3) upstream_failures: daily count of failed Cohere, Groq, USDA and FatSecret calls (sql/035, UPSTREAM_FAILURES_STORE).
  * v1.52.0 changes: scheduled health monitoring. A 5-minute cron runs the same checks as GET /health and stores one row per run in health_checks
  *   when HEALTH_CHECK_STORE=true. New GET /admin/health-history (root key only, ?hours=, max 720): uptime %, coverage, per-upstream uptime and probe latency
  *   (avg, p95, max), an outage timeline and daily uptime. A probe that cannot reach the database is parked in KV and written with the next one. Requires
@@ -750,7 +754,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.52.0";
+const CNR_VERSION = "1.53.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -7717,7 +7721,7 @@ function handleRoot(env) {
         "POST   /sports/supplement-dose  (API key) → body {weight_kg, age_years, supplements?: [caffeine|creatine|beta_alanine|hmb|beetroot_juice], pregnant?, lactating?} → chapter doses; withheld under 18, pregnant or nursing",
         "POST   /sports/plan             (API key) → one athlete: top-level body and activity fields plus optional profile, event, hydration, weight_goal, supplements objects → each section as its own endpoint would return it",
         "GET    /energy/factors         (API key) → activity and stress factors, PAL categories, activity table, IOM equations, reference tables",
-        "GET    /admin/usage      (root key only) → calls per endpoint, daily totals and top routes from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032",
+        "GET    /admin/usage      (root key only) → calls per endpoint, daily totals, top routes and estimated p95 latency from route_usage (?days=, max 30); needs ROUTE_USAGE_STORE=true and sql/032 (sql/036 for p95)",
         "GET    /admin/health-history (root key only) → uptime %, per-upstream uptime and latency, outage timeline from the 5-minute health probe (?hours=, max 720); needs HEALTH_CHECK_STORE=true and sql/034",
         "GET    /admin/monitoring (root key only) → failed calls and slow endpoints from request_log (?hours=, max 168); needs REQUEST_LOG_STORE=true and sql/031",
         "GET    /admin/activity   (root key only) → recent admin actions: keys created/revoked, packaged foods approved/rejected (?limit=, max 100)",

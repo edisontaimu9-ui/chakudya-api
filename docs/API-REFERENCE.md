@@ -576,6 +576,26 @@ Response (shortened):
 - If a probe cannot reach the database it is held in KV and written with the
   next successful one, so a Supabase outage still appears in the timeline.
 
+#### Verdict alerts (`v1.53.0+`)
+
+When the secret `ALERT_WEBHOOK_URL` is set (an `https://` URL), the probe POSTs a JSON alert when the verdict flips from `healthy` to `degraded`, and again when it
+recovers. A flip must hold for `ALERT_CONFIRM_CHECKS` probes in a row (default 2, about 10 minutes) so one slow probe does not alert. The last confirmed verdict is
+kept in KV, so an outage of the database still alerts. If the webhook call fails, the next probe tries again. Alerts work even when `HEALTH_CHECK_STORE` is off.
+
+```json
+{ "text": "Chakudya API is DEGRADED: groq (Timed out)", "content": "Chakudya API is DEGRADED: groq (Timed out)",
+  "event": "health.degraded", "status": "degraded", "at": "2026-10-22T10:10:00.000Z",
+  "failing_services": ["groq (Timed out)"], "degraded_since": "2026-10-22T10:05:00.000Z" }
+```
+
+`event` is `health.degraded` or `health.recovered`. `text` suits Slack-style webhooks and `content` suits Discord.
+
+#### Usage p95 (`v1.53.0+`)
+
+`GET /admin/usage` returns `p95_ms` for each top route and in `totals`, estimated from latency buckets (50, 100, 250, 500, 1000, 2500, 5000 ms and above). Run
+`sql/036_add_latency_buckets.sql` to start filling them; it is `null` until then. `totals.p95_over_cap` is `true` when the 95th percentile falls above 5000 ms,
+in which case `p95_ms` is a floor, not an estimate.
+
 ### Batch
 
 - `POST /batch` *(API key, rate-limited, max 20 sub-requests)* — runs several

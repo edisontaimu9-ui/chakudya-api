@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.52.0
+  version: 1.53.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -259,7 +259,7 @@ paths:
                           description: Up to 25 busiest endpoints.
                           items:
                             type: object
-                            description: method, route, calls, errors, error_rate (percent), avg_ms, share (percent of all calls) and last_day.
+                            description: method, route, calls, errors, error_rate (percent), avg_ms, p95_ms (estimated from latency buckets, null until sql/036 is run and traffic arrives), share (percent of all calls) and last_day.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

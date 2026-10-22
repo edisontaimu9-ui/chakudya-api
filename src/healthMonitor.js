@@ -5,6 +5,9 @@
 // If the database itself is down the insert fails, so the row is parked in KV (RATE_LIMIT_KV) and written together
 // with the next probe that gets through. That keeps a Supabase outage visible in the timeline instead of a blank gap.
 // Rows hold statuses, probe latency and a short error detail. No keys, IPs, queries or bodies.
+// When ALERT_WEBHOOK_URL is set, each probe also checks whether the verdict flipped and posts an alert (src/healthAlert.js).
+
+import { checkVerdictFlip } from "./healthAlert.js";
 
 export const HEALTH_CRON = "*/5 * * * *";
 export const PROBE_INTERVAL_MIN = 5;
@@ -74,18 +77,24 @@ export async function recordHealthCheck(env, db, row) {
  * Cron entry point. `collect(env)` must return {services, degraded} (the same checks GET /health runs).
  * Returns what happened, mostly for tests; the caller wraps it in ctx.waitUntil.
  */
-export async function runHealthProbe(env, db, collect, now = new Date()) {
-  if (env?.HEALTH_CHECK_STORE !== "true") return { skipped: true };
+export async function runHealthProbe(env, db, collect, now = new Date(), fetchImpl = fetch) {
+  const storeOn = env?.HEALTH_CHECK_STORE === "true";
+  const alertOn = !!env?.ALERT_WEBHOOK_URL;
+  if (!storeOn && !alertOn) return { skipped: true };
   const started = Date.now();
   const result = await collect(env);
   const row = buildHealthRow(result, now, Date.now() - started);
+
+  // Alert first: it only needs KV, so a database outage (or a slow insert) cannot hold it back.
+  const alert = alertOn ? await checkVerdictFlip(env, row, fetchImpl) : null;
+  if (!storeOn) return { skipped: false, row, stored: 0, buffered: 0, alert };
   const outcome = await recordHealthCheck(env, db, row);
 
   // Housekeeping once a day, in the 03:00 UTC run.
   if (now.getUTCHours() === 3 && now.getUTCMinutes() < PROBE_INTERVAL_MIN && db?.rpc) {
     try { await db.rpc("purge_health_checks", { p_days: RETENTION_DAYS }); } catch (_) { /* ignore */ }
   }
-  return { skipped: false, row, ...outcome };
+  return { skipped: false, row, ...outcome, ...(alert ? { alert } : {}) };
 }
 
 function pct(part, whole) {

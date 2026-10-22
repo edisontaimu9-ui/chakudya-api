@@ -74,6 +74,11 @@ ROUTE_USAGE_STORE = "true"
 # Admin monitor "Uptime and outages": the 5-minute cron stores each health probe in health_checks (run sql/034 first).
 # About 288 small rows a day, 30 days kept. If the database is down the row waits in KV and is written with the next probe.
 HEALTH_CHECK_STORE = "true"
+# Alert when the health verdict flips (healthy <-> degraded). Set ALERT_WEBHOOK_URL as a SECRET (Cloudflare dashboard -> Settings -> Variables and Secrets,
+# or `npx wrangler secret put ALERT_WEBHOOK_URL`), not here: it is a private URL. Must start with https://. Works with Slack-style and Discord webhooks
+# (the JSON has both "text" and "content") or any URL that accepts a JSON POST. Needs the RATE_LIMIT_KV binding below. Off while the secret is unset.
+# A flip must hold for this many probes in a row (5 minutes apart) before it alerts. Default 2. Use 1 to alert on the first bad probe.
+ALERT_CONFIRM_CHECKS = "2"
 # Failed calls to Cohere, Groq, USDA and FatSecret are counted per UTC day in upstream_failures (run sql/035 first).
 # A thrown error, timeout or non-2xx reply counts; "no match" does not. Counts only. Set to "false" to stop counting.
 UPSTREAM_FAILURES_STORE = "true"
