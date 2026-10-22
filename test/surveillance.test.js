@@ -5,7 +5,7 @@ import {
   normalizeDistrict, validateRecord, buildIndicators, ingestRecords, adultIndicatorsFromBmi, whoBand, minCell,
   wilson, binomialUpperTail, benjaminiHochberg, trendTest, twoProportionZ, weightedSlope,
   parseMonth, addMonths, monthsBetween, resolveWindow, analyseHotspots, analyseTrend, analyseAlerts,
-  dataQuality, buildInsights, handleSurveillance, referenceData, DISTRICTS, INDICATORS, consolidateAcute,
+  dataQuality, buildInsights, handleSurveillance, referenceData, DISTRICTS, INDICATORS, consolidateAcute, fmtP,
 } from "../src/surveillance.js";
 
 const NOW = new Date("2026-10-22T09:00:00Z");
@@ -547,6 +547,21 @@ describe("handleSurveillance", () => {
     assert.equal((await call("GET", "summary?months=99", "summary", scenarioDb())).status, 400);
     assert.equal((await call("POST", "summary", "summary", scenarioDb())).status, 405);
     assert.equal((await call("GET", "nope", "nope", scenarioDb())).status, 404);
+  });
+});
+
+describe("fmtP", () => {
+  test("tiny values read '<0.0001', never 0", () => {
+    assert.equal(fmtP(0), "<0.0001");
+    assert.equal(fmtP(0.00004), "<0.0001");
+    assert.equal(fmtP(0.0144), "0.0144");
+    assert.equal(fmtP(0.094), "0.094");
+    assert.equal(fmtP(null), "n/a");
+  });
+  test("insight text uses it", async () => {
+    const r = await handleSurveillance(req("GET"), new URL("https://x/surveillance/insights?population_group=under5"), scenarioDb(), {}, "insights", helpers, fetchRows, NOW);
+    const hs = r.data.insights.find((i) => i.type === "hotspot");
+    assert.ok(hs && !/\(q 0\)/.test(hs.detail) && /q (<0\.0001|0\.\d+)/.test(hs.detail), hs?.detail);
   });
 });
 

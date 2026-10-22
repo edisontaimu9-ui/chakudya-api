@@ -833,6 +833,9 @@ const RESEARCH = {
   ],
 };
 
+/** A p- or q-value for reading aloud: values rounded to nothing read "<0.0001", never "0". */
+export const fmtP = (v) => (v === null || v === undefined ? "n/a" : v < 0.0001 ? "<0.0001" : String(v));
+
 const confidenceFor = (n) => (n >= 200 ? "good" : n >= 60 ? "moderate" : "low");
 const where = (district) => (district ? `${district} district` : "Malawi (all reporting districts)");
 
@@ -848,7 +851,7 @@ function hotspotInsight(group, h, d) {
     district: d.district,
     region: d.region,
     title: `${d.district}: higher ${shortName(h.indicator)} among ${GROUP_INFO[group].label.toLowerCase()}`,
-    detail: `${d.cases} of ${d.n} screened (${d.prevalence_pct}%) against ${h.national.prevalence_pct}% nationally${ratio}; statistically above the national figure (q ${d.q_value}).${band}`,
+    detail: `${d.cases} of ${d.n} screened (${d.prevalence_pct}%) against ${h.national.prevalence_pct}% nationally${ratio}; statistically above the national figure (q ${fmtP(d.q_value)}).${band}`,
     evidence: { n: d.n, cases: d.cases, prevalence_pct: d.prevalence_pct, ci95_pct: d.ci95_pct, national_pct: h.national.prevalence_pct, ratio_to_national: d.ratio_to_national, q_value: d.q_value },
     confidence: confidenceFor(d.n),
     suggested_actions: ACTIONS[h.indicator] || [],
@@ -866,7 +869,7 @@ function alertInsight(a) {
     district: a.district,
     region: a.region,
     title: `${where(a.district)}: ${shortName(a.indicator)} rising among ${GROUP_INFO[a.population_group].label.toLowerCase()}`,
-    detail: `Recent months ${a.recent.prevalence_pct}% (${a.recent.cases} of ${a.recent.n}) against ${a.baseline.prevalence_pct}% in the baseline period: up ${a.increase_pp} percentage points (q ${a.q_value}).`,
+    detail: `Recent months ${a.recent.prevalence_pct}% (${a.recent.cases} of ${a.recent.n}) against ${a.baseline.prevalence_pct}% in the baseline period: up ${a.increase_pp} percentage points (q ${fmtP(a.q_value)}).`,
     evidence: { recent: a.recent, baseline: a.baseline, increase_pp: a.increase_pp, q_value: a.q_value },
     confidence: confidenceFor(a.recent.n),
     suggested_actions: ACTIONS[a.indicator] || [],
@@ -886,7 +889,7 @@ function trendInsight(t) {
     indicator: t.indicator,
     district: null,
     title: `${shortName(t.indicator)} is steadily ${dir} among ${GROUP_INFO[t.population_group].label.toLowerCase()}`,
-    detail: `${tr.slope_pp_per_month > 0 ? "+" : ""}${tr.slope_pp_per_month} percentage points per month across ${tr.months_used} months (p ${tr.p_value}).${t.vs_same_month_last_year ? ` Latest month ${t.vs_same_month_last_year.prevalence_pct}% against ${t.vs_same_month_last_year.same_month_last_year_pct}% a year earlier.` : ""}`,
+    detail: `${tr.slope_pp_per_month > 0 ? "+" : ""}${tr.slope_pp_per_month} percentage points per month across ${tr.months_used} months (p ${fmtP(tr.p_value)}).${t.vs_same_month_last_year ? ` Latest month ${t.vs_same_month_last_year.prevalence_pct}% against ${t.vs_same_month_last_year.same_month_last_year_pct}% a year earlier.` : ""}`,
     evidence: { slope_pp_per_month: tr.slope_pp_per_month, p_value: tr.p_value, months_used: tr.months_used, ...(t.vs_same_month_last_year ? { vs_same_month_last_year: t.vs_same_month_last_year } : {}) },
     confidence: confidenceFor(n),
     suggested_actions: tr.direction === "increasing" ? ACTIONS[t.indicator] || [] : [],
