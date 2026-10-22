@@ -5,7 +5,7 @@ import {
   normalizeDistrict, validateRecord, buildIndicators, ingestRecords, adultIndicatorsFromBmi, whoBand, minCell,
   wilson, binomialUpperTail, benjaminiHochberg, trendTest, twoProportionZ, weightedSlope,
   parseMonth, addMonths, monthsBetween, resolveWindow, analyseHotspots, analyseTrend, analyseAlerts,
-  dataQuality, buildInsights, handleSurveillance, referenceData, DISTRICTS, INDICATORS,
+  dataQuality, buildInsights, handleSurveillance, referenceData, DISTRICTS, INDICATORS, consolidateAcute,
 } from "../src/surveillance.js";
 
 const NOW = new Date("2026-10-22T09:00:00Z");
@@ -547,6 +547,24 @@ describe("handleSurveillance", () => {
     assert.equal((await call("GET", "summary?months=99", "summary", scenarioDb())).status, 400);
     assert.equal((await call("POST", "summary", "summary", scenarioDb())).status, 405);
     assert.equal((await call("GET", "nope", "nope", scenarioDb())).status, 404);
+  });
+});
+
+describe("consolidateAcute", () => {
+  const mk = (indicator, priority, type = "hotspot", district = "Nsanje") => ({ id: `${type}:${indicator}:${district}`, type, indicator, priority, district, population_group: "under5", detail: "x." });
+  test("three overlapping findings become one, at the highest priority, listing the others", () => {
+    const out = consolidateAcute([mk("wasting", "high"), mk("muac_gam", "medium"), mk("acute_malnutrition", "medium"), mk("stunting", "medium")]);
+    assert.equal(out.length, 2);
+    const a = out.find((i) => i.indicator === "acute_malnutrition");
+    assert.equal(a.priority, "high");
+    assert.deepEqual(a.also_flagged.sort(), ["muac_gam", "wasting"]);
+    assert.match(a.detail, /Related measures also flagged/);
+    assert.ok(out.find((i) => i.indicator === "stunting"));
+  });
+  test("different districts or types stay separate; a lone finding is untouched", () => {
+    const out = consolidateAcute([mk("wasting", "high"), mk("wasting", "high", "hotspot", "Chikwawa"), mk("wasting", "high", "rising")]);
+    assert.equal(out.length, 3);
+    assert.ok(out.every((i) => !i.also_flagged));
   });
 });
 

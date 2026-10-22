@@ -728,7 +728,7 @@ export function analyseAlerts(recentRows, baseRows, group, { minIncreasePp = DEF
     const b = base.get(key(r));
     if (!b) continue;
     const a = tally(r.counts, def), c = tally(b.counts, def);
-    if (a.n < Math.max(20, cell) || c.n < 30 || a.cases < 5) continue;
+    if (a.n < Math.max(30, cell) || c.n < 30 || a.cases < 5) continue;
     const t = twoProportionZ(a.cases, a.n, c.cases, c.n);
     tests.push({ indicator: r.indicator, district: r.district || null, region: r.region || null, recent: a, baseline: c, p: t.p, z: t.z });
   }
@@ -963,9 +963,40 @@ function gapInsights(quality, minCellValue) {
   return out;
 }
 
+const ACUTE_FAMILY = ["acute_malnutrition", "wasting", "muac_gam"];
+
+/**
+ * Wasting, low MUAC and acute malnutrition overlap (acute malnutrition is the worst of the other two plus oedema),
+ * so one district flagged on all three is one problem, not three. Keep one insight per (type, group, district),
+ * preferring acute malnutrition, at the highest priority among them, and list the others on it.
+ */
+export function consolidateAcute(list) {
+  const keep = [];
+  const families = new Map();
+  for (const i of list) {
+    if ((i.type === "hotspot" || i.type === "rising") && ACUTE_FAMILY.includes(i.indicator)) {
+      const k = [i.type, i.population_group, i.district].join("|");
+      if (!families.has(k)) families.set(k, []);
+      families.get(k).push(i);
+    } else keep.push(i);
+  }
+  for (const arr of families.values()) {
+    arr.sort((a, b) => ACUTE_FAMILY.indexOf(a.indicator) - ACUTE_FAMILY.indexOf(b.indicator));
+    const primary = { ...arr[0] };
+    primary.priority = arr.map((x) => x.priority).sort((a, b) => PRIORITY_RANK[a] - PRIORITY_RANK[b])[0];
+    const others = arr.slice(1).map((x) => x.indicator);
+    if (others.length) {
+      primary.also_flagged = others;
+      primary.detail += ` Related measures also flagged here: ${others.map(shortName).join(", ")}.`;
+    }
+    keep.push(primary);
+  }
+  return keep;
+}
+
 /** Combines the analyses for the requested groups into one prioritised list. */
 export async function buildInsights(store, { groups, from, to, minN, cell, recentMonths = DEFAULT_RECENT, baselineMonths = DEFAULT_BASELINE, minIncreasePp = DEFAULT_MIN_INCREASE_PP, maxInsights = 25 }) {
-  const insights = [];
+  let insights = [];
   const flagged = new Map(); // `${group}|${indicator}` -> true
   const sections = [];
   const recentFrom = addMonths(to, -(recentMonths - 1));
@@ -1006,6 +1037,7 @@ export async function buildInsights(store, { groups, from, to, minN, cell, recen
     if (a.trend.direction === "increasing" || a.trend.direction === "decreasing") insights.push(trendInsight(a));
   }));
 
+  insights = consolidateAcute(insights);
   insights.push(...gapInsights(quality, cell));
   insights.sort((a, b) => (PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]) || ((b.evidence?.ratio_to_national || b.evidence?.increase_pp || 0) - (a.evidence?.ratio_to_national || a.evidence?.increase_pp || 0)));
   const counts = { critical: 0, high: 0, medium: 0, info: 0 };

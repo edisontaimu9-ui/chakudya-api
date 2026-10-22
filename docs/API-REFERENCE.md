@@ -2357,8 +2357,21 @@ All analysis routes take a window: `?months=` (1 to 36, default 12) or `?from=20
 
 - **Hotspots**: `?population_group=&indicator=&min_n=`. A district is a hotspot when its rate is above the national rate by an exact binomial test, corrected across districts (Benjamini-Hochberg, q at most 0.10). Priority is `critical`, `high` or `medium` from the ratio to the national rate and the WHO band. Pass `indicator` to list every district. Districts with fewer than `min_n` records (default 30) are not compared.
 - **Trends**: `?indicator=` (required) `&population_group=&district=&months=`. Cochran-Armitage trend test and a weighted slope in percentage points per month, plus change against the same month a year earlier when available.
-- **Alerts**: `?recent_months=3&baseline_months=9&min_increase_pp=2`. A district is flagged when its recent months are significantly higher than its own baseline.
+- **Alerts**: `?recent_months=3&baseline_months=9&min_increase_pp=2`. A district is flagged when its recent months are significantly higher than its own baseline. Needs at least 30 records in the recent window and 30 in the baseline.
 - **Insights**: hotspots, rising districts, national trends and data gaps in one list, sorted by priority. Each has `evidence`, `confidence`, `suggested_actions` and `research_questions`, followed by `data_quality`.
+
+Wasting, low MUAC and acute malnutrition overlap, so in `/insights` one district flagged on several of them is shown once (as acute malnutrition), with the others listed in `also_flagged`.
+
+### Trying it with demo data
+
+`scripts/surveillance_demo.mjs` loads about 6,000 clearly labelled synthetic records (`source: "demo"`) that contain known hotspots, rising districts and data gaps, so you can watch the engine find them:
+
+```bash
+CHAKUDYA_API_KEY=your_key node scripts/surveillance_demo.mjs --dry-run   # only shows what would be sent
+CHAKUDYA_API_KEY=your_key node scripts/surveillance_demo.mjs             # sends it (about 80 seconds)
+```
+
+Remove it all afterwards in the Supabase SQL editor: `delete from surveillance_records where source = 'demo';`
 
 ### Privacy and honesty about the data
 
@@ -2366,6 +2379,7 @@ All analysis routes take a window: `?months=` (1 to 36, default 12) or `?from=20
 - This is programme screening data, not a random survey. Figures describe the people who were screened, not whole districts, and WHO prevalence bands are indicative only. Confirm important findings with a representative survey (SMART, DHS, MICS) before large resource decisions. Every analysis response carries this caveat.
 - `data_quality` reports districts with too little data, districts reporting in fewer than half the months, and a heavy facility bias, because a district with no data is not a district with no problem.
 - Suggested actions are decision support for programme teams, not clinical advice or directives.
+- Many districts and indicators are tested at once, so some flagged findings will be chance (the error rate is set at about 1 in 10). That is why every insight lists research questions: check a finding against other sources before acting on it.
 
 If `sql/037` has not been run, the read routes return `{"available": false}` with a note instead of an error.
 
