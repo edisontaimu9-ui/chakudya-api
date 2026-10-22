@@ -228,6 +228,7 @@ operations (with the right FHIR scope) and the Fenton compute routes.
 - `POST /memory/consolidate` (also runs automatically via hourly cron, bypassing HTTP auth)
 - `GET /fhir/AuditEvent` (admin role or an explicit `system/AuditEvent.read` scope)
 - `GET /admin/keys`, `POST /admin/keys`, `DELETE /admin/keys/:id`: **root key only**, see [API keys](#api-keys)
+- `GET /admin/usage`, `GET /admin/health-history`: **root key only**, read-only monitoring, see [Usage by endpoint](#usage-by-endpoint-v1390) and [Health history](#health-history-v1520)
 
 A consumer key is refused on every admin route. Bearer tokens are API keys only: OAuth 2.0 was
 removed in v1.34.0 (see the note at the end of the Developer portal section).
@@ -575,6 +576,14 @@ Response (shortened):
   measured to the first healthy probe, so it is accurate to about 5 minutes.
 - If a probe cannot reach the database it is held in KV and written with the
   next successful one, so a Supabase outage still appears in the timeline.
+- `storage_enabled` shows whether `HEALTH_CHECK_STORE` is `true`. `truncated` is
+  `true` when the window held more rows than one request reads (30 days is about
+  8,600 rows, read in pages of 1,000, up to 10 pages).
+- If `health_checks` cannot be read (`sql/034` not run), the response is
+  `available: false` with a `note`, empty `services`, `incidents` and `daily`,
+  and `null` uptime, instead of an error.
+- Only the root key is accepted: no key gets `401`, a consumer key is refused,
+  and any method other than `GET` gets `405`.
 
 #### Verdict alerts (`v1.53.0+`)
 
@@ -590,11 +599,57 @@ kept in KV, so an outage of the database still alerts. If the webhook call fails
 
 `event` is `health.degraded` or `health.recovered`. `text` suits Slack-style webhooks and `content` suits Discord.
 
-#### Usage p95 (`v1.53.0+`)
+#### Usage by endpoint (`v1.39.0+`)
 
-`GET /admin/usage` returns `p95_ms` for each top route and in `totals`, estimated from latency buckets (50, 100, 250, 500, 1000, 2500, 5000 ms and above). Run
-`sql/036_add_latency_buckets.sql` to start filling them; it is `null` until then. `totals.p95_over_cap` is `true` when the 95th percentile falls above 5000 ms,
-in which case `p95_ms` is a floor, not an estimate.
+- `GET /admin/usage` *(root admin key only)* — which endpoints get called most,
+  with an estimated p95 latency (`p95_ms`, `v1.53.0+`). Every counted request
+  adds one to a row in `route_usage` for its UTC day, method and route, with
+  ids replaced (`/foods/:id`). Not counted: `OPTIONS`, `/`, `/health` and
+  `/admin/*`. Counts and timings only, no keys, IPs, queries or bodies.
+  `?days=` sets the window (default 7, max 30).
+
+Setup: run `sql/032_add_route_usage.sql` in Supabase and keep
+`ROUTE_USAGE_STORE = "true"` in `wrangler.toml`. For `p95_ms`, also run
+`sql/036_add_latency_buckets.sql`. Nothing is stored unless
+`ROUTE_USAGE_STORE=true`.
+
+Response (shortened):
+
+```json
+{
+  "window_days": 7,
+  "available": true,
+  "storage_enabled": true,
+  "truncated": false,
+  "totals": { "calls": 120, "errors": 3, "routes": 4, "p95_ms": 1750, "p95_over_cap": false },
+  "daily": [ { "day": "2026-10-21", "count": 40 }, { "day": "2026-10-22", "count": 80 } ],
+  "top": [
+    { "method": "GET", "route": "/foods", "calls": 80, "errors": 3, "last_day": "2026-10-22",
+      "avg_ms": 95, "p95_ms": 243, "error_rate": 3.8, "share": 66.7 }
+  ]
+}
+```
+
+- `daily` is oldest first, with a zero for days that had no calls. `top` is the
+  25 busiest routes by `calls`. `share` is the percent of all calls in the
+  window, and `error_rate` is the percent of that route's calls that errored.
+- An error here means a `5xx`, a `429`, or a `4xx` other than `401` and `404`.
+- `p95_ms` is estimated from latency buckets (50, 100, 250, 500, 1000, 2500
+  and 5000 ms, plus above 5000 ms). It is interpolated inside the bucket that
+  holds the 95th-percentile request, so it is only as fine as the buckets.
+  It is `null` for a route until it has requests counted after `sql/036` ran,
+  and only those requests count toward it. With few requests it is rough.
+- `totals.p95_over_cap` is `true` when the 95th percentile falls above 5000 ms.
+  `p95_ms` is then a floor, not an estimate.
+- Timings use the Worker's clock, which only advances while it waits on
+  something. A fast or cached route can read `0` ms, and a `p95_ms` just under
+  50 means "under 50 ms", not a measured value.
+- If `route_usage` cannot be read (`sql/032` not run), the response is
+  `available: false` with a `note`, zero totals and an empty `top`.
+  `truncated` is `true` if the window held more than 5,000 rows.
+- Without `sql/036` the endpoint still works and `p95_ms` stays `null`.
+- Only the root key is accepted: no key gets `401`, a consumer key is refused,
+  and any method other than `GET` gets `405`.
 
 ### Batch
 
