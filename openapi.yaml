@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.55.0
+  version: 1.56.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -77,6 +77,7 @@ tags:
 - name: Recipes
 - name: Meals
 - name: Dietary assessment
+- name: Paediatric nutrition
 - name: Ingredients
 - name: DRI
 - name: RAG
@@ -6809,6 +6810,294 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /paediatric/energy:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Paediatric energy requirements (API key)
+      description: 'Basal metabolic rate by Schofield (1985, needs height) and WHO (1985), multiplied by activity and stress factor ranges (activity_level or activity_factor, stress_condition or stress_factor, with a position low, mid, high or 0-1); DRI/FAO 2004 total energy expenditure in kcal/kg/day; and the IOM estimated energy requirement through the energy engine (pal_category needed from 3 years). Returns a recommended value and macronutrient grams by the AMDR for the age. Estimates for a dietitian or doctor to review.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - sex
+              - weight_kg
+              properties:
+                sex: {type: string, enum: [male, female]}
+                age_months: {type: number}
+                age_years: {type: number}
+                weight_kg: {type: number}
+                height_cm: {type: number, description: 'Length if under 2 years.'}
+                pal_category: {type: string, enum: [sedentary, low_active, active, very_active]}
+                activity_level: {type: string, enum: [confined_to_bed, light, moderate, vigorous]}
+                activity_factor: {type: number}
+                stress_condition: {type: string, enum: [starvation, surgery, infection_sepsis, closed_head_injury, trauma, burn, growth_failure]}
+                stress_factor: {type: number}
+                activity_position: {type: string}
+                stress_position: {type: string}
+            example:
+              sex: female
+              age_years: 6
+              weight_kg: 20
+              height_cm: 115
+              pal_category: low_active
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/protein:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Paediatric protein requirements (API key)
+      description: 'IOM protein RDA/AI for healthy growth and the sick-child dose (g/kg/day and g/day) for the age, with the one matching clinical_status (healthy or sick) as the recommendation. Send energy_kcal to see protein as a share of energy against the AMDR.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - weight_kg
+              properties:
+                age_months: {type: number}
+                age_years: {type: number}
+                weight_kg: {type: number}
+                clinical_status: {type: string, enum: [healthy, sick]}
+                energy_kcal: {type: number}
+            example:
+              age_months: 30
+              weight_kg: 12
+              clinical_status: sick
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/fluid:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Paediatric maintenance fluid, Holliday-Segar (API key)
+      description: 'Daily maintenance fluid from weight: 100-150 mL/kg up to 10 kg, 1000 mL + 50 mL per kg above 10 kg to 20 kg, and 1500 mL + 20 mL per kg above 20 kg. Returns mL/day, mL/kg/day and mL/hour.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - weight_kg
+              properties:
+                weight_kg: {type: number}
+            example:
+              weight_kg: 15
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/preterm:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Preterm infant requirements and growth monitoring (API key)
+      description: 'Enteral fluid (120-200 mL/kg/day), energy (110-130 kcal/kg/day) and protein by weight band, with the monitoring targets. Add monitoring to check initial weight loss (up to 15%, regained in 10-14 days), weight gain (15-20 g/kg/day), length (more than 1 cm/week) and head circumference (0.8-1 cm/week).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - weight_g
+              properties:
+                weight_g: {type: number, description: 'Birth or current weight in grams.'}
+                monitoring: {type: object, properties: {birth_weight_g: {type: number}, nadir_weight_g: {type: number}, days_to_regain_birth_weight: {type: number}, weight_g_start: {type: number}, weight_g_end: {type: number}, days: {type: number}, length_cm_start: {type: number}, length_cm_end: {type: number}, hc_cm_start: {type: number}, hc_cm_end: {type: number}}}
+            example:
+              weight_g: 1200
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/growth-velocity:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Growth velocity against the reference (API key)
+      description: 'Weight g/day and length or height mm/day over an interval, compared with the reference normal velocity for the age at the start (birth to 24 months by sex, then 2 to under 11 years). Send start and end values with days, or the velocity directly. Girls 3-6 months have no usable weight reference. For WHO z-scores use POST /growth/assess.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - sex
+              - days
+              properties:
+                sex: {type: string, enum: [male, female]}
+                age_months: {type: number}
+                age_years: {type: number}
+                days: {type: number}
+                weight_g_start: {type: number}
+                weight_g_end: {type: number}
+                height_cm_start: {type: number}
+                height_cm_end: {type: number}
+                weight_gain_g_per_day: {type: number}
+                length_mm_per_day: {type: number}
+            example:
+              sex: male
+              age_months: 2
+              days: 30
+              weight_g_start: 4200
+              weight_g_end: 4800
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/catch-up:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Catch-up growth energy and protein (API key)
+      description: 'Weight-age method: catch-up kcal/kg/day = reference kcal/kg for the weight-age x ideal weight for length/height / actual weight, and the same for protein g/kg/day. The ideal weight is ideal_weight_kg, or for a child under 5 years with height_cm the WHO median weight-for-length/height is read from who_weight_for_length_height. Also gives the BMR x growth-failure stress factor (1.5-2) estimate, percent of ideal weight and the reference velocity. Severe wasting needs a stabilisation protocol first.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - sex
+              - weight_kg
+              properties:
+                sex: {type: string, enum: [male, female]}
+                age_months: {type: number}
+                age_years: {type: number}
+                weight_kg: {type: number}
+                height_cm: {type: number}
+                ideal_weight_kg: {type: number}
+                weight_age_months: {type: number}
+            example:
+              sex: male
+              age_months: 24
+              weight_kg: 9
+              height_cm: 82
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          description: The WHO weight-for-length/height row could not be read. Send ideal_weight_kg instead.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/enteral-feeds:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Age-specific enteral feed calculations (API key)
+      description: 'Initiation, advancement and goal for continuous or bolus feeds for the child''s weight in the age group (0-12 months, 1-6 years, 7 years and over), steps and hours to goal, goal volume per day, and, with formula_kcal_per_ml, the energy delivered at goal and its share of energy_target_kcal.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - weight_kg
+              properties:
+                age_months: {type: number}
+                age_years: {type: number}
+                weight_kg: {type: number}
+                route: {type: string, enum: [continuous, bolus]}
+                formula_kcal_per_ml: {type: number}
+                energy_target_kcal: {type: number}
+            example:
+              age_months: 8
+              weight_kg: 8
+              route: continuous
+              formula_kcal_per_ml: 0.67
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/plan:
+    post:
+      tags:
+      - Paediatric nutrition
+      summary: Paediatric nutrition plan in one call (API key)
+      description: 'Energy, protein, fluid and macronutrient grams together. Add catch_up true (reads the WHO median weight for a child under 5 years with height_cm) or ideal_weight_kg for catch-up targets, and feeding_route for enteral feed rates. Same inputs as the single calculators.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - sex
+              - weight_kg
+              properties:
+                sex: {type: string, enum: [male, female]}
+                age_months: {type: number}
+                age_years: {type: number}
+                weight_kg: {type: number}
+                height_cm: {type: number}
+                pal_category: {type: string}
+                clinical_status: {type: string, enum: [healthy, sick]}
+                catch_up: {type: boolean}
+                ideal_weight_kg: {type: number}
+                feeding_route: {type: string, enum: [continuous, bolus]}
+            example:
+              sex: female
+              age_years: 6
+              weight_kg: 20
+              height_cm: 115
+              pal_category: low_active
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /paediatric/reference:
+    get:
+      tags:
+      - Paediatric nutrition
+      summary: Paediatric reference tables and their sources (API key)
+      description: 'All tables behind the paediatric calculators. Use section to get one of: fluid, energy_equations, activity_factors, stress_factors, dri_fao_2004_tee, macronutrient_distribution, protein, preterm, growth_velocity, enteral_feeds, sources. /pediatric works as an alias for /paediatric.'
+      parameters:
+      - name: section
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /dietary-assessment:
     post:
       tags:

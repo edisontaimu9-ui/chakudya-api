@@ -3,7 +3,11 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.55.0
+ * Version: 1.56.0
+ * v1.56.0 changes: paediatric nutrition calculators (src/paediatric.js, no SQL, any API key). POST /paediatric/energy (Schofield and WHO 1985 BMR with activity and stress factor ranges,
+ *   DRI/FAO 2004 kcal/kg/day, IOM EER through the energy engine), /protein (IOM healthy growth, ASPEN sick child), /fluid (Holliday-Segar), /preterm (requirements and monitoring),
+ *   /growth-velocity (reference weight and length velocity), /catch-up (weight-age method with the WHO median weight-for-length/height read from who_weight_for_length_height, plus the
+ *   growth-failure stress-factor method), /enteral-feeds (initiation, advancement, goal by age group), /plan (one call). GET /paediatric/reference. Alias: /pediatric.
  * v1.55.0 changes: dietary assessment (src/dietaryAssessment.js, no SQL, any API key). POST /dietary-assessment takes 1-7 days of intake (meals, ingredients or
  *   nutrient totals), resolves foods with the same resolver as /meals/analyze, and returns average intake against the DRI (EAR/RDA/AI/UL, sodium CDRR), energy against
  *   the IOM EER, macronutrient shares against the AMDR, food-group coverage, ranked nutrient gaps and excesses, and the foods richest in the top gaps. Adds 11 nutrients the
@@ -687,7 +691,7 @@ import { parseLengthVelocityQuery, classifyLengthVelocity } from "./lengthVeloci
 import { parseWeightVelocityQuery, classifyWeightVelocity } from "./weightVelocity.js";
 import { parseMuacForAgeQuery, classifyMuacForAge } from "./muacForAge.js";
 import { parseMuacFixedQuery, classifyMuacFixed } from "./muacFixed.js";
-import { parseLhfaQuery, pickRowAndValue, classifyLhfa } from "./lengthHeightForAge.js";
+import { parseLhfaQuery, pickRowAndValue, classifyLhfa, defaultMeasured } from "./lengthHeightForAge.js";
 import { parseWeightForAgeQuery, classifyWeightForAge } from "./weightForAge.js";
 import { parseWflhQuery, resolveLookup, classifyWflh } from "./weightForLengthHeight.js";
 import { parseBmiUnder5Query, resolveBmi, classifyBmiUnder5 } from "./bmiForAgeUnder5.js";
@@ -704,6 +708,7 @@ import { trackedFetch, recordUpstreamFailure, isFatSecretError, flushUpstreamFai
 import { handleAdminHealthHistory, runHealthProbe, HEALTH_CRON } from "./healthMonitor.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
+import { computePaediatricEnergy, computePaediatricProtein, computePaediatricFluid, computePretermRequirements, computeGrowthVelocity, computeCatchUp, computeEnteralFeeds, computePaediatricPlan, idealWeightLookupFor, paediatricReferenceCatalog } from "./paediatric.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
 import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
 import { linkRenalFoods } from "./renalFoodLink.js";
@@ -766,7 +771,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.55.0";
+const CNR_VERSION = "1.56.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1416,6 +1421,11 @@ function routePolicy(resource, method, param, action) {
   // Pregnancy and lactation calculators (src/pregnancy.js): arithmetic on the request body, static chapter tables, the energy engine and the
   // static DRI tables. No database reads or writes, so POST is a calculation. Any valid key.
   if (resource === "pregnancy" && ((["gestational-age", "weight-gain", "plan", "assess"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Paediatric nutrition calculators (src/paediatric.js): arithmetic on the request body and static tables. catch-up (and plan with catch_up:true) also reads one
+  // who_weight_for_length_height row. No writes. Any valid key. /pediatric is an alias.
+  if ((resource === "paediatric" || resource === "pediatric") && ((["energy", "protein", "fluid", "preterm", "growth-velocity", "catch-up", "enteral-feeds", "plan"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Renal nutrition calculators (src/renalNutrition.js): arithmetic on the request body and static guideline tables. No database reads or writes,
@@ -5265,6 +5275,35 @@ async function handleMealsAnalyze(request, db, env) {
 }
 
 /**
+ * Median (z = 0) WHO weight-for-length/height for a child under 5 years: the "ideal weight for length/height" in the catch-up growth method.
+ * Same table and lookup rules as GET /weight-for-length-height/classify. q = { sex: "girls"|"boys", ageMonths, heightCm, measured? }.
+ */
+async function lookupIdealWeight(db, q) {
+  const table = q.measured || defaultMeasured(q.ageMonths);
+  const lookup = resolveLookup(q.ageMonths, table, q.heightCm);
+  if (lookup.lookupCm < lookup.range.min || lookup.lookupCm > lookup.range.max) {
+    return { error: `Length/height ${lookup.lookupCm} cm is outside the WHO table (${lookup.range.min} to ${lookup.range.max} cm) for this age.` };
+  }
+  const { ok, body } = await db.select("who_weight_for_length_height", {
+    filters: { sex: `eq.${q.sex}`, measured: `eq.${lookup.table}`, length_height_cm: `eq.${lookup.lookupCm.toFixed(1)}` },
+    limit: 1,
+  });
+  const row = ok && Array.isArray(body) ? body[0] : null;
+  const m = row ? Number(row.lms_m) : NaN;
+  if (!Number.isFinite(m) || m <= 0) return { error: "The WHO weight-for-length/height row was not found (has sql/025 been run and all five seed parts loaded?)." };
+  return { kg: m, source: `WHO median weight-for-${lookup.table === "lying" ? "length" : "height"} at ${lookup.lookupCm} cm (${row.source || "WHO Child Growth Standards 2006"})` };
+}
+
+/** POST /paediatric/catch-up and POST /paediatric/plan (catch_up: true): fills in the ideal weight from the WHO table when the caller did not send one. */
+async function withIdealWeight(body, db) {
+  const lk = idealWeightLookupFor(body);
+  if (!lk) return { body, opts: {} };
+  const r = await lookupIdealWeight(db, lk);
+  if (r.error) return { error: `${r.error} Send 'ideal_weight_kg' instead.` };
+  return { body, opts: { idealWeightKg: r.kg, idealWeightSource: r.source } };
+}
+
+/**
  * POST /dietary-assessment
  * Body: { age | life_stage, sex?, life_stage_type?, weight_kg?, height_cm?, pal_category?, trimester?, months_postpartum?, energy_target_kcal?,
  *         suggest_foods?: boolean (default true),
@@ -5316,7 +5355,7 @@ async function handleDietaryAssessment(request, db, env) {
     skippedDays,
   });
   if (!result.ok) {
-    return json({ status: "error", error: `${result.error}. Check 'unresolved_ingredients'.`, unresolved_ingredients: unresolved }, 422);
+    return json({ status: "error", message: `${result.error}. Check 'unresolved_ingredients'.`, unresolved_ingredients: unresolved }, 422);
   }
   const data = result.data;
   data.days = days.map((d) => ({ date: d.date, kcal: d.totals.kcal ?? null, food_groups: d.groups }));
@@ -8036,6 +8075,17 @@ function handleRoot(env) {
       recipes: [
         "POST /recipes/calculate   (API key, rate-limited) → body {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]}; resolves each ingredient (local foods, falling back to the same local→external cascade as /foods/lookup), converts quantity/unit to grams (see Serving-Size Intelligence), and returns total_nutrients + nutrients_per_serving + a per-ingredient breakdown + any unresolved_ingredients",
       ],
+      paediatric: [
+        "POST /paediatric/energy   (API key) → body {sex, age_months|age_years, weight_kg, height_cm?, pal_category?, activity_level?|activity_factor?, stress_condition?|stress_factor?} → Schofield and WHO 1985 BMR, BMR x activity x stress (range), DRI/FAO 2004 kcal/kg/day, IOM EER, recommended, macronutrient grams by AMDR",
+        "POST /paediatric/protein   (API key) → {age_months|age_years, weight_kg, clinical_status? healthy|sick, energy_kcal?} → IOM healthy-growth and ASPEN sick-child g/kg/day and g/day",
+        "POST /paediatric/fluid   (API key) → {weight_kg} → Holliday-Segar maintenance (mL/day, mL/kg/day, mL/hr)",
+        "POST /paediatric/preterm   (API key) → {weight_g, monitoring?} → preterm fluid, energy and protein by weight band, and growth monitoring against targets",
+        "POST /paediatric/growth-velocity   (API key) → {sex, age_months, days, weight_g_start/end, height_cm_start/end} → weight g/day and length mm/day against the reference velocity",
+        "POST /paediatric/catch-up   (API key) → {sex, age_months, weight_kg, height_cm?|ideal_weight_kg?, weight_age_months?} → catch-up kcal/kg and g/kg (weight-age method; under 5 years the WHO median weight-for-length/height is read from who_weight_for_length_height) and the growth-failure stress-factor estimate",
+        "POST /paediatric/enteral-feeds   (API key) → {age_months, weight_kg, route? continuous|bolus, formula_kcal_per_ml?, energy_target_kcal?} → initiation, advancement and goal for the weight, steps and hours to goal, goal volume and energy",
+        "POST /paediatric/plan   (API key) → energy, protein, fluid and macronutrients in one call; optional catch_up:true or ideal_weight_kg, and feeding_route",
+        "GET  /paediatric/reference[?section=]   (API key) → the tables behind the calculators and their sources. /pediatric works as an alias",
+      ],
       "dietary-assessment": [
         "POST /dietary-assessment   (API key, rate-limited) → body {age|life_stage, sex?, life_stage_type?, weight_kg?, height_cm?, pal_category?, trimester?, months_postpartum?, energy_target_kcal?, suggest_foods?, days:[{date?, meals:[{meal_type?, ingredients}] | ingredients | intake:{totals}}]} (1-7 days, max 40 ingredients; one day may be sent at the top level) → average intake vs DRI (EAR/RDA/AI/UL, sodium CDRR) per nutrient incl. 11 extra nutrients, energy vs IOM EER, macro % vs AMDR, food-group coverage, ranked gaps (likely_inadequate / borderline / possibly_low) and excesses, confidence from data coverage, and the foods richest in the top gaps; screening only, not a diagnosis",
         "GET  /dietary-assessment/reference   (API key) → assessable nutrients, status definitions, accepted input, method notes",
@@ -9881,6 +9931,32 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "calculate") {
         if (request.method !== "POST") return err("Only POST is supported for /recipes/calculate", 405);
         return await handleRecipesCalculate(request, db, env);
+      }
+      return notFound();
+    }
+
+    case "paediatric":
+    case "pediatric": {
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const result = paediatricReferenceCatalog(url.searchParams.get("section") ?? undefined);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Paediatric nutrition reference tables" });
+      }
+      const paedCalc = { energy: computePaediatricEnergy, protein: computePaediatricProtein, fluid: computePaediatricFluid, preterm: computePretermRequirements, "growth-velocity": computeGrowthVelocity, "enteral-feeds": computeEnteralFeeds };
+      if (param && (paedCalc[param] || param === "catch-up" || param === "plan")) {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        let result;
+        if (param === "catch-up" || (param === "plan" && body && body.catch_up === true && (body.ideal_weight_kg == null || body.ideal_weight_kg === ""))) {
+          const w = await withIdealWeight(body, db);
+          if (w.error) return err(w.error, 422);
+          result = param === "catch-up" ? computeCatchUp(body, w.opts) : computePaediatricPlan(w.opts.idealWeightKg ? { ...body, ideal_weight_kg: w.opts.idealWeightKg } : body);
+        } else if (param === "plan") result = computePaediatricPlan(body);
+        else result = paedCalc[param](body);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: `Paediatric nutrition: ${param}` });
       }
       return notFound();
     }
