@@ -11,6 +11,7 @@
  *  - FAO. Human energy requirements. Food and Nutrition Technical Report Series 1, 2004 (DRI/FAO total energy expenditure).
  *  - Institute of Medicine. Dietary Reference Intakes (energy, macronutrients, protein), 2005/2006.
  *  - ASPEN Pediatric and Neonatal Nutrition Support Handbook, 3rd ed. (2024), and ASPEN guidance for sick children.
+ *  - ESPGHAN preterm enteral nutrition guidelines (preterm fluid, energy and protein requirements).
  *
  * Screening and planning aids. They do not replace a dietitian or doctor, and the sick-child, preterm and catch-up values
  * are starting points to be reviewed against the child's clinical course.
@@ -37,7 +38,7 @@ export const SOURCES = {
   iom_amdr: "Institute of Medicine Dietary Reference Intakes, acceptable macronutrient distribution ranges (2005)",
   aspen_protein: "ASPEN guidance for sick children (protein dose)",
   aspen_handbook: "ASPEN Pediatric and Neonatal Nutrition Support Handbook, 3rd ed. (2024)",
-  preterm: "Enteral requirement ranges for preterm infants (consensus ranges; the specific guideline is not named in the data supplied)",
+  preterm: "ESPGHAN (European Society for Paediatric Gastroenterology, Hepatology and Nutrition) preterm enteral nutrition guidelines",
   catch_up: "Standard clinical catch-up growth method: requirement for weight-age x ideal weight for length/height / actual weight",
 };
 
