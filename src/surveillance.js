@@ -50,7 +50,7 @@ export const GROUP_INFO = {
   school_age: { label: "School-age children 5-9 years", age: "age_months 60-119", bands: ["5-9y"] },
   adolescent: { label: "Adolescents 10-19 years", age: "age_months 120-227", bands: ["10-19y"] },
   adult: { label: "Adults 19 years and older", age: "age_years 19-120", bands: ["19-49y", "50-64y", "65+y"] },
-  pregnant_lactating: { label: "Pregnant and breastfeeding women", age: "age_years 10-54", bands: ["10-19y", "20-34y", "35+y"] },
+  pregnant_lactating: { label: "Pregnant and breastfeeding women", age: "age_years 10-54", bands: ["10-19y", "20-34y", "35+y", "unknown"] },
 };
 export const SETTINGS = ["facility", "community", "school", "outreach", "survey", "other"];
 
@@ -281,7 +281,7 @@ export function ageBandFor(group, ageMonths, ageYears) {
     case "school_age": return "5-9y";
     case "adolescent": return "10-19y";
     case "adult": return ageYears < 50 ? "19-49y" : ageYears < 65 ? "50-64y" : "65+y";
-    case "pregnant_lactating": return ageYears < 20 ? "10-19y" : ageYears < 35 ? "20-34y" : "35+y";
+    case "pregnant_lactating": return ageYears === null || ageYears === undefined ? "unknown" : ageYears < 20 ? "10-19y" : ageYears < 35 ? "20-34y" : "35+y";
     default: return null;
   }
 }
@@ -345,11 +345,13 @@ export function validateRecord(raw, now = new Date()) {
   if (hasY && !wholeNumber(raw.age_years)) return { ok: false, error: "'age_years' must be a whole number of completed years" };
   let ageMonths = hasM ? Number(raw.age_months) : null;
   let ageYears = hasY ? Number(raw.age_years) : null;
-  if (ageMonths === null && ageYears === null) return { ok: false, error: "Give 'age_months' (children) or 'age_years' (adults and women)" };
+  // Age is required, except for pregnant and breastfeeding women, where it may be left out (band "unknown").
+  const ageOptional = raw.population_group === "pregnant_lactating";
+  if (ageMonths === null && ageYears === null && !ageOptional) return { ok: false, error: "Give 'age_months' (children) or 'age_years' (adults and women)" };
   if (ageMonths !== null && ageMonths > 1560) return { ok: false, error: "'age_months' is not plausible" };
   if (ageYears !== null && ageYears > 120) return { ok: false, error: "'age_years' must be 0 to 120" };
-  if (ageMonths === null) ageMonths = ageYears * 12;
-  if (ageYears === null) ageYears = Math.floor(ageMonths / 12);
+  if (ageMonths === null && ageYears !== null) ageMonths = ageYears * 12;
+  if (ageYears === null && ageMonths !== null) ageYears = Math.floor(ageMonths / 12);
 
   // population group
   let group = raw.population_group;
@@ -363,7 +365,7 @@ export function validateRecord(raw, now = new Date()) {
   if (group === "school_age" && (ageMonths < 60 || ageMonths > 119)) return { ok: false, error: "school_age means 'age_months' 60 to 119" };
   if (group === "adolescent" && (ageMonths < 120 || ageMonths > 227)) return { ok: false, error: "adolescent means 'age_months' 120 to 227" };
   if (group === "adult" && ageYears < 19) return { ok: false, error: "adult means 'age_years' 19 or more" };
-  if (group === "pregnant_lactating" && (ageYears < 10 || ageYears > 54)) return { ok: false, error: "pregnant_lactating means 'age_years' 10 to 54" };
+  if (group === "pregnant_lactating" && ageYears !== null && (ageYears < 10 || ageYears > 54)) return { ok: false, error: "pregnant_lactating means 'age_years' 10 to 54" };
 
   // setting and source
   let setting = null;

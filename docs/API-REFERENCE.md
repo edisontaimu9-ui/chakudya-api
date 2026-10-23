@@ -2332,7 +2332,7 @@ Setup: run `sql/037_add_surveillance.sql` in Supabase and keep `SURVEILLANCE_STO
 - `submission_id`: a random token your app makes (8 to 64 letters, digits, `-` or `_`). It only stops a re-sent record from being counted twice. Never use an id from a patient record.
 - `consent_confirmed` must be `true`: your programme confirms it has the consent, or the legal and ethical basis, to share the anonymised record.
 - `district`: one of Malawi's 28 districts. `Mzuzu City`, `Lilongwe City`, `Blantyre City` and `Zomba City` roll up to Mzimba, Lilongwe, Blantyre and Zomba.
-- `age_months` for children, `age_years` for adults and women. `population_group` is worked out from the age (`under5`, `school_age`, `adolescent`, `adult`) and must be sent for `pregnant_lactating`.
+- `age_months` for children, `age_years` for adults and women. `population_group` is worked out from the age (`under5`, `school_age`, `adolescent`, `adult`) and must be sent for `pregnant_lactating`. For `pregnant_lactating` the age may be left out (age band `unknown`).
 - `measurements` are classified with the WHO tables (the same maths as `/growth/assess`) and then **discarded**. Adults send `weight_kg` and `height_cm` for BMI. For pregnant and breastfeeding women send your own classification in `outcomes`.
 - `outcomes` are indicators you already classified. Risk indicators take `true`/`false`. A `false` matters: it is the denominator. If both are sent, the server's classification wins.
 - Re-sending the same `submission_id` is safe.

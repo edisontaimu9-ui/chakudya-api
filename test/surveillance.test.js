@@ -157,6 +157,14 @@ describe("validateRecord", () => {
     assert.equal(plw.rec.age_band, "20-34y");
     assert.match(validateRecord(good({ age_months: undefined, age_years: 15, outcomes: { anaemia_suspected: true } }), NOW).error, /population_group/);
   });
+  test("age may be left out only for pregnant and breastfeeding women", () => {
+    const plw = validateRecord(good({ population_group: "pregnant_lactating", age_months: undefined, outcomes: { maternal_muac_low: "moderate" } }), NOW);
+    assert.ok(plw.ok, plw.error);
+    assert.equal(plw.rec.age_band, "unknown");
+    assert.match(validateRecord(good({ age_months: undefined }), NOW).error, /age_months/);
+    assert.match(validateRecord(good({ population_group: "adult", age_months: undefined, outcomes: { anaemia_suspected: true } }), NOW).error, /age_months/);
+    assert.match(validateRecord(good({ population_group: "pregnant_lactating", age_months: undefined, age_years: 60, outcomes: { maternal_muac_low: "normal" } }), NOW).error, /10 to 54/);
+  });
   test("outcomes are checked against the indicator list", () => {
     assert.match(validateRecord(good({ outcomes: { sugar: "high" } }), NOW).error, /Unknown indicator/);
     assert.match(validateRecord(good({ outcomes: { adult_underweight: "mild" } }), NOW).error, /does not apply/);
