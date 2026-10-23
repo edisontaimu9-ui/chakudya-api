@@ -3,7 +3,12 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.54.0
+ * Version: 1.55.0
+ * v1.55.0 changes: dietary assessment (src/dietaryAssessment.js, no SQL, any API key). POST /dietary-assessment takes 1-7 days of intake (meals, ingredients or
+ *   nutrient totals), resolves foods with the same resolver as /meals/analyze, and returns average intake against the DRI (EAR/RDA/AI/UL, sodium CDRR), energy against
+ *   the IOM EER, macronutrient shares against the AMDR, food-group coverage, ranked nutrient gaps and excesses, and the foods richest in the top gaps. Adds 11 nutrients the
+ *   foods table already holds (thiamin, riboflavin, niacin, B6, E, pantothenic acid, biotin, phosphorus, selenium, copper, manganese). GET /dietary-assessment/reference.
+ *   resolveIngredientsList() takes an optional extraFields argument (default none, so /recipes/calculate and /meals/analyze are unchanged). CNR_VERSION now matches the header.
  * v1.54.0 changes: Nutrition Research & Surveillance Engine (src/surveillance.js, sql/037, SURVEILLANCE_STORE). POST /surveillance/records takes anonymised
  *   screening records (one or up to 100; raw measurements are classified with the WHO tables and discarded; only coarse fields are accepted, so a name or phone
  *   number is rejected). GET /surveillance/reference (any key); GET /surveillance/summary, /hotspots, /trends, /alerts, /insights (admin key): district hotspots
@@ -694,6 +699,7 @@ import { handleAdminActivity } from "./adminActivity.js";
 import { handleAdminMonitoring, logRequest } from "./requestLog.js";
 import { handleAdminUsage, recordUsage } from "./routeUsage.js";
 import { handleSurveillance } from "./surveillance.js";
+import { parseAssessmentRequest, buildEnergyTarget, assessDiet, normalizeIntake, sumResolved, coverageOf, dietaryAssessmentReference, foodsColumnFor, EXTRA_FOOD_FIELDS } from "./dietaryAssessment.js";
 import { trackedFetch, recordUpstreamFailure, isFatSecretError, flushUpstreamFailures } from "./upstreamFailures.js";
 import { handleAdminHealthHistory, runHealthProbe, HEALTH_CRON } from "./healthMonitor.js";
 import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.js";
@@ -760,7 +766,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.53.0";
+const CNR_VERSION = "1.55.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1397,6 +1403,14 @@ function routePolicy(resource, method, param, action) {
   // Energy requirements engine (src/energyEngine.js): pure arithmetic on the request body, no database,
   // no external calls. Any valid key. POST is a calculation, not a write.
   if (resource === "energy" && (((param === "requirements" || param === "food-energy") && method === "POST") || (param === "factors" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Dietary assessment (src/dietaryAssessment.js): POST resolves up to 40 ingredients (one food lookup each) plus up to 3 ranking reads, so it gets the same
+  // cap class as recipes/meals. The GET reference is static.
+  if (resource === "dietary-assessment" && method === "POST" && !param) {
+    return { auth: "key", rate: { limit: 10, windowSeconds: 60, scope: "ip" } };
+  }
+  if (resource === "dietary-assessment" && param === "reference" && method === "GET") {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Pregnancy and lactation calculators (src/pregnancy.js): arithmetic on the request body, static chapter tables, the energy engine and the
@@ -4626,7 +4640,7 @@ async function findFoodForIngredient(item, db, env) {
   return { error: "provide either 'food_id' or 'food_name'" };
 }
 
-async function resolveIngredientsList(ingredients, db, env) {
+async function resolveIngredientsList(ingredients, db, env, extraFields = []) {
   const resolvedIngredients = [];
   const unresolvedIngredients = [];
 
@@ -4657,7 +4671,7 @@ async function resolveIngredientsList(ingredients, db, env) {
 
     const scale = gramsResult.grams / 100;
     const nutrients = {};
-    for (const field of SERVING_SCALE_FIELDS) {
+    for (const field of [...SERVING_SCALE_FIELDS, ...extraFields]) {
       if (food[field] != null && food[field] !== "") {
         nutrients[field] = roundServingVal(Number(food[field]) * scale);
       }
@@ -5248,6 +5262,93 @@ async function handleMealsAnalyze(request, db, env) {
   }
 
   return success(result);
+}
+
+/**
+ * POST /dietary-assessment
+ * Body: { age | life_stage, sex?, life_stage_type?, weight_kg?, height_cm?, pal_category?, trimester?, months_postpartum?, energy_target_kcal?,
+ *         suggest_foods?: boolean (default true),
+ *         days: [{ date?, meals: [{ meal_type?, ingredients }] | ingredients: [...] | intake: { nutrient totals } }] }
+ * (For one day, meals / ingredients / intake may be sent at the top level.)
+ * Foods are resolved exactly as in /meals/analyze (resolveIngredientsList), summed per day, then assessDiet() (src/dietaryAssessment.js) compares the average with
+ * the DRI, the IOM energy target and the AMDR, and ranks the gaps. The foods richest in the top gap nutrients come from up to 3 ranked reads of `foods`.
+ * Writes nothing.
+ */
+async function handleDietaryAssessment(request, db, env) {
+  const body = await parseBody(request);
+  if (body === null) return err("Invalid JSON body");
+  const parsed = parseAssessmentRequest(body);
+  if (!parsed.ok) return err(parsed.error);
+  const req = parsed.data;
+
+  const fields = [...SERVING_SCALE_FIELDS, ...EXTRA_FOOD_FIELDS];
+  const days = [];
+  const allResolved = [];
+  const unresolved = [];
+  let skippedDays = 0;
+
+  for (const [i, d] of req.days.entries()) {
+    if (d.intake) {
+      days.push({ date: d.date, totals: d.intake, groups: null });
+      continue;
+    }
+    const { resolvedIngredients, unresolvedIngredients } = await resolveIngredientsList(d.items, db, env, EXTRA_FOOD_FIELDS);
+    for (const u of unresolvedIngredients) unresolved.push({ day: d.date || `day ${i + 1}`, ...u });
+    if (!resolvedIngredients.length) {
+      skippedDays++;
+      continue;
+    }
+    allResolved.push(...resolvedIngredients);
+    days.push({
+      date: d.date,
+      totals: normalizeIntake(sumResolved(resolvedIngredients, fields)),
+      groups: [...new Set(resolvedIngredients.map((ing) => ing.category).filter(Boolean))],
+    });
+  }
+
+  const result = assessDiet({
+    stage: req.stage,
+    ageYears: req.ageYears,
+    weightKg: req.weightKg,
+    days,
+    energy: buildEnergyTarget(req),
+    coverage: coverageOf(allResolved, fields),
+    skippedDays,
+  });
+  if (!result.ok) {
+    return json({ status: "error", error: `${result.error}. Check 'unresolved_ingredients'.`, unresolved_ingredients: unresolved }, 422);
+  }
+  const data = result.data;
+  data.days = days.map((d) => ({ date: d.date, kcal: d.totals.kcal ?? null, food_groups: d.groups }));
+  data.unresolved_ingredients = unresolved;
+
+  // Foods richest in the top gap nutrients (per 100 g). Best effort: a failed read just omits the section.
+  if (req.suggestFoods && data.summary.priority_gaps.length) {
+    const wanted = data.summary.priority_gaps.filter((g) => g.confidence !== "low").slice(0, 3);
+    const suggestions = [];
+    for (const g of wanted) {
+      const col = foodsColumnFor(g.nutrient);
+      try {
+        const r = await db.select("foods", { filters: { [col]: "not.is.null" }, order: `${col}.desc`, limit: 5, select: `id,food_name,category,measure,weight_g,${col}` });
+        if (r.ok && Array.isArray(r.body) && r.body.length) {
+          suggestions.push({
+            nutrient: g.nutrient,
+            label: g.label,
+            per: "100 g of the food as listed",
+            foods: r.body.map((f) => ({ id: f.id, food_name: f.food_name, category: f.category, amount_per_100g: f[col], unit: g.unit.replace("/d", ""), measure: f.measure ?? null })),
+          });
+        }
+      } catch (_) {
+        // omit
+      }
+    }
+    if (suggestions.length) {
+      data.suggested_foods = suggestions;
+      data.notes.push("suggested_foods ranks foods by nutrient density per 100 g. Check the usual portion size and what is available and affordable before recommending one.");
+    }
+  }
+
+  return success(data, { message: "Dietary assessment" });
 }
 
 function normalizeFood(source, raw) {
@@ -7935,6 +8036,10 @@ function handleRoot(env) {
       recipes: [
         "POST /recipes/calculate   (API key, rate-limited) → body {servings?, ingredients:[{food_id?|food_name, quantity, unit?}]}; resolves each ingredient (local foods, falling back to the same local→external cascade as /foods/lookup), converts quantity/unit to grams (see Serving-Size Intelligence), and returns total_nutrients + nutrients_per_serving + a per-ingredient breakdown + any unresolved_ingredients",
       ],
+      "dietary-assessment": [
+        "POST /dietary-assessment   (API key, rate-limited) → body {age|life_stage, sex?, life_stage_type?, weight_kg?, height_cm?, pal_category?, trimester?, months_postpartum?, energy_target_kcal?, suggest_foods?, days:[{date?, meals:[{meal_type?, ingredients}] | ingredients | intake:{totals}}]} (1-7 days, max 40 ingredients; one day may be sent at the top level) → average intake vs DRI (EAR/RDA/AI/UL, sodium CDRR) per nutrient incl. 11 extra nutrients, energy vs IOM EER, macro % vs AMDR, food-group coverage, ranked gaps (likely_inadequate / borderline / possibly_low) and excesses, confidence from data coverage, and the foods richest in the top gaps; screening only, not a diagnosis",
+        "GET  /dietary-assessment/reference   (API key) → assessable nutrients, status definitions, accepted input, method notes",
+      ],
       meals: [
         "POST /meals/analyze   (API key, rate-limited) → body {meal_type?, ingredients:[{food_id?|food_name, quantity, unit?}], daily_targets?:{kcal,protein_g,carbs_g,fat_g}}; same ingredient resolution as /recipes/calculate, no servings — returns total_nutrients, macronutrient_breakdown (kcal + % from protein/carbs/fat, Atwater 4/4/9, compared against the standard adult AMDR range), food_groups_present/food_groups_missing (from the core Grains/Legumes/Protein/Vegetables/Fruits/Dairy set), and — only if daily_targets was supplied — daily_target_comparison; purely descriptive, never invents a personalized target itself",
       ],
@@ -9776,6 +9881,19 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
       if (param === "calculate") {
         if (request.method !== "POST") return err("Only POST is supported for /recipes/calculate", 405);
         return await handleRecipesCalculate(request, db, env);
+      }
+      return notFound();
+    }
+
+    case "dietary-assessment": {
+      if (!param) {
+        if (request.method !== "POST") return err("Only POST is supported for /dietary-assessment", 405);
+        return await handleDietaryAssessment(request, db, env);
+      }
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const ref = dietaryAssessmentReference();
+        return success(ref.data, { message: "Dietary assessment reference" });
       }
       return notFound();
     }

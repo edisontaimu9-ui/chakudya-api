@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.53.0
+  version: 1.55.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -76,6 +76,7 @@ tags:
 - name: Food Log
 - name: Recipes
 - name: Meals
+- name: Dietary assessment
 - name: Ingredients
 - name: DRI
 - name: RAG
@@ -6808,6 +6809,155 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /dietary-assessment:
+    post:
+      tags:
+      - Dietary assessment
+      summary: Dietary assessment - intake analysis, comparison with requirements, dietary gaps (API key, rate-limited)
+      description: 'Takes 1-7 days of intake and returns the average intake of every assessable nutrient against the DRI of
+        the person''s life stage, with ranked gaps and excesses. Intake comes from `meals`, `ingredients` (resolved with the
+        same resolver as /meals/analyze, max 40 ingredients in total) or `intake` (nutrient totals, for example the
+        total_nutrients from /meals/analyze, no food lookups). Nutrients with an EAR and RDA are judged below EAR (likely
+        inadequate), between EAR and RDA (borderline) or adequate. Nutrients with only an AI are adequate or possibly low.
+        Sodium is judged against the CDRR as a limit. The UL is flagged on average intake from food. Energy is compared with
+        the caller''s `energy_target_kcal` or the IOM EER (weight_kg, height_cm, pal_category). Macronutrient shares are
+        compared with the AMDR for the age, and food-group coverage is reported per day. Each nutrient carries a confidence
+        from the share of foods that have a value, so a low result caused by missing food-table data is marked. Unless
+        `suggest_foods` is false, the foods richest in the top gap nutrients (per 100 g) are added. Eleven nutrients beyond
+        those in /dri/compare are covered (thiamin, riboflavin, niacin, B6, E, pantothenic acid, biotin, phosphorus,
+        selenium, copper, manganese). A screen against reference values, not a diagnosis.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                age:
+                  type: number
+                life_stage:
+                  type: string
+                  description: A code from GET /dri/life-stages. Alternative to age + sex.
+                sex:
+                  type: string
+                  enum:
+                  - male
+                  - female
+                life_stage_type:
+                  type: string
+                  enum:
+                  - normal
+                  - pregnancy
+                  - lactation
+                  default: normal
+                weight_kg:
+                  type: number
+                height_cm:
+                  type: number
+                pal_category:
+                  type: string
+                  enum:
+                  - sedentary
+                  - low_active
+                  - active
+                  - very_active
+                trimester:
+                  type: integer
+                  description: 1-3, adds the energy of pregnancy to the target.
+                months_postpartum:
+                  type: number
+                  description: Adds the energy of lactation to the target.
+                energy_target_kcal:
+                  type: number
+                  description: Overrides the calculated energy target.
+                suggest_foods:
+                  type: boolean
+                  default: true
+                days:
+                  type: array
+                  minItems: 1
+                  maxItems: 7
+                  description: Each day has exactly one of meals, ingredients or intake. For a single day these may be sent at the top level instead.
+                  items:
+                    type: object
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                      meals:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            meal_type:
+                              type: string
+                            ingredients:
+                              type: array
+                              items:
+                                type: object
+                                properties:
+                                  food_id:
+                                    type: integer
+                                  food_name:
+                                    type: string
+                                  quantity:
+                                    type: number
+                                  unit:
+                                    type: string
+                      ingredients:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            food_id:
+                              type: integer
+                            food_name:
+                              type: string
+                            quantity:
+                              type: number
+                            unit:
+                              type: string
+                      intake:
+                        type: object
+                        additionalProperties:
+                          type: number
+                        example:
+                          kcal: 1800
+                          iron_mg: 9
+            example:
+              age: 25
+              sex: female
+              weight_kg: 60
+              height_cm: 162
+              pal_category: low_active
+              days:
+              - date: '2026-10-20'
+                meals:
+                - meal_type: lunch
+                  ingredients:
+                  - food_name: maize flour
+                    quantity: 300
+                  - food_name: beans
+                    quantity: 100
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          description: No ingredient could be resolved; the body lists unresolved_ingredients.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /dietary-assessment/reference:
+    get:
+      tags:
+      - Dietary assessment
+      summary: Assessable nutrients, status definitions, accepted input and method notes (API key)
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
   /ingredients/parse:
     post:
       tags:
