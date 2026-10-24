@@ -1,0 +1,19 @@
+{
+  "_readme": "Copy this file to scripts/enteral_formulas_seed.json and fill 'items' from the manufacturer product sheet or your formulary card. Do not guess values. A name that already exists is updated with only the fields you give; a new name needs kcal_per_ml. Per-litre values are per 1000 ml of ready-to-use formula.",
+  "_row_template": {
+    "formula": "Product name (Manufacturer)",
+    "category": "e.g. Standard Polymeric",
+    "route": "Tube",
+    "kcal_per_ml": null,
+    "protein_g_per_l": null,
+    "cho_g_per_l": null,
+    "fat_g_per_l": null,
+    "fibre_g_per_l": null,
+    "osmol": null,
+    "water_ml_per_l": null,
+    "water_source": "e.g. Abbott product sheet, Oct 2026",
+    "tags": "Standard Energy | Standard Protein",
+    "notes": ""
+  },
+  "items": []
+}
