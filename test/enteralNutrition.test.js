@@ -110,9 +110,12 @@ describe("formula rows", () => {
     assert.equal(m.water_ml_per_l, 760);
     assert.equal(m.name, "Test 1.5");
     assert.equal(mapFormulaRow({ name: "x" }).kcal_per_ml, null);
+    const real = mapFormulaRow({ id: 1, formula: "Ensure Original (Abbott)", kcal_per_ml: 1.06, protein_g_per_l: 37 });
+    assert.equal(real.name, "Ensure Original (Abbott)");
+    assert.equal(real.water_ml_per_l, null);
   });
   test("pick by name", () => {
-    const rows = [{ name: "Alpha 1.0" }, { name: "Alpha 1.5" }, { name: "Beta" }];
+    const rows = [{ formula: "Alpha 1.0" }, { formula: "Alpha 1.5" }, { name: "Beta" }];
     assert.equal(pickFormulaByName(rows, "beta").row.name, "Beta");
     assert.equal(pickFormulaByName(rows, "alpha").matches.length, 2);
     assert.match(pickFormulaByName(rows, "zzz").error, /No enteral formula/);

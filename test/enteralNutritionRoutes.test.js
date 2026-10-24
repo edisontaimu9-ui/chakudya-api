@@ -6,15 +6,15 @@ import worker from "../src/index.js";
 const realFetch = globalThis.fetch;
 globalThis.caches = { default: { match: async () => undefined, put: async () => {}, delete: async () => false } };
 const ROWS = [
-  { id: "f1", formula_name: "Test Std 1.0", kcal_per_ml: 1.0, protein_g_per_l: 40, water_ml_per_l: 840 },
-  { id: "f2", formula_name: "Test Odd", brand: "x" },
+  { id: 1, formula: "Test Std 1.0", route: "Oral (Sip Feed)", kcal_per_ml: 1.0, protein_g_per_l: 40, fibre_g_per_l: null },
+  { id: 2, formula: "Test Odd", route: "Tube" },
 ];
 before(() => {
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.includes("/enteral_formulas")) {
       const m = u.match(/id=eq\.([^&]+)/);
-      const rows = m ? ROWS.filter((r) => r.id === decodeURIComponent(m[1])) : ROWS;
+      const rows = m ? ROWS.filter((r) => String(r.id) === decodeURIComponent(m[1])) : ROWS;
       return new Response(JSON.stringify(rows), { status: 200, headers: { "Content-Type": "application/json", "Content-Range": `0-${rows.length}/${rows.length}` } });
     }
     return new Response("[]", { status: 200, headers: { "Content-Type": "application/json", "Content-Range": "0-0/0" } });
@@ -51,20 +51,23 @@ describe("/enteral-nutrition", () => {
   });
 
   test("formula_id and formula_name look up the row; body overrides it", async () => {
-    const byId = await read(await call("POST", "/enteral-nutrition/calculate", { ...need, formula_id: "f1" }));
+    const byId = await read(await call("POST", "/enteral-nutrition/calculate", { ...need, formula_id: 1 }));
     assert.equal(byId.status, 200);
+    assert.ok(byId.body.data.notes.some((n) => /estimate from energy density/.test(n)));
+    assert.ok(byId.body.data.notes.some((n) => /Sip Feed/.test(n)));
+    assert.equal(byId.body.data.formula.water_ml_per_l, 850);
     assert.equal(byId.body.data.formula.name, "Test Std 1.0");
     assert.equal(byId.body.data.prescription.volume_ml_per_day, 1800);
     const byName = await read(await call("POST", "/enteral-nutrition/calculate", { ...need, formula_name: "test std" }));
     assert.equal(byName.status, 200);
-    const over = await read(await call("POST", "/enteral-nutrition/calculate", { ...need, formula_id: "f1", formula: { protein_g_per_l: 50 } }));
+    const over = await read(await call("POST", "/enteral-nutrition/calculate", { ...need, formula_id: 1, formula: { protein_g_per_l: 50 } }));
     assert.equal(over.body.data.formula.protein_g_per_l, 50);
   });
 
   test("lookup failures", async () => {
     assert.equal((await call("POST", "/enteral-nutrition/calculate", { ...need, formula_id: "nope" })).status, 404);
     assert.equal((await call("POST", "/enteral-nutrition/calculate", { ...need, formula_name: "zzz" })).status, 404);
-    const odd = await read(await call("POST", "/enteral-nutrition/calculate", { ...need, formula_id: "f2" }));
+    const odd = await read(await call("POST", "/enteral-nutrition/calculate", { ...need, formula_id: 2 }));
     assert.equal(odd.status, 422);
     assert.match(odd.body.error ?? odd.body.message ?? JSON.stringify(odd.body), /energy density/);
   });

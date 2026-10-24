@@ -48,9 +48,16 @@ const COLS = {
   protein_g_per_l: [["protein_g_per_l", 1], ["protein_g_per_litre", 1], ["protein_g_per_liter", 1], ["protein_per_l", 1], ["protein_g_per_1000ml", 1], ["protein_g_per_100ml", 10], ["protein_per_100ml", 10]],
   water_ml_per_l: [["water_ml_per_l", 1], ["water_ml_per_litre", 1], ["water_ml_per_liter", 1], ["free_water_ml_per_l", 1], ["water_per_l", 1], ["water_ml_per_1000ml", 1], ["water_ml_per_100ml", 10], ["water_per_100ml", 10], ["water_percent", 10], ["water_pct", 10]],
 };
-const NAME_COLS = ["formula_name", "name", "product_name", "product", "brand"];
+const NAME_COLS = ["formula", "formula_name", "name", "product_name", "product", "brand"];
 
 export const formulaRowName = (row) => { for (const c of NAME_COLS) if (present(row?.[c])) return String(row[c]); return null; };
+
+/**
+ * Formula water when the table has no water column: a rule of thumb that falls with energy density
+ * (about 85% water at 1.0 kcal/ml, 76-78% at 1.5, 70% at 2.0), i.e. ml/L = 1000 x (1 - 0.15 x kcal/ml).
+ * An estimate only. The caller flags it and the formulary card value should replace it.
+ */
+export const estimateWaterMlPerL = (kcalPerMl) => Math.round(1000 * (1 - 0.15 * kcalPerMl));
 
 /** Maps one enteral_formulas row to {kcal_per_ml, protein_g_per_l, water_ml_per_l, name, columns}. Missing values stay null. */
 export function mapFormulaRow(row) {

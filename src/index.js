@@ -714,7 +714,7 @@ import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.j
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
 import { computePaediatricEnergy, computePaediatricProtein, computePaediatricFluid, computePretermRequirements, computeGrowthVelocity, computeCatchUp, computeEnteralFeeds, computePaediatricPlan, idealWeightLookupFor, paediatricReferenceCatalog } from "./paediatric.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
-import { computeEnteralPlan, enteralReferenceCatalog, mapFormulaRow, pickFormulaByName } from "./enteralNutrition.js";
+import { computeEnteralPlan, enteralReferenceCatalog, estimateWaterMlPerL, mapFormulaRow, pickFormulaByName } from "./enteralNutrition.js";
 import { computeProteinByStress, computeNpeNitrogenRatio, computeNitrogenBalance, computeCarbohydrateRequirement, fatRequirement, computePropofolFat, choFatRatioReference, computeElectrolyteReplacement, computePotassiumDeficit, computeIcuFluid, criticalCareReferenceCatalog } from "./criticalCare.js";
 import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
 import { linkRenalFoods } from "./renalFoodLink.js";
@@ -5348,10 +5348,16 @@ async function handleEnteralCalculate(body, db) {
     if (merged.kcal_per_ml === null || merged.kcal_per_ml === undefined) {
       return err(`Formula '${mapped.name || body.formula_id || body.formula_name}' was found but its energy density could not be read from the row (columns: ${Object.keys(row || {}).join(", ")}). Send formula.kcal_per_ml in the body.`, 422);
     }
-    input = { ...body, formula: { ...merged, name: mapped.name, source: `enteral_formulas row${mapped.columns && Object.keys(mapped.columns).length ? " (" + Object.entries(mapped.columns).map(([f, c]) => `${f} from ${c}`).join(", ") + ")" : ""}` } };
+    let waterEstimated = false;
+    if ((merged.water_ml_per_l === null || merged.water_ml_per_l === undefined) && Number(merged.kcal_per_ml) > 0) {
+      merged.water_ml_per_l = estimateWaterMlPerL(Number(merged.kcal_per_ml));
+      waterEstimated = true;
+    }
+    input = { ...body, _formula_notes: [ ...(waterEstimated ? [`Formula water (${merged.water_ml_per_l} ml/L) is an estimate from energy density because enteral_formulas has no water column. Confirm it on the formulary card or send formula.water_ml_per_l.`] : []), ...(/oral|sip/i.test(String(row?.route ?? "")) ? [`This formula is listed as '${row.route}'. Check it is suitable for tube feeding.`] : []) ], formula: { ...merged, name: mapped.name, source: `enteral_formulas row${mapped.columns && Object.keys(mapped.columns).length ? " (" + Object.entries(mapped.columns).map(([f, c]) => `${f} from ${c}`).join(", ") + ")" : ""}` } };
   }
   const result = computeEnteralPlan(input);
   if (!result.ok) return err(result.error);
+  if (Array.isArray(input._formula_notes) && input._formula_notes.length) result.data.notes = [...input._formula_notes, ...result.data.notes];
   return success(result.data, { message: "Enteral nutrition: calculate" });
 }
 
