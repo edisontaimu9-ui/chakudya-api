@@ -126,3 +126,11 @@ describe("formula rows", () => {
     assert.equal(enteralReferenceCatalog("nope").ok, false);
   });
 });
+
+describe("refeeding note", () => {
+  test("no 'start at full rate' note for refeeding patients", () => {
+    const r = computeEnteralPlan({ ...base, weight_kg: 60, refeeding_risk: true }).data;
+    assert.ok(!r.notes.some((n) => /start at full rate/.test(n)));
+    assert.ok(computeEnteralPlan(base).data.notes.some((n) => /start at full rate/.test(n)));
+  });
+});

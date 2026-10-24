@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.58.0
+  version: 1.59.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -80,6 +80,7 @@ tags:
 - name: Paediatric nutrition
 - name: Critical care nutrition
 - name: Enteral nutrition
+- name: Micronutrient assessment
 - name: Ingredients
 - name: DRI
 - name: RAG
@@ -7289,6 +7290,70 @@ paths:
           $ref: '#/components/responses/MutationSuccess'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /micronutrients/assess:
+    post:
+      tags:
+      - Micronutrient assessment
+      summary: Micronutrient intake assessment against the DRI (API key)
+      description: 'Age- and sex-specific screen of micronutrient intake. Below the EAR is likely inadequate, EAR to RDA is borderline, below an AI is possibly low, above the UL is flagged. Send intake as nutrient totals (one day, or days[] of up to 7, averaged). Nutrients not sent are listed in not_provided, not counted as zero. For foods use POST /dietary-assessment.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                age: {type: number}
+                sex: {type: string, enum: [male, female]}
+                life_stage: {type: string}
+                life_stage_type: {type: string, enum: [normal, pregnancy, lactation]}
+                plant_based_diet: {type: boolean}
+                intake: {type: object, additionalProperties: {type: number}}
+                days:
+                  type: array
+                  maxItems: 7
+                  items:
+                    type: object
+                    properties:
+                      date: {type: string}
+                      intake: {type: object, additionalProperties: {type: number}}
+            example: {age: 25, sex: female, plant_based_diet: true, intake: {iron_mg: 9, calcium_mg: 600, vitc_mg: 40, zinc_mg: 6, vitb12_mcg: 1.5}}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /micronutrients/requirements:
+    get:
+      tags:
+      - Micronutrient assessment
+      summary: Vitamin and mineral requirements by life stage (API key)
+      description: 'EAR, RDA, AI and UL for the life stage that matches age, sex and life_stage_type, or for a life_stage code.'
+      parameters:
+      - {name: age, in: query, schema: {type: number}}
+      - {name: sex, in: query, schema: {type: string, enum: [male, female]}}
+      - {name: life_stage, in: query, schema: {type: string}}
+      - {name: life_stage_type, in: query, schema: {type: string, enum: [normal, pregnancy, lactation]}}
+      - {name: group, in: query, schema: {type: string, enum: [vitamin, mineral]}}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /micronutrients/reference:
+    get:
+      tags:
+      - Micronutrient assessment
+      summary: Micronutrients covered and the adequacy rules (API key)
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
         '429':
           $ref: '#/components/responses/RateLimited'
   /enteral-nutrition/calculate:

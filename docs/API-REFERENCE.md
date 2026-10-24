@@ -1727,6 +1727,30 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/enteral-nutrition/cal
 # -> 63 ml/hr x 24 hours (1512 ml/day); 145 ml free water flush Q4
 ```
 
+### Micronutrient assessment (`/micronutrients`) — `v1.59.0+`
+
+A micronutrient-only screen against the NASEM DRI tables, by age, sex, pregnancy and lactation. Any valid API key, nothing stored. It reuses the EAR/RDA/AI/UL tables behind `GET /dri` and the adequacy rules behind `POST /dietary-assessment`. Intake is sent as nutrient totals; to assess foods, macronutrients and energy use `POST /dietary-assessment`.
+
+| Route | What it does |
+|---|---|
+| `POST /micronutrients/assess` | Likely inadequate, borderline, possibly low and above-UL nutrients, with the requirement beside each intake |
+| `GET /micronutrients/requirements` | `age` + `sex` (or `life_stage`), optional `life_stage_type` (`normal`, `pregnancy`, `lactation`) and `group` (`vitamin`, `mineral`): EAR, RDA, AI, UL |
+| `GET /micronutrients/reference` | Nutrients covered, request fields and the adequacy rules |
+
+**Request.** `age` and `sex` (sex needed from age 9), or a `life_stage` code. `intake` is an object such as `{"iron_mg": 9, "calcium_mg": 600, "vitb12_mcg": 1.5}`, or send `days: [{date?, intake}]` for up to 7 days, which are averaged. Add `plant_based_diet: true` for absorption notes on iron, zinc, B12, calcium, vitamin A and iodine. `meals` and `ingredients` are refused (use `/dietary-assessment`).
+
+**Judgement.** Nutrients with an EAR and RDA: below the EAR is *likely inadequate*, between the EAR and RDA is *borderline*, at or above the RDA is adequate. AI-only nutrients: below the AI is *possibly low*. Average intake above the UL is flagged, and sodium is judged against the CDRR as a limit. Nutrients you do not send appear in `not_provided` and are never counted as zero.
+
+**Response.** `summary` (headline, counts, top 5 gaps), `potential_inadequacies` (ranked), `excesses`, `adequate`, `nutrients` (full detail with `ear`, `target`, `percent_of_target`, `percent_of_ear`, `days_below_target`, `ul`), `requirements` (all values for the life stage), `not_provided`, `notes`.
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/micronutrients/assess \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"age":25,"sex":"female","plant_based_diet":true,"intake":{"iron_mg":9,"calcium_mg":600,"vitc_mg":40,"zinc_mg":6,"vitb12_mcg":1.5}}'
+```
+
+Screening only, not a diagnosis. EAR-based adequacy is strictly valid for groups; for one person, read it as the chance that intake is inadequate. Supplements, fortified foods, cooking losses and bioavailability are only as good as the intake you send.
+
 ### Critical care nutrition support (`/critical-care`) — `v1.57.0+`
 
 Reference calculators for ICU nutrition support, from a hospital dietetics guideline (sections 2-6), with the fat ceiling from ESPEN 2009. They were moved here from the MCP server, which now calls these routes. Pure arithmetic and static tables, no database. Any valid key. General (non-burn) patients: burns use their own nitrogen formula in the MCP burn tools.

@@ -3,7 +3,9 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.58.0
+ * Version: 1.59.0
+ * v1.59.0 changes: micronutrient assessment (src/micronutrientAssessment.js, no SQL, any API key). POST /micronutrients/assess (nutrient totals -> likely inadequate / borderline / possibly low / above UL,
+ *   with the age- and sex-specific EAR, RDA, AI and UL beside each intake), GET /micronutrients/requirements (life-stage reference values), GET /micronutrients/reference. Enteral calculator: no 'start at full rate' note for refeeding patients.
  * v1.58.0 changes: enteral nutrition prescription calculator (src/enteralNutrition.js, no SQL, any API key). POST /enteral-nutrition/calculate (formula volume, rate, energy, protein, formula water,
  *   free water flush, delivery adequacy; formula from enteral_formulas by formula_id or formula_name, or sent inline), GET /enteral-nutrition/reference.
  * v1.57.0 changes: critical care nutrition support calculators (src/criticalCare.js, no SQL, any API key), moved from the MCP server so the API is the single source. POST /critical-care/protein-by-stress,
@@ -714,6 +716,7 @@ import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.j
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
 import { computePaediatricEnergy, computePaediatricProtein, computePaediatricFluid, computePretermRequirements, computeGrowthVelocity, computeCatchUp, computeEnteralFeeds, computePaediatricPlan, idealWeightLookupFor, paediatricReferenceCatalog } from "./paediatric.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
+import { computeMicronutrientAssessment, micronutrientRequirements, micronutrientReference } from "./micronutrientAssessment.js";
 import { computeEnteralPlan, enteralReferenceCatalog, estimateWaterMlPerL, mapFormulaRow, pickFormulaByName } from "./enteralNutrition.js";
 import { computeProteinByStress, computeNpeNitrogenRatio, computeNitrogenBalance, computeCarbohydrateRequirement, fatRequirement, computePropofolFat, choFatRatioReference, computeElectrolyteReplacement, computePotassiumDeficit, computeIcuFluid, criticalCareReferenceCatalog } from "./criticalCare.js";
 import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
@@ -777,7 +780,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.58.0";
+const CNR_VERSION = "1.59.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1432,6 +1435,10 @@ function routePolicy(resource, method, param, action) {
   // Paediatric nutrition calculators (src/paediatric.js): arithmetic on the request body and static tables. catch-up (and plan with catch_up:true) also reads one
   // who_weight_for_length_height row. No writes. Any valid key. /pediatric is an alias.
   if ((resource === "paediatric" || resource === "pediatric") && ((["energy", "protein", "fluid", "preterm", "growth-velocity", "catch-up", "enteral-feeds", "plan"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Micronutrient assessment (src/micronutrientAssessment.js): arithmetic on the request body against static DRI tables. No database access. Any valid key.
+  if (resource === "micronutrients" && ((param === "assess" && method === "POST") || ((param === "requirements" || param === "reference") && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Enteral nutrition calculator (src/enteralNutrition.js): arithmetic on the request body. calculate may read enteral_formulas (read only) when formula_id or formula_name is sent. Any valid key.
@@ -8144,6 +8151,11 @@ function handleRoot(env) {
         "POST /paediatric/plan   (API key) → energy, protein, fluid and macronutrients in one call; optional catch_up:true or ideal_weight_kg, and feeding_route",
         "GET  /paediatric/reference[?section=]   (API key) → the tables behind the calculators and their sources. /pediatric works as an alias",
       ],
+      micronutrients: [
+        "POST /micronutrients/assess   (API key) → {age, sex | life_stage, intake {iron_mg, calcium_mg, ...} | days:[{intake}], plant_based_diet?} → likely inadequate / borderline / possibly low / above UL, with EAR, RDA, AI and UL beside each intake",
+        "GET  /micronutrients/requirements?age=&sex=[&life_stage_type=&group=vitamin|mineral]   (API key) → EAR, RDA, AI, UL for the life stage",
+        "GET  /micronutrients/reference   (API key) → nutrients covered, request fields and the adequacy rules",
+      ],
       "enteral-nutrition": [
         "POST /enteral-nutrition/calculate   (API key) → {formula_id | formula_name | formula:{kcal_per_ml, protein_g_per_l, water_ml_per_l}, kcal_needs, protein_needs_g?, fluid_needs_ml?, weight_kg?, mode?, hours_per_day?, refeeding_risk?, ...} → volume, rate, kcal, protein, formula water, free water flush, adequacy and 65% delivery scenario",
         "GET  /enteral-nutrition/reference[?section=]   (API key) → steps, limits, modes and request fields",
@@ -10032,6 +10044,29 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         else result = paedCalc[param](body);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: `Paediatric nutrition: ${param}` });
+      }
+      return notFound();
+    }
+
+    case "micronutrients": {
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        return success(micronutrientReference().data, { message: "Micronutrient assessment reference" });
+      }
+      if (param === "requirements") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const q = Object.fromEntries(url.searchParams.entries());
+        const result = micronutrientRequirements(q);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Micronutrient requirements" });
+      }
+      if (param === "assess") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        const result = computeMicronutrientAssessment(body);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Micronutrient assessment" });
       }
       return notFound();
     }

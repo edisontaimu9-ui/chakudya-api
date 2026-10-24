@@ -299,7 +299,7 @@ export function computeEnteralPlan(inp = {}) {
   let advancement = null;
   if (tolerance && ratePrescribed && !paediatric && mode !== "trophic") {
     advancement = { start_rate_ml_per_hr: Math.max(1, Math.round(rate / 2)), goal_rate_ml_per_hr: rate, increase_ml_per_hr: GUIDE.advancement_ml_per_step_adult, every_hours: GUIDE.advancement_interval_hours, steps_to_goal: Math.max(0, Math.ceil((rate - Math.round(rate / 2)) / GUIDE.advancement_ml_per_step_adult)), note: "Start at half rate for patients with intolerance, critical illness or proning, then increase 10 ml every 4 hours until goal." };
-  } else if (ratePrescribed && mode !== "trophic") notes.push("Most patients can start at full rate. Send high_risk_tolerance: true for a half-rate start (history of intolerance, critically ill, proned).");
+  } else if (ratePrescribed && mode !== "trophic" && !refeeding) notes.push("Most patients can start at full rate. Send high_risk_tolerance: true for a half-rate start (history of intolerance, critically ill, proned).");
 
   return {
     ok: true,
