@@ -1698,6 +1698,32 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/food-
 
 **Related routes reused:** `GET /renal` (renal food list), `POST /meals/analyze` (single-meal kidney-disease screen), `GET /dri`.
 
+### Critical care nutrition support (`/critical-care`) — `v1.57.0+`
+
+Reference calculators for ICU nutrition support, from a hospital dietetics guideline (sections 2-6), with the fat ceiling from ESPEN 2009. They were moved here from the MCP server, which now calls these routes. Pure arithmetic and static tables, no database. Any valid key. General (non-burn) patients: burns use their own nitrogen formula in the MCP burn tools.
+
+| Route | What it does |
+|---|---|
+| `POST /critical-care/protein-by-stress` | `stress_level` (0-3, optional), `weight_kg` (optional): g/kg/day and g/day. Omit the level for the whole table |
+| `POST /critical-care/npe-nitrogen-ratio` | `npe_kcal`, `protein_g`: NPE:N2 ratio and stress band |
+| `POST /critical-care/nitrogen-balance` | `urine_volume_l`, `urinary_urea_mmol_l`: urinary N, total urinary N, total N output, stress grade |
+| `POST /critical-care/carbohydrate` | optional `weight_kg`: usual, minimum and maximum carbohydrate, g/day when weight is sent |
+| `GET /critical-care/fat` | usual, minimum and maximum fat, acute pancreatitis rule |
+| `POST /critical-care/propofol-fat` | `propofol_percent` (`1` or `2`), `volume_ml`: propofol mg and fat g |
+| `GET /critical-care/cho-fat-ratio` | 70:30, 60:40 and 50:50 by indication |
+| `POST /critical-care/electrolytes` | optional `electrolyte` (`phosphate`, `potassium`, `magnesium`): replacement dosing |
+| `POST /critical-care/potassium-deficit` | `serum_k_mmol_l`: deficit band and expected rise per 20 mmol KCl |
+| `POST /critical-care/fluid` | `weight_kg`: 30-35 mL/kg/day range |
+| `GET /critical-care/reference` | `?section=` one of `protein_by_stress`, `urinary_nitrogen`, `npe_n2_bands`, `cho_fat_ratio`, `electrolytes`, `known_issues` |
+
+**Known issues in the source (returned by `?section=known_issues`).** The "Severe" protein range is 1.6-2.5 g/kg in the stress table but 1.9-2.5 g/kg in the urinary nitrogen table, and both are returned as printed. The usual carbohydrate figure is printed as "3-5 g/kg/min", which cannot be right. **Energy equation selection for the critically ill is not here yet:** nothing in this module estimates energy. Use `POST /energy/requirements` with a measured REE and stress factors until a sourced equation-selection reference is added.
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/critical-care/nitrogen-balance \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"urine_volume_l": 2, "urinary_urea_mmol_l": 250}'
+```
+
 ### Diabetes nutrition (`/diabetes`) — `v1.51.0+`
 
 Calculators and reference tables from Krause 16th ed. chapter 30, the ADA Standards of Care in Diabetes 2026 and the UCT exchange lists. Any valid API key. Where Krause (written around ADA 2021) and ADA 2026 differ, ADA 2026 is used and the difference is listed in `GET /diabetes/reference?section=known_issues`. Arithmetic added by this API and not printed in the sources is labelled in each result.

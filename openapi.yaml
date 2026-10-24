@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.56.0
+  version: 1.57.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -78,6 +78,7 @@ tags:
 - name: Meals
 - name: Dietary assessment
 - name: Paediatric nutrition
+- name: Critical care nutrition
 - name: Ingredients
 - name: DRI
 - name: RAG
@@ -7087,6 +7088,238 @@ paths:
       - Paediatric nutrition
       summary: Paediatric reference tables and their sources (API key)
       description: 'All tables behind the paediatric calculators. Use section to get one of: fluid, energy_equations, activity_factors, stress_factors, dri_fao_2004_tee, macronutrient_distribution, protein, preterm, growth_velocity, enteral_feeds, sources. /pediatric works as an alias for /paediatric.'
+      parameters:
+      - name: section
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /critical-care/protein-by-stress:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Protein by metabolic stress level (API key)
+      description: 'g/kg/day protein by stress level (0 normal 0.8, 1 mild 0.8-1, 2 moderate 1.2-1.5, 3 severe 1.6-2.5). Send weight_kg for g/day. Omit stress_level for the whole table. Compensate separately for wound, stoma or fistula losses. Not often above 16 g N (100 g protein) a day except in catabolic critical illness.'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stress_level: {type: integer, minimum: 0, maximum: 3}
+                weight_kg: {type: number}
+            example: {stress_level: 2, weight_kg: 70}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/npe-nitrogen-ratio:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Non-protein energy to nitrogen ratio (API key)
+      description: 'g N2 = g protein / 6.25; ratio = NPE kcal / g N2. Above 150:1 normal or mildly elevated, 100-150:1 moderate stress, 80-100:1 severe stress, below 80:1 is outside the source table.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - npe_kcal
+              - protein_g
+              properties:
+                npe_kcal: {type: number, description: Non-protein energy kcal per 24h}
+                protein_g: {type: number, description: Protein g per 24h}
+            example: {npe_kcal: 1500, protein_g: 75}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/nitrogen-balance:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Nitrogen output and stress grade (general ICU) (API key)
+      description: 'Urinary N = urine volume L x urinary urea mmol/L x 0.028 (urea-derived only); total urinary N = x 1.2; total N output = total urinary N + 4 g obligatory losses; graded against the urinary N2 table. Unreliable in unstable patients and does not count wound or fistula losses. Burn patients use a different formula.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - urine_volume_l
+              - urinary_urea_mmol_l
+              properties:
+                urine_volume_l: {type: number}
+                urinary_urea_mmol_l: {type: number}
+            example: {urine_volume_l: 2, urinary_urea_mmol_l: 250}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/carbohydrate:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Carbohydrate requirement reference (API key)
+      description: 'Usual 60-70% of NPE, 30-70% of total energy or 2-4 mg/kg/min; minimum 150-200 g/24h; maximum 6-7 mg/kg/min without metabolic stress and 4-5 mg/kg/min in severe stress or TPN. Send weight_kg for g/day. The source prints the usual figure as 3-5 g/kg/min, which cannot be right; it is flagged in the response.'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weight_kg: {type: number}
+            example: {weight_kg: 70}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/fat:
+    get:
+      tags:
+      - Critical care nutrition
+      summary: Fat requirement reference (API key)
+      description: 'Usual 30-40% of non-protein energy; minimum 100-200 g/week for essential fatty acids; maximum 1-2 g/kg/day (ESPEN 2009). Acute pancreatitis: 0.8-1.5 g/kg via TPN, triglycerides under 12 mmol/L.'
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /critical-care/propofol-fat:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Propofol dose and fat delivered (API key)
+      description: '1 mL of propofol 1% holds 10 mg propofol and 0.1 g fat; 1 mL of propofol 2% holds 20 mg propofol and 0.1 g fat.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - propofol_percent
+              - volume_ml
+              properties:
+                propofol_percent: {type: string, enum: ['1', '2']}
+                volume_ml: {type: number}
+            example: {propofol_percent: '1', volume_ml: 100}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/cho-fat-ratio:
+    get:
+      tags:
+      - Critical care nutrition
+      summary: CHO:fat ratio of non-protein energy (API key)
+      description: '70:30 for normal requirements; 60:40 for glucose intolerance (blood glucose above 10 mmol/L); 50:50 when weaning from the ventilator is difficult or in respiratory failure (high pCO2).'
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /critical-care/electrolytes:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Phosphate, potassium and magnesium replacement reference (API key)
+      description: 'Reference dosing. Send electrolyte (phosphate, potassium or magnesium) for one, or omit it for all three.'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                electrolyte: {type: string, enum: [phosphate, potassium, magnesium]}
+            example: {electrolyte: potassium}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/potassium-deficit:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Total potassium deficit band from serum potassium (API key)
+      description: 'Serum K 3-4 mmol/L is a 100-200 mmol deficit; 2-3 mmol/L is 200-400 mmol. Serum K rises about 0.25 mmol/L for each 20 mmol KCl given IV.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - serum_k_mmol_l
+              properties:
+                serum_k_mmol_l: {type: number}
+            example: {serum_k_mmol_l: 2.6}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/fluid:
+    post:
+      tags:
+      - Critical care nutrition
+      summary: Adult ICU fluid reference range (API key)
+      description: '30-35 mL/kg/day. In intensive care the treating doctor decides fluid requirements; this is a reference range only.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - weight_kg
+              properties:
+                weight_kg: {type: number}
+            example: {weight_kg: 70}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /critical-care/reference:
+    get:
+      tags:
+      - Critical care nutrition
+      summary: Critical care reference tables and known issues (API key)
+      description: 'All tables behind the critical care calculators. Use section to get one of: protein_by_stress, urinary_nitrogen, npe_n2_bands, cho_fat_ratio, electrolytes, known_issues.'
       parameters:
       - name: section
         in: query

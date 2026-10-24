@@ -3,7 +3,9 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.56.0
+ * Version: 1.57.0
+ * v1.57.0 changes: critical care nutrition support calculators (src/criticalCare.js, no SQL, any API key), moved from the MCP server so the API is the single source. POST /critical-care/protein-by-stress,
+ *   /npe-nitrogen-ratio, /nitrogen-balance, /carbohydrate, /propofol-fat, /electrolytes, /potassium-deficit, /fluid; GET /critical-care/fat, /cho-fat-ratio, /reference.
  * v1.56.0 changes: paediatric nutrition calculators (src/paediatric.js, no SQL, any API key). POST /paediatric/energy (Schofield and WHO 1985 BMR with activity and stress factor ranges,
  *   DRI/FAO 2004 kcal/kg/day, IOM EER through the energy engine), /protein (IOM healthy growth, ASPEN sick child), /fluid (Holliday-Segar), /preterm (requirements and monitoring),
  *   /growth-velocity (reference weight and length velocity), /catch-up (weight-age method with the WHO median weight-for-length/height read from who_weight_for_length_height, plus the
@@ -710,6 +712,7 @@ import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.j
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
 import { computePaediatricEnergy, computePaediatricProtein, computePaediatricFluid, computePretermRequirements, computeGrowthVelocity, computeCatchUp, computeEnteralFeeds, computePaediatricPlan, idealWeightLookupFor, paediatricReferenceCatalog } from "./paediatric.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
+import { computeProteinByStress, computeNpeNitrogenRatio, computeNitrogenBalance, computeCarbohydrateRequirement, fatRequirement, computePropofolFat, choFatRatioReference, computeElectrolyteReplacement, computePotassiumDeficit, computeIcuFluid, criticalCareReferenceCatalog } from "./criticalCare.js";
 import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
 import { linkRenalFoods } from "./renalFoodLink.js";
 import { computeGlycemicStatus, computeGlucoseTargets, computeCarbPlan, computeCarbCount, computeExchangePlan, computeGlycemicLoad, computeInsulin, computeHypoglycemia, computeExerciseCarbs, computeDiabetesPlan, diabetesReferenceCatalog } from "./diabetesNutrition.js";
@@ -771,7 +774,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.56.0";
+const CNR_VERSION = "1.57.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1125,7 +1128,7 @@ function cachePolicy(resource, param) {
   if (resource === "foods" && param === "search") {
     return { ttl: 3600 }; // 1 hour — same reference-data reasoning as autocomplete
   }
-  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management", "pregnancy", "renal-nutrition", "diabetes"].includes(resource) && param !== "lookup") {
+  if (["foods", "exchange", "renal", "formulas", "glycaemic-index", "bmi-for-age", "hc-velocity", "length-velocity", "weight-velocity", "muac-for-age", "muac", "length-height-for-age", "weight-for-age", "weight-for-length-height", "bmi-for-age-under-5", "hc-for-age", "growth", "fenton-preterm", "energy", "activity-energy", "sports", "weight-management", "pregnancy", "renal-nutrition", "diabetes", "critical-care"].includes(resource) && param !== "lookup") {
     return { ttl: 3600 }; // 1 hour — static reference data (includes GET /foods/compare)
   }
   if (resource === "foods" && param === "lookup") {
@@ -1426,6 +1429,10 @@ function routePolicy(resource, method, param, action) {
   // Paediatric nutrition calculators (src/paediatric.js): arithmetic on the request body and static tables. catch-up (and plan with catch_up:true) also reads one
   // who_weight_for_length_height row. No writes. Any valid key. /pediatric is an alias.
   if ((resource === "paediatric" || resource === "pediatric") && ((["energy", "protein", "fluid", "preterm", "growth-velocity", "catch-up", "enteral-feeds", "plan"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Critical care nutrition support calculators (src/criticalCare.js): arithmetic on the request body and static tables. No database access. POST calculates, GET returns tables. Any valid key.
+  if (resource === "critical-care" && (([ "protein-by-stress", "npe-nitrogen-ratio", "nitrogen-balance", "carbohydrate", "propofol-fat", "electrolytes", "potassium-deficit", "fluid" ].includes(param) && method === "POST") || ([ "fat", "cho-fat-ratio", "reference" ].includes(param) && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Renal nutrition calculators (src/renalNutrition.js): arithmetic on the request body and static guideline tables. No database reads or writes,
@@ -8086,6 +8093,19 @@ function handleRoot(env) {
         "POST /paediatric/plan   (API key) → energy, protein, fluid and macronutrients in one call; optional catch_up:true or ideal_weight_kg, and feeding_route",
         "GET  /paediatric/reference[?section=]   (API key) → the tables behind the calculators and their sources. /pediatric works as an alias",
       ],
+      "critical-care": [
+        "POST /critical-care/protein-by-stress   (API key) → {stress_level? 0-3, weight_kg?} → g/kg/day (and g/day) by metabolic stress; omit stress_level for the whole table",
+        "POST /critical-care/npe-nitrogen-ratio   (API key) → {npe_kcal, protein_g} → NPE:N2 ratio and stress interpretation",
+        "POST /critical-care/nitrogen-balance   (API key) → {urine_volume_l, urinary_urea_mmol_l} → urinary N, total urinary N, total N output and the stress grade (general ICU, not burns)",
+        "POST /critical-care/carbohydrate   (API key) → {weight_kg?} → usual, minimum and maximum carbohydrate, with g/day when weight is sent",
+        "GET  /critical-care/fat   (API key) → usual, minimum and maximum fat, acute pancreatitis rule",
+        "POST /critical-care/propofol-fat   (API key) → {propofol_percent: 1|2, volume_ml} → propofol mg and fat g delivered",
+        "GET  /critical-care/cho-fat-ratio   (API key) → CHO:fat ratios of NPE by indication",
+        "POST /critical-care/electrolytes   (API key) → {electrolyte? phosphate|potassium|magnesium} → replacement dosing",
+        "POST /critical-care/potassium-deficit   (API key) → {serum_k_mmol_l} → deficit band and expected rise per 20 mmol KCl",
+        "POST /critical-care/fluid   (API key) → {weight_kg} → 30-35 mL/kg/day reference range",
+        "GET  /critical-care/reference[?section=]   (API key) → the tables behind the calculators and the known issues in the source",
+      ],
       "dietary-assessment": [
         "POST /dietary-assessment   (API key, rate-limited) → body {age|life_stage, sex?, life_stage_type?, weight_kg?, height_cm?, pal_category?, trimester?, months_postpartum?, energy_target_kcal?, suggest_foods?, days:[{date?, meals:[{meal_type?, ingredients}] | ingredients | intake:{totals}}]} (1-7 days, max 40 ingredients; one day may be sent at the top level) → average intake vs DRI (EAR/RDA/AI/UL, sodium CDRR) per nutrient incl. 11 extra nutrients, energy vs IOM EER, macro % vs AMDR, food-group coverage, ranked gaps (likely_inadequate / borderline / possibly_low) and excesses, confidence from data coverage, and the foods richest in the top gaps; screening only, not a diagnosis",
         "GET  /dietary-assessment/reference   (API key) → assessable nutrients, status definitions, accepted input, method notes",
@@ -9957,6 +9977,31 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         else result = paedCalc[param](body);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: `Paediatric nutrition: ${param}` });
+      }
+      return notFound();
+    }
+
+    case "critical-care": {
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const result = criticalCareReferenceCatalog(url.searchParams.get("section") ?? undefined);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Critical care nutrition reference tables" });
+      }
+      const ccGet = { fat: fatRequirement, "cho-fat-ratio": choFatRatioReference };
+      if (param && ccGet[param]) {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const result = ccGet[param]();
+        return success(result.data, { message: `Critical care nutrition: ${param}` });
+      }
+      const ccCalc = { "protein-by-stress": computeProteinByStress, "npe-nitrogen-ratio": computeNpeNitrogenRatio, "nitrogen-balance": computeNitrogenBalance, carbohydrate: computeCarbohydrateRequirement, "propofol-fat": computePropofolFat, electrolytes: computeElectrolyteReplacement, "potassium-deficit": computePotassiumDeficit, fluid: computeIcuFluid };
+      if (param && ccCalc[param]) {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        const result = ccCalc[param](body);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: `Critical care nutrition: ${param}` });
       }
       return notFound();
     }
