@@ -1698,6 +1698,35 @@ curl -X POST https://chakudya-api.edisontaimu9.workers.dev/renal-nutrition/food-
 
 **Related routes reused:** `GET /renal` (renal food list), `POST /meals/analyze` (single-meal kidney-disease screen), `GET /dri`.
 
+### Enteral nutrition (`/enteral-nutrition`) — `v1.58.0+`
+
+Tube feeding prescription calculator that follows the Edge Nutrition *Tube Feeding Calculation Guide* (12 steps). Any valid API key. Pure arithmetic, except that `formula_id` or `formula_name` reads one row of `enteral_formulas` (read only).
+
+| Route | What it does |
+|---|---|
+| `POST /enteral-nutrition/calculate` | Formula volume, rate, energy, protein, formula water, free water flush, adequacy and a delivery scenario |
+| `GET /enteral-nutrition/reference` | Optional `?section=` one of `steps`, `limits`, `quick_math`, `modes`, `request_fields` |
+
+**Formula.** Send `formula_id` or `formula_name` (looked up in `enteral_formulas`), or send values yourself as `formula: {kcal_per_ml, protein_g_per_l, water_ml_per_l}`. Values in the body override the looked-up ones. If the row's energy density cannot be read, the API returns 422 listing the row's column names; send `formula.kcal_per_ml` instead.
+
+**Needs.** `kcal_needs` (required unless `mode` is `trophic`), `protein_needs_g`, `fluid_needs_ml` (defaults to 30 ml/kg when `weight_kg` is sent), `weight_kg`, `medication_kcal` (taken off the formula target).
+
+**Feeding.** `mode`: `continuous` (default), `cyclic`, `bolus` (`feeds_per_day`, default 6), `trophic` (`trophic_rate_ml_hr`, default 15, adult range 10-20) or `volume_based` (volume rounded to 100 ml, no rate). `hours_per_day` defaults to 24. `flush_every_hours` defaults to 4 (minimum flush 30 ml, rounded to 5 ml).
+
+**Flags.** `refeeding_risk` (adults start at 10-20 kcal/kg via `refeeding_kcal_per_kg`, default 15, needs `weight_kg`; with `patient_type: "paediatric"` the start is 40-50% of goal via `refeeding_start_pct`, default 45), `mechanically_ventilated`, `high_risk_tolerance` (half-rate start, +10 ml every 4 hours).
+
+**Adequacy.** The response always includes a 65% delivery scenario (the typical share of prescribed EN actually received). Add `delivered_pct` or `delivered_volume_ml` for your own, and `protein_modular: {protein_g_per_serving, kcal_per_serving}` to close a protein gap. For continuous feeds `buffer_rates` shows the rate over 20 and 22 hours.
+
+Warnings are raised for adult rates above 150 ml/hr, flushes above 300 ml, adult refeeding fluid of 2 L/day or more, and overfeeding in ventilated patients (prescribed energy more than 5% above goal).
+
+```bash
+curl -X POST https://chakudya-api.edisontaimu9.workers.dev/enteral-nutrition/calculate \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"kcal_needs":1800,"protein_needs_g":100,"fluid_needs_ml":2100,"weight_kg":70,
+       "formula":{"kcal_per_ml":1.2,"protein_g_per_l":55.5,"water_ml_per_l":807}}'
+# -> 63 ml/hr x 24 hours (1512 ml/day); 145 ml free water flush Q4
+```
+
 ### Critical care nutrition support (`/critical-care`) — `v1.57.0+`
 
 Reference calculators for ICU nutrition support, from a hospital dietetics guideline (sections 2-6), with the fat ceiling from ESPEN 2009. They were moved here from the MCP server, which now calls these routes. Pure arithmetic and static tables, no database. Any valid key. General (non-burn) patients: burns use their own nitrogen formula in the MCP burn tools.

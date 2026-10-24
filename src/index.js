@@ -3,7 +3,9 @@
  * Cloudflare Worker · Supabase REST backend (no SDK, pure fetch)
  * ---------------------------------------------------------------
  * Author : Edison Taimu 
- * Version: 1.57.0
+ * Version: 1.58.0
+ * v1.58.0 changes: enteral nutrition prescription calculator (src/enteralNutrition.js, no SQL, any API key). POST /enteral-nutrition/calculate (formula volume, rate, energy, protein, formula water,
+ *   free water flush, delivery adequacy; formula from enteral_formulas by formula_id or formula_name, or sent inline), GET /enteral-nutrition/reference.
  * v1.57.0 changes: critical care nutrition support calculators (src/criticalCare.js, no SQL, any API key), moved from the MCP server so the API is the single source. POST /critical-care/protein-by-stress,
  *   /npe-nitrogen-ratio, /nitrogen-balance, /carbohydrate, /propofol-fat, /electrolytes, /potassium-deficit, /fluid; GET /critical-care/fat, /cho-fat-ratio, /reference.
  * v1.56.0 changes: paediatric nutrition calculators (src/paediatric.js, no SQL, any API key). POST /paediatric/energy (Schofield and WHO 1985 BMR with activity and stress factor ranges,
@@ -712,6 +714,7 @@ import { computeEnergyRequirements, energyFactorCatalog } from "./energyEngine.j
 import { enrichBmiPercentile, enrichActivityLog, lookupActivityLogEnergy } from "./energyLookup.js";
 import { computePaediatricEnergy, computePaediatricProtein, computePaediatricFluid, computePretermRequirements, computeGrowthVelocity, computeCatchUp, computeEnteralFeeds, computePaediatricPlan, idealWeightLookupFor, paediatricReferenceCatalog } from "./paediatric.js";
 import { computeGestationalAge, computePregnancyWeightGain, computePregnancyPlan, computePregnancyAssessment, pregnancyReferenceCatalog } from "./pregnancy.js";
+import { computeEnteralPlan, enteralReferenceCatalog, mapFormulaRow, pickFormulaByName } from "./enteralNutrition.js";
 import { computeProteinByStress, computeNpeNitrogenRatio, computeNitrogenBalance, computeCarbohydrateRequirement, fatRequirement, computePropofolFat, choFatRatioReference, computeElectrolyteReplacement, computePotassiumDeficit, computeIcuFluid, criticalCareReferenceCatalog } from "./criticalCare.js";
 import { computeRenalStage, computeRenalRequirements, computeRenalLabs, computeDialysisAdequacy, computeRenalPlan, emergencyDiet, renalReferenceCatalog } from "./renalNutrition.js";
 import { linkRenalFoods } from "./renalFoodLink.js";
@@ -774,7 +777,7 @@ import { capSearchTerms } from "./searchTerms.js";
 // Single source of truth for the version reported by GET / (handleRoot).
 // Bump this alongside the changelog comment at the top of this file — the two
 // had drifted out of sync before (header said v1.4.0, GET / said v1.2.0).
-const CNR_VERSION = "1.57.0";
+const CNR_VERSION = "1.58.0";
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
@@ -1429,6 +1432,10 @@ function routePolicy(resource, method, param, action) {
   // Paediatric nutrition calculators (src/paediatric.js): arithmetic on the request body and static tables. catch-up (and plan with catch_up:true) also reads one
   // who_weight_for_length_height row. No writes. Any valid key. /pediatric is an alias.
   if ((resource === "paediatric" || resource === "pediatric") && ((["energy", "protein", "fluid", "preterm", "growth-velocity", "catch-up", "enteral-feeds", "plan"].includes(param) && method === "POST") || (param === "reference" && method === "GET"))) {
+    return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
+  }
+  // Enteral nutrition calculator (src/enteralNutrition.js): arithmetic on the request body. calculate may read enteral_formulas (read only) when formula_id or formula_name is sent. Any valid key.
+  if (resource === "enteral-nutrition" && ((param === "calculate" && method === "POST") || (param === "reference" && method === "GET"))) {
     return { auth: "key", rate: { limit: 100, windowSeconds: 60, scope: "ip" } };
   }
   // Critical care nutrition support calculators (src/criticalCare.js): arithmetic on the request body and static tables. No database access. POST calculates, GET returns tables. Any valid key.
@@ -5311,6 +5318,44 @@ async function withIdealWeight(body, db) {
 }
 
 /**
+ * POST /enteral-nutrition/calculate
+ * Formula comes from the body ({formula:{kcal_per_ml, protein_g_per_l, water_ml_per_l}} or formula_kcal_per_ml etc.), or from enteral_formulas via formula_id or
+ * formula_name (read only). Values sent in the body override the looked-up ones. The enteral_formulas column names are read through a list of likely names
+ * (src/enteralNutrition.js mapFormulaRow); if a value cannot be read from the row the response says which, with the row's column names.
+ */
+async function handleEnteralCalculate(body, db) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return err("Body must be a JSON object");
+  const hasId = body.formula_id !== undefined && body.formula_id !== null && body.formula_id !== "";
+  const hasName = typeof body.formula_name === "string" && body.formula_name.trim() !== "";
+  let input = body;
+  if (hasId || hasName) {
+    let row = null;
+    if (hasId) {
+      const r = await db.selectOne("enteral_formulas", String(body.formula_id));
+      if (!r.ok) return err(r.status === 404 ? `No enteral formula with id '${body.formula_id}'` : "Could not read enteral_formulas", r.status === 404 ? 404 : 502);
+      row = r.body;
+    } else {
+      const r = await db.select("enteral_formulas", { limit: 1000 });
+      if (!r.ok) return err("Could not read enteral_formulas", 502);
+      const picked = pickFormulaByName(r.body, body.formula_name);
+      if (picked.error) return err(picked.error, picked.matches ? 422 : 404);
+      row = picked.row;
+    }
+    const mapped = mapFormulaRow(row);
+    const inline = (body.formula && typeof body.formula === "object") ? body.formula : {};
+    const pickVal = (k, flat) => (inline[k] !== undefined && inline[k] !== null && inline[k] !== "" ? inline[k] : (body[flat] !== undefined && body[flat] !== null && body[flat] !== "" ? body[flat] : mapped[k]));
+    const merged = { kcal_per_ml: pickVal("kcal_per_ml", "formula_kcal_per_ml"), protein_g_per_l: pickVal("protein_g_per_l", "formula_protein_g_per_l"), water_ml_per_l: pickVal("water_ml_per_l", "formula_water_ml_per_l") };
+    if (merged.kcal_per_ml === null || merged.kcal_per_ml === undefined) {
+      return err(`Formula '${mapped.name || body.formula_id || body.formula_name}' was found but its energy density could not be read from the row (columns: ${Object.keys(row || {}).join(", ")}). Send formula.kcal_per_ml in the body.`, 422);
+    }
+    input = { ...body, formula: { ...merged, name: mapped.name, source: `enteral_formulas row${mapped.columns && Object.keys(mapped.columns).length ? " (" + Object.entries(mapped.columns).map(([f, c]) => `${f} from ${c}`).join(", ") + ")" : ""}` } };
+  }
+  const result = computeEnteralPlan(input);
+  if (!result.ok) return err(result.error);
+  return success(result.data, { message: "Enteral nutrition: calculate" });
+}
+
+/**
  * POST /dietary-assessment
  * Body: { age | life_stage, sex?, life_stage_type?, weight_kg?, height_cm?, pal_category?, trimester?, months_postpartum?, energy_target_kcal?,
  *         suggest_foods?: boolean (default true),
@@ -8093,6 +8138,10 @@ function handleRoot(env) {
         "POST /paediatric/plan   (API key) → energy, protein, fluid and macronutrients in one call; optional catch_up:true or ideal_weight_kg, and feeding_route",
         "GET  /paediatric/reference[?section=]   (API key) → the tables behind the calculators and their sources. /pediatric works as an alias",
       ],
+      "enteral-nutrition": [
+        "POST /enteral-nutrition/calculate   (API key) → {formula_id | formula_name | formula:{kcal_per_ml, protein_g_per_l, water_ml_per_l}, kcal_needs, protein_needs_g?, fluid_needs_ml?, weight_kg?, mode?, hours_per_day?, refeeding_risk?, ...} → volume, rate, kcal, protein, formula water, free water flush, adequacy and 65% delivery scenario",
+        "GET  /enteral-nutrition/reference[?section=]   (API key) → steps, limits, modes and request fields",
+      ],
       "critical-care": [
         "POST /critical-care/protein-by-stress   (API key) → {stress_level? 0-3, weight_kg?} → g/kg/day (and g/day) by metabolic stress; omit stress_level for the whole table",
         "POST /critical-care/npe-nitrogen-ratio   (API key) → {npe_kcal, protein_g} → NPE:N2 ratio and stress interpretation",
@@ -9977,6 +10026,22 @@ async function dispatch(request, url, db, env, resource, param, ctx, action, adm
         else result = paedCalc[param](body);
         if (!result.ok) return err(result.error);
         return success(result.data, { message: `Paediatric nutrition: ${param}` });
+      }
+      return notFound();
+    }
+
+    case "enteral-nutrition": {
+      if (param === "reference") {
+        if (request.method !== "GET") return err("Method not allowed", 405);
+        const result = enteralReferenceCatalog(url.searchParams.get("section") ?? undefined);
+        if (!result.ok) return err(result.error);
+        return success(result.data, { message: "Enteral nutrition reference" });
+      }
+      if (param === "calculate") {
+        if (request.method !== "POST") return err("Method not allowed", 405);
+        const body = await parseBody(request);
+        if (body === null) return err("Invalid JSON body");
+        return await handleEnteralCalculate(body, db);
       }
       return notFound();
     }

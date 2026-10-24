@@ -27,7 +27,7 @@ info:
     there. Anonymous calls receive 401 with the code `api_key_required`. OAuth 2.0 was removed in v1.34.0.
 
     '
-  version: 1.57.0
+  version: 1.58.0
   contact:
     name: Edison Taimu
     x-location: Blantyre, Malawi
@@ -79,6 +79,7 @@ tags:
 - name: Dietary assessment
 - name: Paediatric nutrition
 - name: Critical care nutrition
+- name: Enteral nutrition
 - name: Ingredients
 - name: DRI
 - name: RAG
@@ -7288,6 +7289,74 @@ paths:
           $ref: '#/components/responses/MutationSuccess'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /enteral-nutrition/calculate:
+    post:
+      tags:
+      - Enteral nutrition
+      summary: Tube feeding prescription calculator (API key)
+      description: 'Volume, rate, energy, protein, formula water, free water flush and delivery adequacy, following the Edge Nutrition Tube Feeding Calculation Guide. The formula comes from formula_id or formula_name (enteral_formulas, read only) or from the body; body values override the row. Returns 422 if a looked-up row has no readable energy density.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                formula_id: {type: string}
+                formula_name: {type: string}
+                formula:
+                  type: object
+                  properties:
+                    kcal_per_ml: {type: number}
+                    protein_g_per_l: {type: number}
+                    water_ml_per_l: {type: number}
+                kcal_needs: {type: number}
+                protein_needs_g: {type: number}
+                fluid_needs_ml: {type: number}
+                weight_kg: {type: number}
+                medication_kcal: {type: number}
+                mode: {type: string, enum: [continuous, cyclic, bolus, trophic, volume_based]}
+                hours_per_day: {type: number}
+                feeds_per_day: {type: number}
+                trophic_rate_ml_hr: {type: number}
+                flush_every_hours: {type: number}
+                patient_type: {type: string, enum: [adult, paediatric]}
+                refeeding_risk: {type: boolean}
+                refeeding_kcal_per_kg: {type: number}
+                refeeding_start_pct: {type: number}
+                mechanically_ventilated: {type: boolean}
+                high_risk_tolerance: {type: boolean}
+                delivered_pct: {type: number}
+                delivered_volume_ml: {type: number}
+                protein_modular:
+                  type: object
+                  properties:
+                    protein_g_per_serving: {type: number}
+                    kcal_per_serving: {type: number}
+            example: {kcal_needs: 1800, protein_needs_g: 100, fluid_needs_ml: 2100, weight_kg: 70, formula: {kcal_per_ml: 1.2, protein_g_per_l: 55.5, water_ml_per_l: 807}}
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /enteral-nutrition/reference:
+    get:
+      tags:
+      - Enteral nutrition
+      summary: Enteral nutrition steps, limits and request fields (API key)
+      description: 'Use section to get one of: steps, limits, quick_math, modes, request_fields.'
+      parameters:
+      - name: section
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/MutationSuccess'
         '429':
           $ref: '#/components/responses/RateLimited'
   /critical-care/fluid:
